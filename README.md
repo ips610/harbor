@@ -5,6 +5,11 @@ every 10 seconds. So I made harbor. It sits in the menu bar, shows every server 
 Mac, and lets me open, copy, share or kill each one. It reads everything straight from the
 kernel, so it idles at about 0% CPU.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/ports-dark.png">
+  <img alt="harbor's page: nine servers grouped by project, each with open, copy, QR, share and kill" src="docs/screenshots/ports-light.png">
+</picture>
+
 ## What it does
 
 The menu bar dropdown works like Manfath: ports grouped into dev servers, databases, runtimes
@@ -31,8 +36,8 @@ reached from a phone, so it says so and offers share; once shared, the QR opens 
 
 For the full view, open harbor from Applications (or "Open harbor…" in the menu) and it opens
 `harbor.localhost:8470` in your browser. That page groups ports by project, with the folder, the
-framework, uptime and memory for each one. The tab shows harbor's icon (the ferry from the app
-icon) and the port count.
+framework, uptime and memory for each one. The tab shows harbor's wave icon and
+"harbor • 9 ports".
 
 Appearance is Auto, Light or Dark, in the gear menu or on the page (top right, and in Settings).
 The menu and the page share it. Auto follows macOS. The menu bar icon always follows the menu bar.
@@ -49,9 +54,31 @@ There's also a small "This Mac" part: memory and swap, the apps using the most m
 warning if stuck (zombie) processes start piling up. The menu bar icon turns orange or red when
 memory gets tight.
 
-## Install
+## Download
 
-You need macOS 14 or newer and Xcode.
+Get the zip for your Mac from the [Releases page](https://github.com/ips610/harbor/releases/latest):
+
+- `harbor-apple-silicon.zip` for M1 and newer
+- `harbor-intel.zip` for Intel Macs
+
+You need macOS 14 or newer. Unzip it, drag harbor into Applications and open it. The first time,
+macOS won't open it because the app isn't notarised by Apple. Go to System Settings → Privacy &
+Security, scroll down and click Open Anyway. You only have to do that once.
+
+Only one harbor runs at a time; opening it again just brings up the page. Open at login is in the
+gear menu and the page's settings, and off by default.
+
+### Updates
+
+When the menu or the page opens, harbor asks GitHub whether there's a newer version, at most once
+a day. If there is, the menu and the page say so, with a link to it. "Check for Updates…" in the
+gear menu and "Check for updates" in the page's settings ask right away. To update, download the
+new zip and drag harbor into Applications over the old one. That check and Share are the only
+times harbor talks to the internet.
+
+## Building it yourself
+
+You need Xcode.
 
 ```sh
 ./build.sh
@@ -59,9 +86,9 @@ You need macOS 14 or newer and Xcode.
 open /Applications/harbor.app
 ```
 
-`install.sh` puts it in `/Applications` and replaces a running copy. Only one harbor runs at a
-time; opening it again just brings up the page. Open at login is in the gear menu and the page's
-settings, and off by default. To rename the app, change `app.conf` and build again.
+`install.sh` puts it in `/Applications` and replaces a running copy. To rename the app, change
+`app.conf` and build again. `./package.sh` makes the two zips for the Releases page; build it on
+an Apple Silicon Mac.
 
 `build.sh` signs with my own certificate ("IPS Local Apps") when that's in the keychain, so
 macOS remembers what you allowed harbor to do after a rebuild. Without it, the app gets a
@@ -133,7 +160,7 @@ second to appear after you open the menu or the page.
 ## Debugging
 
 The app binary has a few flags for testing: `--dump`, `--bench N`, `--serve`, `--no-open`,
-`--demo-menu --snapshot PATH`, `--demo-lan PORT`, `--theme light|dark`, `--show-system` and
-`--test-stop PORT` (see `Sources/Harbor/DebugCLI.swift`). Test runs never add a menu bar or Dock
+`--demo-menu --snapshot PATH`, `--demo-lan PORT`, `--theme light|dark`, `--show-system`,
+`--check-update` and `--test-stop PORT` (see `Sources/Harbor/DebugCLI.swift`). Test runs never add a menu bar or Dock
 icon, never take the keyboard, don't save settings, and use the next free port, so they can run
 next to an installed copy.

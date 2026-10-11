@@ -17,6 +17,7 @@ enum WebAPI {
     static func state(_ done: @escaping (Data) -> Void) {
         let m = Monitor.shared
         m.webTouch()
+        Updates.shared.check()  // at most once a day
         m.fresh(maxAge: 2.0) {
             let object = build()
             done((try? JSONSerialization.data(withJSONObject: object)) ?? Data("{}".utf8))
@@ -114,6 +115,7 @@ enum WebAPI {
         shownPorts = portsShown
         let hint = Tunnels.hint
         let tool = Tunnels.tool
+        let up = Updates.shared
 
         return [
             "scannedAgo": m.lastFullScan.map { now.timeIntervalSince($0) } ?? 0,
@@ -123,6 +125,10 @@ enum WebAPI {
             "notices": m.notices.map { ["id": $0.id, "text": $0.text] },
             "share": ["available": tool != nil, "provider": n(tool?.name), "hint": hint.text, "command": hint.command],
             "loginItem": loginItemOn,
+            "update": [
+                "current": up.current, "latest": n(up.latest), "newer": up.newer, "url": up.url.absoluteString,
+                "checking": up.checking, "failed": up.failed,
+            ],
             "network": ["ip": n(lanIP), "name": n(bonjour), "firewall": LAN.firewallOn],
             "settings": [
                 "minPort": m.minPort, "maxPort": m.maxPort,
@@ -204,6 +210,10 @@ enum WebAPI {
             }
             Tunnels.shared.stop(p)
             return done(200, ["result": "ok", "message": "Stopped sharing :\(port)."])
+        case "check-update":
+            // The page polls quickly while "checking" is true.
+            Updates.shared.check(force: true)
+            return done(200, ["result": "ok"])
         case "dismiss-notice":
             if let id = obj["id"] as? Int { Monitor.shared.dismissNotice(id) }
             return done(200, ["result": "ok"])

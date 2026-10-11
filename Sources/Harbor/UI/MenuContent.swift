@@ -47,6 +47,7 @@ struct MenuContent: View {
     @State private var loginItem = SMAppService.mainApp.status == .enabled
 
     private var grouping: Monitor.Grouping { monitor.grouping }
+    private var updates: Updates { .shared }
 
     var body: some View {
         @Bindable var monitor = monitor
@@ -65,6 +66,16 @@ struct MenuContent: View {
             .padding(.bottom, 8)
             if let notice = monitor.notices.last {
                 NoticeStrip(notice: notice)
+            }
+            if updates.newer, let latest = updates.latest {
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.down.circle.fill").foregroundStyle(.blue)
+                    Text("\(AppInfo.name) \(latest) is out").font(.system(size: 12))
+                    Spacer()
+                    Button("Get it") { updates.download() }.controlSize(.small)
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
             }
             Divider()
             if rows.isEmpty {
@@ -95,7 +106,10 @@ struct MenuContent: View {
             footer
         }
         .frame(width: 400)
-        .onAppear { DispatchQueue.main.async { searchFocused = true } }
+        .onAppear {
+            DispatchQueue.main.async { searchFocused = true }
+            updates.check()  // at most once a day
+        }
         .overlay(alignment: .bottom) { ToastView() }
         .background(WindowVisibilityReporter(surface: .menu))
         .background(WindowAppearance(appearance: monitor.appearance.nsAppearance))
@@ -187,6 +201,12 @@ struct MenuContent: View {
             Picker("Appearance", selection: $monitor.appearance) {
                 ForEach(Monitor.Appearance.allCases) { Text($0.title).tag($0) }
             }
+            Divider()
+            Button(updates.checking ? "Checking for Updates…" : "Check for Updates…") {
+                updates.check(force: true) { monitor.flash(updates.summary) }
+            }
+            .disabled(updates.checking)
+            Text("\(AppInfo.name) \(updates.current)")
             Divider()
             Button("Open \(AppInfo.name) page") { WebServer.shared.openInBrowser() }
             Button("Quit \(AppInfo.name)") { NSApp.terminate(nil) }

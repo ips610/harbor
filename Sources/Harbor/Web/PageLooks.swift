@@ -14,9 +14,9 @@ enum PageLooks {
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>__app__</title>
-<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=2">
-<link rel="icon" type="image/svg+xml" href="/favicon.svg?v=3">
-<link rel="apple-touch-icon" href="/apple-touch-icon.png?v=2">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=4">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg?v=4">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png?v=4">
 <style>
   /* ---------- shared: pills and tags match the menu bar ---------- */
   :root[data-theme="light"] { color-scheme: light; }
@@ -391,7 +391,7 @@ function render() {
 }
 
 function renderTop(all) {
-  const title = all.length ? `__app__ · ${plural(all.length, 'port', 'ports')}` : '__app__';
+  const title = all.length ? `__app__ • ${plural(all.length, 'port', 'ports')}` : '__app__';
   if (document.title !== title) document.title = title;
   const exposed = all.filter((p) => p.exposed).length, shared = all.filter((p) => p.tunnel && p.tunnel.state === 'ready').length;
   const status = `Updated ${Math.round(state.scannedAgo)} s ago · ${cadence()}`;

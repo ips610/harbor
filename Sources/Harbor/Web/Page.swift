@@ -23,11 +23,11 @@ enum Page {
 
     /// harbor's mark, the header's two waves, on an ink tile that reads on light and
     /// dark tab strips. Served as /favicon.svg; the app icon and the menu bar glyph
-    /// draw the same paths (WaveMark).
+    /// draw the same paths (WaveMark). A flat fill, the same build as headroom's icon,
+    /// which Safari does show.
     static let icon = """
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-    <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#23252e"/><stop offset="1" stop-color="#0b0b0c"/></linearGradient></defs>
-    <rect width="64" height="64" rx="14" fill="url(#g)"/>
+    <rect width="64" height="64" rx="14" fill="#16171c"/>
     <g fill="none" stroke="#a7b4ff" stroke-width="6" stroke-linecap="round"><path d="M11 25c5-4.8 9-4.8 14 0s9 4.8 14 0 9-4.8 14 0"/><path d="M11 39c5-4.8 9-4.8 14 0s9 4.8 14 0 9-4.8 14 0"/></g>
     </svg>
     """
@@ -54,9 +54,9 @@ enum Page {
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>__app__</title>
-<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=2">
-<link rel="icon" type="image/svg+xml" href="/favicon.svg?v=3">
-<link rel="apple-touch-icon" href="/apple-touch-icon.png?v=2">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=4">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg?v=4">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png?v=4">
 <style>
   /* Light tokens here; dark ones in Page.darkTokens, applied by macOS dark mode
      or by the Appearance setting (data-theme on <html>, set by the server). */
@@ -166,6 +166,7 @@ enum Page {
   .notice { background: var(--warn-soft); color: var(--text); border-bottom: 1px solid var(--line); }
   .notice .wrap { display: flex; align-items: center; gap: 12px; padding-block: 10px; }
   .notice p { flex: 1; font-size: 14px; }
+  .notice.update { background: var(--open-bg); }
   .offline { background: var(--panel-2); border-bottom: 1px solid var(--line); }
   .offline .wrap { padding-block: 12px; font-size: 14px; color: var(--text-2); }
 
@@ -420,6 +421,7 @@ enum Page {
 
 <div class="alarm" id="alarm" hidden><div class="wrap"><p id="alarm-text"></p><span id="alarm-act"></span></div></div>
 <div id="notices"></div>
+<div class="notice update" id="update-notice" hidden><div class="wrap"><p id="update-text"></p><a class="btn" id="update-get" target="_blank" rel="noopener">Get it</a></div></div>
 <div class="offline" id="offline" hidden><div class="wrap" id="offline-text">__APP__ isn't answering. Open it from the menu bar or Applications, then reload this page.</div></div>
 
 <main class="wrap">
@@ -467,6 +469,7 @@ enum Page {
         <button type="button" data-appearance="dark" aria-pressed="false">Dark</button>
       </span>
     </span>
+    <span class="check" id="update-row"></span>
     <span id="settings-note"></span>
   </section>
 </main>
@@ -593,7 +596,9 @@ async function poll() {
     $('offline-text').textContent = "__APP__ isn't answering. Open it from the menu bar or Applications, then reload this page.";
     setLive(false, 'Not answering');
   }
-  if (document.visibilityState === 'visible' && pollMs() > 0) timer = setTimeout(poll, pollMs());
+  // Quicker while an update check runs, so its answer shows up straight away.
+  const wait = state && state.update && state.update.checking ? 1000 : pollMs();
+  if (document.visibilityState === 'visible' && wait > 0) timer = setTimeout(poll, wait);
 }
 window.addEventListener('focus', () => poll());
 document.addEventListener('visibilitychange', () => {
@@ -645,6 +650,7 @@ function render() {
   renderHero(all);
   renderAlarm();
   renderNotices();
+  renderUpdate();
   renderPorts(ports, all);
   renderMac();
   $('login-item').checked = !!state.loginItem;
@@ -656,7 +662,7 @@ function render() {
 }
 
 function renderHero(all) {
-  const title = all.length ? `__app__ · ${plural(all.length, 'port', 'ports')}` : '__app__';
+  const title = all.length ? `__app__ • ${plural(all.length, 'port', 'ports')}` : '__app__';
   if (document.title !== title) document.title = title;
   const gs = groups(all);
   const projects = gs.filter((g) => g.rank === 0).length;
@@ -713,6 +719,21 @@ function renderAlarm() {
     ? (busy.has(p.pid) ? el('span', { class: 'busy' }, el('i', { class: 'spinner' }), 'Quitting')
       : el('button', { class: 'btn', text: `Quit ${p.name}`, onclick: () => quitProcess(p.pid, p.name, `It has ${p.count} stuck child processes. Quitting it lets macOS clear them.`) }))
     : []);
+}
+
+// The app asks GitHub at most once a day; the button asks now.
+function renderUpdate() {
+  const u = state.update;
+  $('update-notice').hidden = !u.newer;
+  $('update-text').textContent = u.newer ? `__app__ ${u.latest} is out. Download it, unzip it and drag it into Applications over this one.` : '';
+  $('update-get').href = u.url;
+  const note = u.checking ? 'Checking GitHub…' : u.failed ? "GitHub didn't answer. Try again later."
+    : u.newer ? `${u.latest} is out` : u.latest ? 'up to date' : '';
+  swap('update-row', JSON.stringify([u.current, note, u.checking]), () => [
+    `__app__ ${u.current}` + (note ? ` · ${note}` : ''),
+    el('button', { class: 'btn quiet', type: 'button', text: u.checking ? 'Checking…' : 'Check for updates', disabled: u.checking,
+      onclick: async () => { await act('check-update', 0); poll(); } }),
+  ]);
 }
 
 function renderNotices() {

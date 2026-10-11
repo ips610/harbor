@@ -37,7 +37,22 @@ enum DebugCLI {
         if let p = value(after: "--test-stop") { testStop(port: UInt16(p) ?? 0, force: args.contains("--force")); return true }
         if let dir = value(after: "--make-icon") { makeIcon(dir); return true }
         if let dir = value(after: "--menubar-icons") { menubarIcons(dir); return true }
+        if args.contains("--check-update") { checkUpdate(); return true }
         return false
+    }
+
+    // MARK: Updates
+
+    /// Version comparison checks, then one real look at the Releases page.
+    private static func checkUpdate() {
+        precondition(Updates.isNewer("1.10", than: "1.9") && Updates.isNewer("1.1", than: "1.0.9") && Updates.isNewer("2", than: "1.9.9"))
+        precondition(!Updates.isNewer("1.1.0", than: "1.1") && !Updates.isNewer("1.0", than: "1.1"))
+        let done = DispatchSemaphore(value: 0)
+        Task.detached {
+            print("version checks ok; newest release on GitHub:", await Updates.newestRelease() ?? "none")
+            done.signal()
+        }
+        done.wait()
     }
 
     // MARK: Dump
