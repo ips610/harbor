@@ -1,15 +1,82 @@
 // The harbor page, served by WebServer at http://harbor.localhost:8470/.
 // Every value from the app is rendered with textContent; nothing is parsed as HTML.
 enum Page {
-    /// The page with the app's name filled in (see AppInfo).
-    static let html = template
-        .replacingOccurrences(of: "__APP__", with: AppInfo.name)
-        .replacingOccurrences(of: "__app__", with: AppInfo.name.lowercased())
+    /// The page with the session script and the app's name filled in (see AppInfo).
+    static let html = fill(template)
 
-    /// A page with the Appearance setting already on <html>, so the first paint is right.
-    static func themed(_ page: String, _ appearance: String) -> String {
-        page.replacingOccurrences(of: "data-theme=\"__theme__\"", with: "data-theme=\"\(appearance)\"")
+    /// Shared with PageLooks, so both pages sign in the same way.
+    static func fill(_ template: String) -> String {
+        template.replacingOccurrences(of: "__SESSION__", with: sessionScript)
+            .replacingOccurrences(of: "__APP__", with: AppInfo.name)
+            .replacingOccurrences(of: "__app__", with: AppInfo.name.lowercased())
     }
+
+    /// A page with the Appearance setting already on <html> (so the first paint
+    /// is right) and the CSP nonce filled into its inline <script>. `crossNav`
+    /// marks a visit that came from another website: the page then won't ask
+    /// harbor to open a tab. Nothing secret ever goes into the page.
+    static func themed(_ page: String, _ appearance: String, nonce: String, crossNav: Bool = false) -> String {
+        page.replacingOccurrences(of: "data-theme=\"__theme__\"",
+                                  with: "data-theme=\"\(appearance)\"" + (crossNav ? " data-nav=\"cross\"" : ""))
+            .replacingOccurrences(of: "__NONCE__", with: nonce)
+    }
+
+    /// How a tab signs in, for both pages. Each page supplies `poll()` and shows
+    /// the lines `signedOut()` returns.
+    static let sessionScript = #"""
+// ---------- session ----------
+// A tab is signed in by two things together: an HttpOnly cookie, and this key in
+// localStorage. A cookie alone isn't tied to a port on localhost; localStorage is,
+// so another program on a different port of this name can be sent the cookie but
+// never the key. Every API call carries both; POSTs add X-Harbor.
+const KEY = '__app__.key';
+let key = null;
+try { key = localStorage.getItem(KEY); } catch (e) {}
+function setKey(value) {
+  key = value || null;
+  try { if (key) localStorage.setItem(KEY, key); else localStorage.removeItem(KEY); } catch (e) {}
+}
+async function api(path, body) {
+  const opts = { credentials: 'same-origin', cache: 'no-store', headers: {} };
+  if (key) opts.headers['X-Harbor-Key'] = key;
+  if (body) { opts.method = 'POST'; opts.headers['Content-Type'] = 'application/json'; opts.headers['X-Harbor'] = '1'; opts.body = JSON.stringify(body); }
+  const reply = await fetch(path, opts);
+  const data = await reply.json().catch(() => ({}));
+  if (!reply.ok) throw new Error(data.error || ('HTTP ' + reply.status));
+  return data;
+}
+// __APP__ opened this tab with a one-time code in the address: trade it for the
+// cookie and the key, then clean the address.
+async function redeem() {
+  const url = new URL(location.href), code = url.searchParams.get('k');
+  if (!code) return;
+  try { setKey((await api('/api/login', { code })).key); } catch (e) {}
+  url.searchParams.delete('k');
+  history.replaceState(null, '', url.pathname + url.search);
+}
+// Signed out: ask __APP__ to open a signed-in tab. It opens the tab itself, so the
+// link only reaches this Mac's own browser. Asked once per page load, only from
+// poll() (so only while the tab is visible), and never for a visit that came from
+// another website. Resolves to the lines to show.
+const QUIT_TEXT = '__APP__ was quit. Type harbor.localhost:8470 in the address bar to start it again.';
+let asked = null;
+function signedOut() {
+  setKey(null);
+  if (!asked) asked = (async () => {
+    if (document.documentElement.dataset.nav === 'cross') return ['Open __APP__ from the menu bar.'];
+    try {
+      if ((await api('/api/invite', {})).quit) return [QUIT_TEXT];
+    } catch (e) { return ['Open __APP__ from the menu bar.']; }
+    return ['__APP__ is opening in a new tab. You can close this one.',
+      'If nothing opens, it opened in your default browser, or click Open __APP__ in the menu bar.'];
+  })();
+  return asked;
+}
+// The new tab signed in and stored the key: this tab can start working too.
+window.addEventListener('storage', (e) => {
+  if (e.key === KEY && e.newValue) { key = e.newValue; asked = null; poll(); }
+});
+"""#
 
     /// Dark-mode CSS: under macOS dark mode unless the page is set to Light, and
     /// always when it's set to Dark. `scope` narrows it, e.g. "body.look-a".
@@ -492,7 +559,7 @@ enum Page {
   </form>
 </dialog>
 
-<script>
+<script nonce="__NONCE__">
 'use strict';
 const $ = (id) => document.getElementById(id);
 const PALETTE = ['#4f8cf7', '#19a77d', '#9a84f4', '#de5a88', '#cf9214', '#16a6c2', '#e8743f', '#6b8f2a'];
@@ -556,28 +623,31 @@ function hash(text) { let h = 0; for (const c of text) h = (h * 31 + c.charCodeA
 function colour(key) { return PALETTE[hash(key) % PALETTE.length]; }
 function plural(n, one, many) { return n === 1 ? `1 ${one}` : `${n} ${many}`; }
 
-// ---------- API ----------
-// The session cookie (HttpOnly, SameSite=Strict) authenticates; POSTs add X-Harbor.
-async function api(path, body) {
-  const opts = { credentials: 'same-origin', cache: 'no-store', headers: {} };
-  if (body) { opts.method = 'POST'; opts.headers['Content-Type'] = 'application/json'; opts.headers['X-Harbor'] = '1'; opts.body = JSON.stringify(body); }
-  const reply = await fetch(path, opts);
-  const data = await reply.json().catch(() => ({}));
-  if (!reply.ok) throw new Error(data.error || ('HTTP ' + reply.status));
-  return data;
+__SESSION__
+// The banner under the header: one line, or a few.
+function banner(lines, status) {
+  $('offline').hidden = false;
+  $('offline-text').replaceChildren(...lines.map((text) => el('div', { text })));
+  setLive(false, status);
+}
+
+// Signed out: say what's happening, unless another tab signed in meanwhile.
+async function gate() {
+  const lines = await signedOut();
+  if (!key) banner(lines, lines[0] === QUIT_TEXT ? 'Quit' : 'Signed out');
 }
 
 async function poll() {
   clearTimeout(timer);
   timer = null;
   if (document.visibilityState !== 'visible') return;
+  // No key yet: don't ask for data, ask harbor for a signed-in tab.
+  if (!key) return gate();
   try {
     const next = await api('/api/state');
     if (next.quit) {
       // harbor was quit from its menu: stop asking, or launchd would start it again.
-      $('offline').hidden = false;
-      $('offline-text').textContent = '__APP__ was quit. Type harbor.localhost:8470 in the address bar to start it again.';
-      setLive(false, 'Quit');
+      banner([QUIT_TEXT], 'Quit');
       return;
     }
     state = next;
@@ -586,15 +656,9 @@ async function poll() {
     $('offline').hidden = true;
     render();
   } catch (e) {
-    $('offline').hidden = false;
-    if (e.message === 'session') {
-      // A tab from an earlier run (or opened without the link): stop asking.
-      $('offline-text').textContent = "This tab isn't signed in to __APP__. Type harbor.localhost:8470 in the address bar, or open __APP__ from the menu bar.";
-      setLive(false, 'Old session');
-      return;
-    }
-    $('offline-text').textContent = "__APP__ isn't answering. Open it from the menu bar or Applications, then reload this page.";
-    setLive(false, 'Not answering');
+    // The cookie or the key no longer matches (a new one is made every 30 days).
+    if (e.message === 'session') return gate();
+    banner(["__APP__ isn't answering. Open it from the menu bar or Applications, then reload this page."], 'Not answering');
   }
   // Quicker while an update check runs, so its answer shows up straight away.
   const wait = state && state.update && state.update.checking ? 1000 : pollMs();
@@ -1123,7 +1187,7 @@ async function copy(p) {
 for (const b of document.querySelectorAll('[data-group]')) {
   b.addEventListener('click', () => { group = b.dataset.group; if (state) { state.settings.grouping = group; render(); } saveSettings({ grouping: group }); });
 }
-// Appearance: shared with the menu. The server already put it on <html> for the first paint.
+// Appearance: the page's own setting (the menu has its own). The server already put it on <html> for the first paint.
 function applyTheme(t) {
   t = ['light', 'dark'].includes(t) ? t : 'auto';
   if (document.documentElement.dataset.theme !== t) document.documentElement.dataset.theme = t;
@@ -1153,7 +1217,7 @@ $('login-item').addEventListener('change', async (e) => {
 window.addEventListener('resize', () => { if (state) renderHero(state.ports.filter((p) => !p.hidden)); });
 $('refresh').addEventListener('click', () => poll());
 
-poll();
+redeem().then(poll);
 </script>
 </body>
 </html>

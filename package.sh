@@ -10,9 +10,19 @@ cd "$(dirname "$0")"
 source ./app.conf
 [ "$(uname -m)" = arm64 ] || { echo "error: build the release on an Apple Silicon Mac" >&2; exit 1; }
 
+# A release must come from a clean tree, so the zip matches a known commit.
+[ -z "$(git status --porcelain)" ] || { echo "error: commit or stash your changes before packaging a release" >&2; exit 1; }
+
+SIGN_ID="${SIGN_ID:-IPS Local Apps}"
+# A release is signed with my certificate so permissions survive updates. Refuse
+# to ship an ad-hoc build by accident; ALLOW_ADHOC=1 is the deliberate override.
+if ! security find-identity -v -p codesigning | grep -q "$SIGN_ID"; then
+  [ "${ALLOW_ADHOC:-0}" = 1 ] || { echo "error: signing identity '$SIGN_ID' not found; set ALLOW_ADHOC=1 to sign ad-hoc" >&2; exit 1; }
+  echo "warning: '$SIGN_ID' not found; ALLOW_ADHOC=1, signing ad-hoc"
+fi
+
 ./build.sh
 APP="build/$APP_NAME.app"
-SIGN_ID="${SIGN_ID:-IPS Local Apps}"
 sign() { codesign --force --sign "$SIGN_ID" "$1" 2>/dev/null || codesign --force --sign - "$1"; }
 
 # Same toolchain as build.sh: Xcode's own, since the /usr/bin shims can stall.
@@ -36,3 +46,7 @@ sign "build/intel/$APP_NAME.app"
 ditto -c -k --keepParent "$APP" "dist/$APP_NAME-apple-silicon.zip"
 ditto -c -k --keepParent "build/intel/$APP_NAME.app" "dist/$APP_NAME-intel.zip"
 for z in dist/*.zip; do echo "Made: $z ($(du -h "$z" | cut -f1))"; done
+
+# Checksums so a download can be verified: shasum -a 256 -c SHA256SUMS
+(cd dist && shasum -a 256 *.zip > SHA256SUMS)
+echo "Wrote dist/SHA256SUMS"

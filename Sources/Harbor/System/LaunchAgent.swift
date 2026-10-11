@@ -120,6 +120,23 @@ enum LaunchAgent {
     static var gatedSockets: [Int32]?
     static var pendingClient: Int32?
 
+    /// Is this request a visit to the page? Only a top-level GET of / that didn't
+    /// come from another website. The page is public now, so this is what keeps a
+    /// quit harbor quit: a background poll, or an old tab's own /api/invite or
+    /// /api/login, is not a visit.
+    static func isPageVisit(_ head: String) -> Bool {
+        let lines = head.components(separatedBy: "\r\n")
+        let parts = lines.first?.split(separator: " ") ?? []
+        let path = parts.count > 1 ? String(parts[1]) : ""
+        func headerValue(_ name: String) -> String? {
+            lines.dropFirst().first { $0.lowercased().hasPrefix(name + ":") }
+                .map { $0.split(separator: ":", maxSplits: 1)[1].trimmingCharacters(in: .whitespaces).lowercased() }
+        }
+        let mode = headerValue("sec-fetch-mode")
+        return parts.first == "GET" && (path == "/" || path.hasPrefix("/?"))
+            && (mode == nil || mode == "navigate") && headerValue("sec-fetch-site") != "cross-site"
+    }
+
     /// Started by launchd after a Quit: look at the request that woke us before
     /// any app or menu bar item exists. A tab's background poll gets "quit" and
     /// harbor exits; a visit to the page clears the marker and harbor starts.
@@ -144,17 +161,15 @@ enum LaunchAgent {
             if head.contains("\r\n\r\n") { break }
             usleep(50_000)
         }
-        let lines = head.components(separatedBy: "\r\n")
-        let parts = lines.first?.split(separator: " ") ?? []
-        let path = parts.count > 1 ? String(parts[1]) : ""
-        let mode = lines.dropFirst().first { $0.lowercased().hasPrefix("sec-fetch-mode:") }
-            .map { $0.split(separator: ":", maxSplits: 1)[1].trimmingCharacters(in: .whitespaces).lowercased() }
-        let pageVisit = parts.first == "GET" && (path == "/" || path.hasPrefix("/?")) && (mode == nil || mode == "navigate")
-        if pageVisit {
+        if isPageVisit(head) {
             clearQuitMarker()
             pendingClient = client
             return
         }
+        // Everything else, the page's own /api/invite and /api/login included, is
+        // told harbor has quit and never starts it. Read what was sent first:
+        // closing with it unread would reset the connection under the reply.
+        _ = recv(client, &buf, buf.count, MSG_DONTWAIT)
         let body = #"{"quit":true}"#
         let reply = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(body.utf8.count)\r\n"
             + "Cache-Control: no-store\r\nConnection: close\r\n\r\n" + body

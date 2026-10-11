@@ -49,7 +49,7 @@ enum Door {
             lastActivity = Date()
             var one: Int32 = 1
             setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
-            var tv = timeval(tv_sec: 5, tv_usec: 0)  // a client that never sends gets dropped
+            var tv = timeval(tv_sec: 1, tv_usec: 0)  // short reads, so the 5 s deadline below is enforced
             setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
             DispatchQueue.global().async { answer(fd) }
         }
@@ -60,9 +60,16 @@ enum Door {
         defer { close(fd) }
         var head = Data()
         var chunk = [UInt8](repeating: 0, count: 4096)
+        // A deadline for the whole request, not per read: a slow client that
+        // dribbles one byte per read can't hold the thread past 5 s.
+        let deadline = Date().addingTimeInterval(5)
         while head.count < 16_384, head.range(of: Data("\r\n\r\n".utf8)) == nil {
+            if Date() >= deadline { return }
             let n = read(fd, &chunk, chunk.count)
-            if n <= 0 { return }
+            if n <= 0 {
+                if n < 0 && errno == EAGAIN && Date() < deadline { continue }  // read timed out, still time left
+                return
+            }
             head.append(contentsOf: chunk[0..<n])
         }
         write(fd, response(for: head))

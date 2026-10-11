@@ -75,12 +75,25 @@ enum Engine {
         pid <= 1 || pid == getpid() || LibProc.isSystemPath(path)
     }
 
+    /// Is `pid` still the process the page showed? `expected` is the identity
+    /// captured then; nil means we have nothing to compare, so allow it.
+    nonisolated static func identityMatches(_ pid: pid_t, _ expected: String?) -> Bool {
+        guard let expected else { return true }
+        return LibProc.identity(pid) == expected
+    }
+
+    private static func changed(_ name: String) -> ActionReport {
+        ActionReport(result: .gone, message: "\(name) changed since the page last saw it. Refresh and try again.")
+    }
+
     /// SIGTERM, then wait up to 3 s. Forked workers that share the listening
     /// socket get SIGTERM once the parent is gone, so the port is really freed.
-    static func stop(pid: pid_t, workers: [pid_t] = [], name: String, path: String?, label: String) async -> ActionReport {
+    static func stop(pid: pid_t, workers: [pid_t] = [], name: String, path: String?, label: String,
+                     expect: String? = nil, workerExpect: [pid_t: String] = [:]) async -> ActionReport {
         if isProtected(pid, path) {
             return ActionReport(result: .system, message: "\(name) is part of macOS, so \(AppInfo.name) leaves it alone.")
         }
+        guard identityMatches(pid, expect) else { return changed(label) }
         let snapshot = restartSnapshot(pid: pid, path: path)
         switch ProcessControl.send(SIGTERM, to: pid) {
         case .notPermitted:
@@ -98,7 +111,8 @@ enum Engine {
         defer { Monitor.shared.setBusy(pid, false) }
         var gone = await ProcessControl.waitForExit(pid, timeout: 3)
         if gone {
-            let left = workers.filter(ProcessControl.isAlive)
+            // Only workers that are still the same process the page saw.
+            let left = workers.filter { ProcessControl.isAlive($0) && identityMatches($0, workerExpect[$0]) }
             for w in left { _ = ProcessControl.send(SIGTERM, to: w) }
             for w in left where !(await ProcessControl.waitForExit(w, timeout: 3)) { gone = false }
         }
@@ -112,12 +126,14 @@ enum Engine {
     }
 
     /// SIGKILL (or Force Quit for a GUI app), for when stop didn't work.
-    static func force(pid: pid_t, workers: [pid_t] = [], name: String, path: String?, label: String) async -> ActionReport {
+    static func force(pid: pid_t, workers: [pid_t] = [], name: String, path: String?, label: String,
+                      expect: String? = nil, workerExpect: [pid_t: String] = [:]) async -> ActionReport {
         if isProtected(pid, path) {
             return ActionReport(result: .system, message: "\(name) is part of macOS, so \(AppInfo.name) leaves it alone.")
         }
+        guard identityMatches(pid, expect) else { return changed(label) }
         let snapshot = restartSnapshot(pid: pid, path: path)
-        for w in workers where ProcessControl.isAlive(w) { _ = ProcessControl.send(SIGKILL, to: w) }
+        for w in workers where ProcessControl.isAlive(w) && identityMatches(w, workerExpect[w]) { _ = ProcessControl.send(SIGKILL, to: w) }
         if let app = NSRunningApplication(processIdentifier: pid), app.bundleURL != nil {
             app.forceTerminate()
         } else if ProcessControl.send(SIGKILL, to: pid) == .notPermitted {
@@ -134,12 +150,13 @@ enum Engine {
     }
 
     /// Quit an app the normal way (it may ask to save). Non-GUI processes get stop().
-    static func quit(pid: pid_t, bundlePath: String?, name: String, path: String?) async -> ActionReport {
+    static func quit(pid: pid_t, bundlePath: String?, name: String, path: String?, expect: String? = nil) async -> ActionReport {
         if isProtected(pid, path) {
             return ActionReport(result: .system, message: "\(name) is part of macOS, so \(AppInfo.name) leaves it alone.")
         }
+        guard identityMatches(pid, expect) else { return changed(name) }
         guard let app = runningApp(pid: pid, bundlePath: bundlePath) else {
-            return await stop(pid: pid, name: name, path: path, label: name)
+            return await stop(pid: pid, name: name, path: path, label: name, expect: expect)
         }
         let appPid = app.processIdentifier
         let snapshot = restartSnapshot(pid: appPid, path: path)
@@ -158,20 +175,23 @@ enum Engine {
 
     /// Root-owned processes: macOS shows its own password dialog. harbor
     /// never sees the password.
-    static func admin(pid: pid_t, name: String, path: String?) async -> ActionReport {
+    static func admin(pid: pid_t, name: String, path: String?, expect: String? = nil) async -> ActionReport {
         if isProtected(pid, path) {
             return ActionReport(result: .system, message: "\(name) is part of macOS, so \(AppInfo.name) leaves it alone.")
         }
+        guard identityMatches(pid, expect) else { return changed(name) }
         let snapshot = restartSnapshot(pid: pid, path: path)
         NSApp.activate(ignoringOtherApps: true)
-        var error: NSDictionary?
+        // Re-check right before the privileged kill: a pid freed since the page
+        // was shown must not be killed as root.
+        guard identityMatches(pid, expect) else { return changed(name) }
+        // A fresh osascript child each time, so the admin authorization is never
+        // reused from an earlier kill (it is cached per-process for ~5 minutes).
         // `pid` is an integer, so nothing can be injected into the script.
-        NSAppleScript(source: "do shell script \"kill \(pid)\" with administrator privileges")?.executeAndReturnError(&error)
-        if let error {
-            if (error[NSAppleScript.errorNumber] as? Int) == -128 {
-                return ActionReport(result: .cancelled, message: "Cancelled.")
-            }
-            return ActionReport(result: .failed, message: (error[NSAppleScript.errorMessage] as? String) ?? "macOS refused.")
+        switch runOsascript("do shell script \"kill \(pid)\" with administrator privileges") {
+        case .cancelled: return ActionReport(result: .cancelled, message: "Cancelled.")
+        case .failed(let msg): return ActionReport(result: .failed, message: msg)
+        case .ok: break
         }
         let gone = await ProcessControl.waitForExit(pid, timeout: 3)
         Monitor.shared.requestFullScan()
@@ -183,6 +203,27 @@ enum Engine {
     }
 
     // MARK: Helpers
+
+    private enum OsaResult { case ok, cancelled, failed(String) }
+
+    /// Runs one AppleScript line as a fresh `/usr/bin/osascript` child. A new
+    /// process means a new authorization, so each admin kill prompts again.
+    private static func runOsascript(_ source: String) -> OsaResult {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        p.arguments = ["-e", source]
+        let err = Pipe()
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = err
+        do { try p.run() } catch { return .failed("Couldn't ask for the administrator password.") }
+        let data = err.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        if p.terminationStatus == 0 { return .ok }
+        let msg = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        // osascript prints "User canceled. (-128)" when the dialog is dismissed.
+        if msg.contains("-128") { return .cancelled }
+        return .failed(msg.isEmpty ? "macOS refused." : msg)
+    }
 
     static func runningApp(pid: pid_t, bundlePath: String?) -> NSRunningApplication? {
         if let app = NSRunningApplication(processIdentifier: pid), app.bundleURL != nil,

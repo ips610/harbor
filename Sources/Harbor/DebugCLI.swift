@@ -16,7 +16,7 @@ import SwiftUI
 ///   --menubar-icons DIR    write the menu bar glyph for each state as PNGs
 ///   --demo-menu            launch with the menu content in a plain panel
 ///       --appearance light|dark   force the look for snapshots (as if macOS were set so)
-///       --theme auto|light|dark      harbor's Appearance setting, not saved
+///       --theme auto|light|dark      harbor's Appearance, for the menu and the page, not saved
 ///       --show-system                list macOS services too, not saved
 ///   --snapshot PATH        with --demo-menu: save the panel as PNG
 ///       --snapshot-delay S, --snapshot-layer (render via CALayer instead)
@@ -193,8 +193,11 @@ enum DebugCLI {
         if let look = value(after: "--appearance") {
             NSApp.appearance = NSAppearance(named: look == "dark" ? .darkAqua : .aqua)
         }
-        // --theme sets harbor's own Appearance setting (not saved in debug runs).
-        if let t = value(after: "--theme"), let v = Monitor.Appearance(rawValue: t) { Monitor.shared.appearance = v }
+        // --theme sets harbor's own Appearance for both the menu and the page (not saved in debug runs).
+        if let t = value(after: "--theme"), let v = Monitor.Appearance(rawValue: t) {
+            Monitor.shared.appearance = v
+            Monitor.shared.pageAppearance = v
+        }
         if args.contains("--show-system") { Monitor.shared.showSystemPorts = true }  // not saved either
         if let raw = value(after: "--demo-lan"), let port = UInt16(raw) {
             // The menu's "open on another device" card for one port, in a panel.
@@ -285,6 +288,13 @@ enum DebugCLI {
     /// Any test flag: run without a menu bar icon and alongside an installed copy.
     static var isDebugRun: Bool {
         args.contains { ["--no-open", "--serve", "--demo-menu", "--demo-lan", "--snapshot"].contains($0) }
+    }
+
+    /// Settings store. Debug runs use a throwaway suite so they never read or
+    /// write the installed app's `local.harbor` defaults. One swap point: all
+    /// code reads and writes settings through here.
+    static var defaults: UserDefaults {
+        isDebugRun ? (UserDefaults(suiteName: "local.harbor.debug") ?? .standard) : .standard
     }
 
     /// Set HARBOR_DEBUG=1 to log mode changes to stdout.

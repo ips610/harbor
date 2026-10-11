@@ -24,7 +24,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.mainMenu = mainMenu()
         }
         let atLogin = launchedAtLogin()
-        Tunnels.shared.cleanUpOrphans()
+        // Debug runs share no state with the installed copy, so they must not
+        // reap its tunnel processes.
+        if !DebugCLI.isDebugRun { Tunnels.shared.cleanUpOrphans() }
         _ = LAN.firewallOn  // warm the cached firewall state in the background
         stopTunnelsOnSignals()
         Monitor.shared.start()

@@ -204,7 +204,7 @@ struct MenuContent: View {
             }
             Toggle("Open at login", isOn: Binding(get: { loginItem }, set: { setLoginItem($0) }))
             Toggle("Show in Dock", isOn: $monitor.showInDock)
-            // Same setting as on the page. The menu bar icon always follows macOS.
+            // For this dropdown only; the page has its own. The menu bar icon always follows macOS.
             Picker("Appearance", selection: $monitor.appearance) {
                 ForEach(Monitor.Appearance.allCases) { Text($0.title).tag($0) }
             }
@@ -259,7 +259,8 @@ struct MenuContent: View {
     private var footer: some View {
         HStack {
             Button("Open \(AppInfo.name)…") { WebServer.shared.openInBrowser() }
-                .buttonStyle(.borderless)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
                 .keyboardShortcut("o")
             Spacer()
             Text(scanLabel)
@@ -267,7 +268,8 @@ struct MenuContent: View {
                 .foregroundStyle(.tertiary)
             Spacer()
             Button("Quit") { NSApp.terminate(nil) }
-                .buttonStyle(.borderless)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
                 .keyboardShortcut("q")
         }
         .font(.system(size: 12))
@@ -595,6 +597,24 @@ private struct PortLine: View {
                     Engine.copyURL(row)
                     monitor.flash("Copied \(row.url.absoluteString)")
                 }
+            }
+            // The QR the row's button shows, here too: another device on this network scans it.
+            if let lan = row.lanURL(ip: monitor.lanIP), let cg = Tunnels.shared.qr(lan) {
+                DetailLine(label: "Network", value: lan) {
+                    Pill(title: "copy") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(lan, forType: .string)
+                        monitor.flash("Copied \(lan)")
+                    }
+                }
+                Image(decorative: cg, scale: 1)
+                    .interpolation(.none)
+                    .resizable()
+                    .frame(width: 132, height: 132)
+                    .padding(6)
+                    .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+                    .padding(.leading, 58)  // under the values: the 52 pt label column and its gap
+                    .help("Scan with your phone camera")
             }
             if let hint = row.hint {
                 Text(hint).font(.system(size: 11)).foregroundStyle(.secondary)

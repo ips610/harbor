@@ -39,8 +39,9 @@ For the full view, open harbor from Applications (or "Open harbor…" in the men
 framework, uptime and memory for each one. The tab shows harbor's wave icon and
 "harbor • 9 ports".
 
-Appearance is Auto, Light or Dark, in the gear menu or on the page (top right, and in Settings).
-The menu and the page share it. Auto follows macOS. The menu bar icon always follows the menu bar.
+Appearance is Auto, Light or Dark, and the menu and the page are set separately: the gear menu's
+Appearance is for the dropdown, and the switch on the page (top right, and in Settings) is for the
+page. Auto follows macOS. The menu bar icon always follows the menu bar.
 
 harbor shows in the Dock by default. Clicking the Dock icon opens the page. "Show in Dock" in the
 gear menu or the page's settings turns that off, and then it lives only in the menu bar.
@@ -65,7 +66,8 @@ You need macOS 14 or newer.
    - `harbor-apple-silicon.zip` for Apple Silicon
    - `harbor-intel.zip` for Intel
 3. **Unzip it.** Safari does this by itself. Otherwise double-click the zip in Downloads. You get
-   `harbor.app`.
+   `harbor.app`. If you want to check the download, the release also has a `SHA256SUMS` file; in
+   the Downloads folder run `shasum -a 256 -c SHA256SUMS` and it should say `OK`.
 4. **Move it to Applications.** Drag `harbor.app` onto Applications in the Finder sidebar.
    Typing `harbor.localhost` only works once it runs from Applications.
 5. **Open it the first time.** Double-click harbor in Applications. macOS says it can't check the
@@ -99,8 +101,9 @@ more.
 The first time harbor runs it adds a small LaunchAgent, `~/Library/LaunchAgents/local.harbor.plist`.
 launchd then holds `127.0.0.1:8470` and `[::1]:8470` for me, and nothing runs until something
 connects. So I can quit harbor, type `harbor.localhost:8470` in Safari, and it starts and shows the
-page. Typing the address (or using a bookmark) also signs the tab in; a link from another website
-can't.
+page. If that browser is already signed in, the typed address (or a bookmark) just works. If it
+isn't, harbor opens a signed-in tab itself and the tab I typed in says so. A link from another
+website never makes harbor open anything.
 
 If `local.localhost.door` isn't already there (headroom adds the same one), harbor also adds that
 agent. It answers on port 80 and sends `harbor.localhost` to `:8470` and `headroom.localhost` to
@@ -168,11 +171,20 @@ On my Mac (16 GB, lots of swap in use):
 
 ## Is it safe?
 
-The page only listens on this Mac and needs a cookie that harbor sets when it opens the page, so
-other websites can't talk to it. It can only stop or share processes it just showed you. Stop
-sends a normal quit first and offers force kill only if that didn't work. For processes owned by
-the system, like an antivirus, macOS asks for your password in its own dialog and harbor never
-sees it. macOS's own processes are never offered.
+The page only listens on this Mac. The page itself has nothing secret in it; everything it shows
+or does goes through calls that need a session. A tab is signed in by two things together: a
+cookie, and a key the page keeps in the browser's storage for `harbor.localhost:8470` exactly.
+Both come from a one-time link that harbor opens in your browser itself. Why two: a cookie alone
+isn't tied to a port on localhost, so another program listening on a different port of the same
+name could be sent it. The key never leaves harbor's own address, and the cookie is useless
+without it. The sign-in lasts 30 days. No website can talk to the page, because it has neither
+half (and POSTs need harbor's own header).
+
+harbor can only stop or share a process it just showed you, and it checks the process is still the
+same one right before it acts, so a reused PID is safe. Stop sends a normal quit first and offers
+force kill only if that didn't work. For a process owned by another user, like an antivirus, macOS
+asks for your password in its own dialog, every time, and harbor never sees it. macOS's own
+processes are never offered.
 
 ## Limits
 

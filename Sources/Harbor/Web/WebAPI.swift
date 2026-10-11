@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import OSLog
 import ServiceManagement
 
 /// JSON for the page, built from the same in-process collectors as the menu.
@@ -8,9 +9,21 @@ import ServiceManagement
 enum WebAPI {
     private static var shown = Set<pid_t>()
     private static var shownBefore = Set<pid_t>()
-    private static var mayForce = Set<pid_t>()
-    private static var mayAdmin = Set<pid_t>()
+    /// Follow-up kills are allowed for 60 s after the first attempt, keyed by pid.
+    private static var mayForce: [pid_t: Date] = [:]
+    private static var mayAdmin: [pid_t: Date] = [:]
+    /// Identity of each shown pid, to refuse a kill if the pid was reused.
+    private static var shownStart: [pid_t: String] = [:]
     private static var shownPorts = Set<UInt16>()
+
+    private static let log = Logger(subsystem: "local.harbor", category: "action")
+    private static func fresh(_ at: Date?) -> Bool { at.map { Date().timeIntervalSince($0) < 60 } ?? false }
+
+    /// One line per destructive action. Process name and port are readable;
+    /// the pid and anything else stay private.
+    private static func logAction(_ op: String, pid: Int, name: String, port: Int) {
+        log.notice("op=\(op, privacy: .public) pid=\(pid) name=\(name, privacy: .public) port=\(port, privacy: .public)")
+    }
 
     // MARK: State
 
@@ -112,6 +125,7 @@ enum WebAPI {
 
         shownBefore = shown
         shown = pids
+        shownStart = Dictionary(uniqueKeysWithValues: pids.map { ($0, LibProc.identity($0)) })
         shownPorts = portsShown
         let hint = Tunnels.hint
         let tool = Tunnels.tool
@@ -135,7 +149,7 @@ enum WebAPI {
                 "showSystem": m.showSystemPorts, "onlyServers": m.onlyServers, "grouping": m.grouping.rawValue,
                 "interval": m.refreshInterval,
                 "showInDock": m.showInDock,
-                "appearance": m.appearance.rawValue,
+                "appearance": m.pageAppearance.rawValue,  // the page's own; the menu has its own
             ],
             "memory": [
                 "physical": Double(mem.physical), "used": Double(mem.used), "app": Double(mem.app),
@@ -184,6 +198,7 @@ enum WebAPI {
         switch op {
         case "login-item":
             let on = (obj["enabled"] as? Bool) ?? false
+            logAction("login-item", pid: 0, name: AppInfo.name, port: 0)
             do {
                 if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
             } catch {
@@ -201,13 +216,14 @@ enum WebAPI {
             if let v = obj["showSystem"] as? Bool { m.showSystemPorts = v }
             if let v = obj["onlyServers"] as? Bool { m.onlyServers = v }
             if let v = obj["showInDock"] as? Bool { m.showInDock = v }
-            if let a = obj["appearance"] as? String, let v = Monitor.Appearance(rawValue: a) { m.appearance = v }
+            if let a = obj["appearance"] as? String, let v = Monitor.Appearance(rawValue: a) { m.pageAppearance = v }
             if let g = obj["grouping"] as? String, let v = Monitor.Grouping(rawValue: g) { m.grouping = v }
             return done(200, ["result": "ok"])
         case "unshare":
             guard let port = obj["port"] as? Int, let p = UInt16(exactly: port), Tunnels.shared.active[p] != nil else {
                 return done(400, ["error": "That port isn't shared."])
             }
+            logAction("unshare", pid: 0, name: "", port: port)
             Tunnels.shared.stop(p)
             return done(200, ["result": "ok", "message": "Stopped sharing :\(port)."])
         case "check-update":
@@ -249,6 +265,7 @@ enum WebAPI {
                 return done(400, ["error": "That port isn't on the page any more."])
             }
             if shareRow.isSystem || shareRow.isSelf { return done(400, ["error": "harbor doesn't share macOS services or itself."]) }
+            logAction("share", pid: Int(pid), name: shareRow.processName, port: port)
             if let problem = Tunnels.shared.start(shareRow) {
                 return done(200, ["result": "unavailable", "message": problem])
             }
@@ -263,26 +280,32 @@ enum WebAPI {
             return done(400, ["error": "Unknown action."])
         }
 
-        if op == "force" && !mayForce.contains(pid) { return done(409, ["error": "Stop it first."]) }
-        if op == "admin" && !mayAdmin.contains(pid) { return done(409, ["error": "Stop it first."]) }
+        if op == "force" && !fresh(mayForce[pid]) { return done(409, ["error": "Stop it first."]) }
+        if op == "admin" && !fresh(mayAdmin[pid]) { return done(409, ["error": "Stop it first."]) }
+
+        let expect = shownStart[pid]
+        let workerExpect = Dictionary(uniqueKeysWithValues: workers.compactMap { w in shownStart[w].map { (w, $0) } })
+        logAction(op, pid: Int(pid), name: name, port: Int(row?.port ?? 0))
 
         Task { @MainActor in
             let report: ActionReport
             switch op {
             case "stop":
-                report = await Engine.stop(pid: pid, workers: workers, name: name, path: path, label: label)
+                report = await Engine.stop(pid: pid, workers: workers, name: name, path: path, label: label,
+                                           expect: expect, workerExpect: workerExpect)
             case "quit":
                 report = await Engine.quit(pid: pid, bundlePath: group?.bundlePath ?? path.flatMap(LibProc.appBundle(forExecutable:)),
-                                           name: name, path: path)
+                                           name: name, path: path, expect: expect)
             case "force":
-                report = await Engine.force(pid: pid, workers: workers, name: name, path: path, label: label)
+                report = await Engine.force(pid: pid, workers: workers, name: name, path: path, label: label,
+                                            expect: expect, workerExpect: workerExpect)
             default:
-                report = await Engine.admin(pid: pid, name: name, path: path)
+                report = await Engine.admin(pid: pid, name: name, path: path, expect: expect)
             }
-            mayForce.remove(pid)
-            mayAdmin.remove(pid)
-            if report.result == .stillRunning { mayForce.insert(pid) }
-            if report.result == .notPermitted { mayAdmin.insert(pid) }
+            mayForce[pid] = nil
+            mayAdmin[pid] = nil
+            if report.result == .stillRunning { mayForce[pid] = Date() }
+            if report.result == .notPermitted { mayAdmin[pid] = Date() }
             done(200, ["result": report.result.rawValue, "message": report.message])
         }
     }

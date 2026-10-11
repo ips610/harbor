@@ -2,9 +2,7 @@
 // default page stays as it is. Same data, rows, pills and safety rules as the
 // default page; only the frame differs. All values render via textContent.
 enum PageLooks {
-    static let html = template
-        .replacingOccurrences(of: "__APP__", with: AppInfo.name)
-        .replacingOccurrences(of: "__app__", with: AppInfo.name.lowercased())
+    static let html = Page.fill(template)
 
     private static let template = #"""
 <!doctype html>
@@ -266,7 +264,7 @@ enum PageLooks {
 </div>
 <div class="toast" id="toast" role="status" hidden></div>
 
-<script>
+<script nonce="__NONCE__">
 'use strict';
 const $ = (id) => document.getElementById(id);
 const LOOK = ['a', 'b', 'c'].includes(new URLSearchParams(location.search).get('look')) ? new URLSearchParams(location.search).get('look') : 'a';
@@ -315,32 +313,28 @@ function plural(n, one, many) { return n === 1 ? `1 ${one}` : `${n} ${many}`; }
 function safeUrl(u) { return /^http:\/\/(localhost|127\.0\.0\.1|\[[0-9a-f:]+\]|[0-9.]+):\d+$/i.test(u) ? u : '#'; }
 function safePublic(u) { return /^https:\/\/[a-z0-9-]+\.(trycloudflare\.com|ngrok(-free)?\.(app|dev|io))\/?$/i.test(u) ? u : '#'; }
 
-// ---------- API (session cookie; POSTs add X-Harbor) ----------
-async function api(path, body) {
-  const opts = { credentials: 'same-origin', cache: 'no-store', headers: {} };
-  if (body) { opts.method = 'POST'; opts.headers['Content-Type'] = 'application/json'; opts.headers['X-Harbor'] = '1'; opts.body = JSON.stringify(body); }
-  const r = await fetch(path, opts);
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
-  return data;
-}
+__SESSION__
 async function act(op, pid, extra) {
   try { return await api('/api/action', { op, pid, ...(extra || {}) }); } catch (e) { toast(e.message); return null; }
 }
 let offline = null;
+// Signed out: say what's happening, unless another tab signed in meanwhile.
+async function gate() {
+  const lines = await signedOut();
+  if (!key) { offline = lines.join(' '); renderBanners(); }
+}
 async function poll() {
   clearTimeout(timer); timer = null;
   if (document.visibilityState !== 'visible') return;
+  if (!key) return gate();
   try {
     const next = await api('/api/state');
-    if (next.quit) { offline = '__APP__ was quit. Type harbor.localhost in the address bar to start it again.'; renderBanners(); return; }
+    if (next.quit) { offline = QUIT_TEXT; renderBanners(); return; }
     state = next; offline = null; render();
   } catch (e) {
-    offline = e.message === 'session'
-      ? "This tab isn't signed in to __APP__. Type harbor.localhost in the address bar, or open __APP__ from the menu bar."
-      : "__APP__ isn't answering. Open it from the menu bar or Applications, then reload this page.";
+    if (e.message === 'session') return gate();
+    offline = "__APP__ isn't answering. Open it from the menu bar or Applications, then reload this page.";
     renderBanners();
-    if (e.message === 'session') return;
   }
   if (document.visibilityState === 'visible' && pollMs() > 0) timer = setTimeout(poll, pollMs());
 }
@@ -377,7 +371,7 @@ function model(ports) {
 // ---------- render ----------
 function render() {
   if (state.settings.grouping) group = state.settings.grouping;
-  // Appearance is shared with the menu and the default page.
+  // Appearance is shared with the default page (the menu has its own).
   const theme = ['light', 'dark'].includes(state.settings.appearance) ? state.settings.appearance : 'auto';
   if (document.documentElement.dataset.theme !== theme) document.documentElement.dataset.theme = theme;
   const all = visible();
@@ -670,7 +664,7 @@ for (const id of ['rmin', 'rmax']) $(id).addEventListener('change', () => {
 });
 $('q').addEventListener('input', (e) => { query = e.target.value.trim(); if (state) render(); });
 $('refresh').addEventListener('click', () => poll());
-poll();
+redeem().then(poll);
 </script>
 </body>
 </html>

@@ -35,6 +35,12 @@ rm -rf "$TARGET"
 ditto "$SRC" "$TARGET"
 echo "Installed: $TARGET"
 
+# Killing the running copy above makes it set the "stay quit" marker, which would
+# leave the launchd agent dormant until someone visits the page. Clear it and
+# start harbor again now, so a reinstall just comes back (without opening a tab).
+rm -f "$HOME/Library/Application Support/$BUNDLE_ID/quit"
+launchctl kickstart "gui/$(id -u)/$BUNDLE_ID" 2>/dev/null || true
+
 # An older copy in ~/Applications would show up twice in Spotlight and Launchpad.
 if [ -z "${INSTALL_DIR:-}" ] && [ "$DEST" = "/Applications" ] && [ -d "$OLD" ]; then
   rm -rf "$OLD"

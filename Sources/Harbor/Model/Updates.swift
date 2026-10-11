@@ -12,10 +12,10 @@ final class Updates {
     nonisolated static let releases = URL(string: "https://github.com/ips610/harbor/releases")!
 
     let current = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
-    private(set) var latest = UserDefaults.standard.string(forKey: "update.latest")
+    private(set) var latest = DebugCLI.defaults.string(forKey: "update.latest")
     private(set) var checking = false
     private(set) var failed = false
-    private var checked = UserDefaults.standard.object(forKey: "update.checked") as? Date
+    private var checked = DebugCLI.defaults.object(forKey: "update.checked") as? Date
 
     var newer: Bool { latest.map { Self.isNewer($0, than: current) } ?? false }
     var url: URL { newer ? Self.releases.appending(path: "tag/v\(latest!)") : Self.releases }
@@ -32,8 +32,8 @@ final class Updates {
             checked = Date()  // a failure waits a day too, instead of asking on every menu open
             if let found {
                 latest = found
-                UserDefaults.standard.set(found, forKey: "update.latest")
-                UserDefaults.standard.set(checked, forKey: "update.checked")
+                DebugCLI.defaults.set(found, forKey: "update.latest")
+                DebugCLI.defaults.set(checked, forKey: "update.checked")
             } else {
                 failed = true
             }

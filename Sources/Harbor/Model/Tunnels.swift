@@ -140,19 +140,19 @@ final class Tunnels {
         let deadline = Date().addingTimeInterval(1.5)
         while all.contains(where: { $0.isRunning }) && Date() < deadline { usleep(50_000) }
         for p in all where p.isRunning { kill(p.processIdentifier, SIGKILL) }
-        UserDefaults.standard.removeObject(forKey: Self.pidsKey)
+        DebugCLI.defaults.removeObject(forKey: Self.pidsKey)
     }
 
     /// After a crash, tunnels from the last run would keep a port public.
     func cleanUpOrphans() {
-        let pids = UserDefaults.standard.array(forKey: Self.pidsKey) as? [Int] ?? []
+        let pids = DebugCLI.defaults.array(forKey: Self.pidsKey) as? [Int] ?? []
         for raw in pids {
             let pid = pid_t(raw)
             guard let path = LibProc.path(pid), path.hasSuffix("/cloudflared") || path.hasSuffix("/ngrok"),
                   let args = LibProc.arguments(pid), args.contains("--url") || args.contains("http") else { continue }
             kill(pid, SIGTERM)
         }
-        UserDefaults.standard.removeObject(forKey: Self.pidsKey)
+        DebugCLI.defaults.removeObject(forKey: Self.pidsKey)
     }
 
     private func ready(_ port: UInt16, _ url: String) {
@@ -171,14 +171,14 @@ final class Tunnels {
     }
 
     private func remember(_ pid: pid_t) {
-        var pids = UserDefaults.standard.array(forKey: Self.pidsKey) as? [Int] ?? []
+        var pids = DebugCLI.defaults.array(forKey: Self.pidsKey) as? [Int] ?? []
         pids.append(Int(pid))
-        UserDefaults.standard.set(pids, forKey: Self.pidsKey)
+        DebugCLI.defaults.set(pids, forKey: Self.pidsKey)
     }
 
     private func forget(_ pid: pid_t) {
-        let pids = (UserDefaults.standard.array(forKey: Self.pidsKey) as? [Int] ?? []).filter { $0 != Int(pid) }
-        UserDefaults.standard.set(pids, forKey: Self.pidsKey)
+        let pids = (DebugCLI.defaults.array(forKey: Self.pidsKey) as? [Int] ?? []).filter { $0 != Int(pid) }
+        DebugCLI.defaults.set(pids, forKey: Self.pidsKey)
     }
 
     /// When a shared server stops, its tunnel would only serve errors.

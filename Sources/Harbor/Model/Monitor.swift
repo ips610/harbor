@@ -33,23 +33,23 @@ final class Monitor {
     private(set) var busy: Set<pid_t> = []
     private(set) var notices: [Notice] = []
     // Port filters, shared by the menu and the page (Manfath's visible range).
-    var showSystemPorts = UserDefaults.standard.bool(forKey: "showSystemPorts") {
-        didSet { if !DebugCLI.isDebugRun { UserDefaults.standard.set(showSystemPorts, forKey: "showSystemPorts") }; refreshBadge() }
+    var showSystemPorts = DebugCLI.defaults.bool(forKey: "showSystemPorts") {
+        didSet { if !DebugCLI.isDebugRun { DebugCLI.defaults.set(showSystemPorts, forKey: "showSystemPorts") }; refreshBadge() }
     }
-    var onlyServers = UserDefaults.standard.bool(forKey: "onlyServers") {
-        didSet { if !DebugCLI.isDebugRun { UserDefaults.standard.set(onlyServers, forKey: "onlyServers") }; refreshBadge() }
+    var onlyServers = DebugCLI.defaults.bool(forKey: "onlyServers") {
+        didSet { if !DebugCLI.isDebugRun { DebugCLI.defaults.set(onlyServers, forKey: "onlyServers") }; refreshBadge() }
     }
-    var minPort = (UserDefaults.standard.object(forKey: "minPort") as? Int) ?? 1024 {
-        didSet { if !DebugCLI.isDebugRun { UserDefaults.standard.set(minPort, forKey: "minPort") }; refreshBadge() }
+    var minPort = (DebugCLI.defaults.object(forKey: "minPort") as? Int) ?? 1024 {
+        didSet { if !DebugCLI.isDebugRun { DebugCLI.defaults.set(minPort, forKey: "minPort") }; refreshBadge() }
     }
-    var maxPort = (UserDefaults.standard.object(forKey: "maxPort") as? Int) ?? 65535 {
-        didSet { if !DebugCLI.isDebugRun { UserDefaults.standard.set(maxPort, forKey: "maxPort") }; refreshBadge() }
+    var maxPort = (DebugCLI.defaults.object(forKey: "maxPort") as? Int) ?? 65535 {
+        didSet { if !DebugCLI.isDebugRun { DebugCLI.defaults.set(maxPort, forKey: "maxPort") }; refreshBadge() }
     }
 
     /// Show harbor in the Dock (on by default); the menu bar icon stays either way.
-    var showInDock = (UserDefaults.standard.object(forKey: "showInDock") as? Bool) ?? true {
+    var showInDock = (DebugCLI.defaults.object(forKey: "showInDock") as? Bool) ?? true {
         didSet {
-            if !DebugCLI.isDebugRun { UserDefaults.standard.set(showInDock, forKey: "showInDock") }
+            if !DebugCLI.isDebugRun { DebugCLI.defaults.set(showInDock, forKey: "showInDock") }
             applyDockPolicy()
         }
     }
@@ -66,8 +66,8 @@ final class Monitor {
     }
 
     /// How ports are grouped, in the menu and on the page alike.
-    var grouping = Grouping(rawValue: UserDefaults.standard.string(forKey: "grouping") ?? "") ?? .project {
-        didSet { if !DebugCLI.isDebugRun { UserDefaults.standard.set(grouping.rawValue, forKey: "grouping") } }
+    var grouping = Grouping(rawValue: DebugCLI.defaults.string(forKey: "grouping") ?? "") ?? .project {
+        didSet { if !DebugCLI.isDebugRun { DebugCLI.defaults.set(grouping.rawValue, forKey: "grouping") } }
     }
 
     enum Appearance: String, CaseIterable, Identifiable {
@@ -80,9 +80,20 @@ final class Monitor {
         }
     }
 
-    /// Light or dark for the menu dropdown and the page; the menu bar icon always follows macOS.
-    var appearance = Appearance(rawValue: UserDefaults.standard.string(forKey: "appearance") ?? "") ?? .auto {
-        didSet { if !DebugCLI.isDebugRun { UserDefaults.standard.set(appearance.rawValue, forKey: "appearance") } }
+    /// Light or dark for the menu dropdown and its popovers; the menu bar icon always follows macOS.
+    var appearance = Appearance(rawValue: DebugCLI.defaults.string(forKey: "appearance") ?? "") ?? .auto {
+        didSet { if !DebugCLI.isDebugRun { DebugCLI.defaults.set(appearance.rawValue, forKey: "appearance") } }
+    }
+
+    /// Light or dark for the page, set on the page and kept apart from the menu's.
+    var pageAppearance: Appearance = {
+        if let saved = Appearance(rawValue: DebugCLI.defaults.string(forKey: "pageAppearance") ?? "") { return saved }
+        // The first run with two settings: start from the menu's, so nothing visibly changes.
+        let start = Appearance(rawValue: DebugCLI.defaults.string(forKey: "appearance") ?? "") ?? .auto
+        if !DebugCLI.isDebugRun { DebugCLI.defaults.set(start.rawValue, forKey: "pageAppearance") }
+        return start
+    }() {
+        didSet { if !DebugCLI.isDebugRun { DebugCLI.defaults.set(pageAppearance.rawValue, forKey: "pageAppearance") } }
     }
 
     /// Manfath's "Refresh": seconds between scans while the menu is open; 0 = manual.
@@ -95,12 +106,12 @@ final class Monitor {
 
     var refreshInterval: Double = {
         // Older choices (1, 3, 10 s) become the new default of 15 s.
-        guard let saved = UserDefaults.standard.object(forKey: "refreshInterval") as? Double,
+        guard let saved = DebugCLI.defaults.object(forKey: "refreshInterval") as? Double,
               ![1, 3, 10].contains(saved) else { return 15 }
         return Monitor.clampInterval(saved)
     }() {
         didSet {
-            if !DebugCLI.isDebugRun { UserDefaults.standard.set(refreshInterval, forKey: "refreshInterval") }
+            if !DebugCLI.isDebugRun { DebugCLI.defaults.set(refreshInterval, forKey: "refreshInterval") }
             if isFastMode { enterFastMode() }
             updateBadgeTimer()
         }
@@ -108,9 +119,9 @@ final class Monitor {
     /// Manfath's "Menu bar badge": "hidden" (default), "count" or "dot". With a
     /// badge, ports are scanned at the refresh interval even when nothing is open
     /// (manual: on the 60 s tick), so the count stays live.
-    var badgeMode = UserDefaults.standard.string(forKey: "badgeMode") ?? "hidden" {
+    var badgeMode = DebugCLI.defaults.string(forKey: "badgeMode") ?? "hidden" {
         didSet {
-            UserDefaults.standard.set(badgeMode, forKey: "badgeMode")
+            DebugCLI.defaults.set(badgeMode, forKey: "badgeMode")
             if badgeMode != "hidden" && !isFastMode { requestFullScan() }
             updateBadgeTimer()
             refreshBadge()
@@ -143,8 +154,8 @@ final class Monitor {
         badgeTimer = t
     }
     /// Manfath's "Process blocklist": rows whose process name matches are hidden.
-    var blocklist = UserDefaults.standard.stringArray(forKey: "blocklist") ?? [] {
-        didSet { UserDefaults.standard.set(blocklist, forKey: "blocklist"); refreshBadge() }
+    var blocklist = DebugCLI.defaults.stringArray(forKey: "blocklist") ?? [] {
+        didSet { DebugCLI.defaults.set(blocklist, forKey: "blocklist"); refreshBadge() }
     }
 
     func hideProcess(_ name: String) {

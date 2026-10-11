@@ -8,6 +8,11 @@ let package = Package(
         .executableTarget(
             name: "Harbor",
             path: "Sources/Harbor"
-        )
+        ),
+        .testTarget(
+            name: "HarborTests",
+            dependencies: ["Harbor"],
+            path: "Tests/HarborTests"
+        ),
     ]
 )

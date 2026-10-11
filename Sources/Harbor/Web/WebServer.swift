@@ -4,14 +4,25 @@ import Security
 
 /// Serves the harbor page from inside the app at http://harbor.localhost:8470
 /// (falling back to 8471–8489, then a random port), on 127.0.0.1 and ::1 only.
-/// The browser gets in through a short-lived login link that sets an HttpOnly,
-/// SameSite=Strict session cookie; /api calls need that cookie, and POSTs also
-/// need an `X-Harbor: 1` header. An idle listener costs nothing.
+/// The page itself is public and holds no secrets. A tab is signed in by two
+/// things together: an HttpOnly, SameSite=Strict cookie and an origin key the
+/// page keeps in localStorage, both handed out for a one-time code from a link
+/// harbor opens itself. A cookie alone isn't tied to a port on localhost;
+/// localStorage is, so another program on a different port of this name can be
+/// sent the cookie but never the key. /api calls need the cookie and
+/// `X-Harbor-Key`, and POSTs also need `X-Harbor: 1`. An idle listener costs nothing.
 final class WebServer: @unchecked Sendable {
     static let shared = WebServer()
 
-    /// Per-launch session secret, carried by the cookie.
+    /// The two halves of a session: `session` rides in the cookie, `originKey`
+    /// in the `X-Harbor-Key` header. Kept in one 0600 file so a signed-in tab
+    /// survives a restart (both regenerated when missing or over 30 days old).
     let session: String
+    let originKey: String
+    /// Per-launch nonce for the page's one inline <script> (CSP).
+    let scriptNonce: String
+    /// Opens a signed-in tab; a stub in tests.
+    private let opener: () -> Void
     private let queue = DispatchQueue(label: "local.harbor.http")
     // Touched only on `queue`.
     private var acceptSources: [DispatchSourceRead] = []
@@ -19,6 +30,8 @@ final class WebServer: @unchecked Sendable {
     private var starting = false
     private var waiting: [(URL?) -> Void] = []
     private var loginCodes: [String: Date] = [:]
+    /// Last time a signed-out page had harbor open a signed-in tab (rate limit).
+    private var lastInvite: Date?
     /// Every open connection, oldest first. Browsers open spare sockets that
     /// never send a request; they must not pile up.
     private var open: [(id: ObjectIdentifier, conn: Client)] = []
@@ -27,14 +40,69 @@ final class WebServer: @unchecked Sendable {
     private static let maxOpen = 16
     private static let ports: [UInt16] = Array(8470...8489)
     private static let codeLifetime: Double = 120
+    private static let sessionMaxAge: Double = 30 * 86_400
+    /// Hard cap on a request: the 16 KB head plus the 64 KB body we already allow.
+    private static let maxRequest = 16_384 + 65_536
 
-    static let csp = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; frame-ancestors 'none'"
+    static func csp(nonce: String) -> String {
+        "default-src 'none'; script-src 'nonce-\(nonce)'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; frame-ancestors 'none'"
+    }
 
     static let host = AppInfo.slug + ".localhost"
     static let cookie = AppInfo.slug
 
     private init() {
-        session = Self.random(24)
+        // Debug runs get throwaway in-memory secrets and never touch the file.
+        let s = DebugCLI.isDebugRun ? (Self.random(24), Self.random(24))
+            : Self.readSession(Self.sessionFileURL) ?? Self.makeSession(at: Self.sessionFileURL)
+        (session, originKey) = s
+        scriptNonce = Self.random(16)
+        opener = { DispatchQueue.main.async { MainActor.assumeIsolated { WebServer.shared.openInBrowser() } } }
+    }
+
+    /// For tests: a server that never listens, with known secrets and a stub opener.
+    init(session: String, originKey: String, port: UInt16, opener: @escaping () -> Void) {
+        self.session = session
+        self.originKey = originKey
+        self.opener = opener
+        scriptNonce = Self.random(16)
+        boundPort = port
+    }
+
+    // MARK: Session file
+
+    /// Where the per-user secrets live (0600), beside the quit marker.
+    static var sessionFileURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/\(LaunchAgent.label)/session")
+    }
+
+    /// The stored token and origin key if the file is readable and under 30 days old.
+    static func readSession(_ url: URL) -> (token: String, key: String)? {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        let parts = text.split(separator: "\n").map(String.init)
+        guard parts.count == 3, !parts[0].isEmpty, !parts[1].isEmpty,
+              let made = Double(parts[2]), Date().timeIntervalSince1970 - made < sessionMaxAge else { return nil }
+        return (parts[0], parts[1])
+    }
+
+    /// Writes a fresh token and origin key (0600 from creation) and returns them.
+    @discardableResult
+    static func makeSession(at url: URL) -> (token: String, key: String) {
+        let s = (token: random(24), key: random(24))
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        // open(2) with O_EXCL sets the mode as the file appears, so it is never
+        // readable by anyone else. If it can't be written, the secrets still
+        // work for this run; the next launch makes new ones.
+        try? FileManager.default.removeItem(at: url)
+        let fd = Darwin.open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+        if fd >= 0 {
+            let bytes = Array("\(s.token)\n\(s.key)\n\(Date().timeIntervalSince1970)".utf8)
+            _ = Darwin.write(fd, bytes, bytes.count)
+            close(fd)
+        }
+        return s
     }
 
     private static func random(_ n: Int) -> String {
@@ -94,7 +162,8 @@ final class WebServer: @unchecked Sendable {
         }
     }
 
-    private func loginURL() -> URL? {
+    /// A link carrying a fresh one-time code; the page trades it at /api/login.
+    func loginURL() -> URL? {
         guard boundPort != 0 else { return nil }
         let now = Date()
         loginCodes = loginCodes.filter { now.timeIntervalSince($0.value) < Self.codeLifetime }
@@ -220,7 +289,16 @@ final class WebServer: @unchecked Sendable {
         var chunk = [UInt8](repeating: 0, count: 65536)
         while true {
             let n = read(c.fd, &chunk, chunk.count)
-            if n > 0 { c.buffer.append(contentsOf: chunk[0..<n]); continue }
+            if n > 0 {
+                c.buffer.append(contentsOf: chunk[0..<n])
+                // Stop reading a request that's already past the head + body cap.
+                if c.buffer.count > Self.maxRequest {
+                    c.reader?.cancel(); c.reader = nil
+                    answering.insert(ObjectIdentifier(c))
+                    return send(c, .json(413, ["error": "too large"]))
+                }
+                continue
+            }
             if n == 0 || errno != EAGAIN { return finish(c) }  // EOF or error
             break
         }
@@ -252,97 +330,147 @@ final class WebServer: @unchecked Sendable {
     /// For tests: how many sockets are open right now.
     var openCount: Int { queue.sync { open.count } }
 
-    private func handle(_ req: HTTPRequest, _ c: Client) {
+    /// What a request gets. Deciding is separate from sending, so the tests can
+    /// drive the real handler logic without a socket.
+    enum Routed {
+        case reply(HTTPResponse)
+        /// The page shell: public, no secrets. `crossNav` marks a visit that came
+        /// from another website, which must not make harbor open anything.
+        case page(look: Bool, crossNav: Bool)
+        // Signed-in calls, answered by WebAPI on the main actor.
+        case state, qr(port: Int, lan: Bool), action(Data)
+    }
+
+    /// Runs on `queue` (it uses the login codes and the invite clock).
+    func route(_ req: HTTPRequest, now: Date = Date()) -> Routed {
         // DNS rebinding: a page on another site pointing its name at loopback
         // still sends its own Host, so only our names are accepted.
-        let hosts = ["\(Self.host):\(boundPort)", "127.0.0.1:\(boundPort)", "[::1]:\(boundPort)"]
-        guard let host = req.headers["host"], hosts.contains(host) else {
-            return send(c, .json(403, ["error": "forbidden"]))
+        guard Self.hostAllowed(req.headers["host"], port: boundPort) else {
+            return .reply(.json(403, ["error": "forbidden"]))
         }
         let parts = req.path.split(separator: "?", maxSplits: 1)
         let path = String(parts.first ?? "")
         let query = parts.count > 1 ? String(parts[1]) : ""
         if req.method == "GET" && path == "/" {
-            guard let code = Self.param("k", in: query) else {
-                // A top-level visit that's typed, bookmarked, or came through the
-                // port-80 door's redirect signs this tab in. Cross-site or no Fetch
-                // Metadata gets the page without a session, so no website can mint one.
-                var headers: [(String, String)] = []
-                let signedIn = sessionMatches(Self.cookieValue(Self.cookie, in: req.headers["cookie"]))
-                let navigation = req.headers["sec-fetch-mode"] == "navigate"
-                let site = req.headers["sec-fetch-site"] ?? ""
-                if !signedIn && navigation && ["none", "same-origin", "same-site"].contains(site) {
-                    headers.append(("Set-Cookie", "\(Self.cookie)=\(session); Path=/; HttpOnly; SameSite=Strict"))
-                }
-                // ?look=a|b|c previews the candidate designs; the default page stays.
-                let base = ["a", "b", "c"].contains(Self.param("look", in: query) ?? "") ? PageLooks.html : Page.html
-                // The Appearance setting lives on the main actor; the page is sent from there.
-                DispatchQueue.main.async {
-                    let page = Page.themed(base, MainActor.assumeIsolated { Monitor.shared.appearance.rawValue })
-                    self.send(c, HTTPResponse(status: 200, contentType: "text/html; charset=utf-8",
-                                              body: Data(page.utf8), headers: headers))
-                }
-                return
-            }
-            // Login link: trade the code for the session cookie, then a clean URL.
-            guard let issued = loginCodes[code], Date().timeIntervalSince(issued) < Self.codeLifetime else {
-                return send(c, HTTPResponse(status: 403, contentType: "text/plain; charset=utf-8",
-                                            body: Data("This link has expired. Open \(AppInfo.name) again from the menu bar.".utf8)))
-            }
-            let cookie = "\(Self.cookie)=\(session); Path=/; HttpOnly; SameSite=Strict"
-            return send(c, HTTPResponse(status: 303, contentType: "text/plain", body: Data(),
-                                        headers: [("Location", "/"), ("Set-Cookie", cookie)]))
+            // Always the shell; its script signs in with /api/login or asks for
+            // a signed-in tab with /api/invite. ?look=a|b|c previews the
+            // candidate designs; the default page stays.
+            return .page(look: ["a", "b", "c"].contains(Self.param("look", in: query) ?? ""),
+                         crossNav: req.headers["sec-fetch-site"] == "cross-site")
         }
         // Tab icons. Unlike everything else they're cacheable and allowed for loads the
         // browser makes itself: Safari keeps tab icons in its own store, and a no-store
-        // or same-origin-only icon left it showing a letter instead.
+        // or same-origin-only icon left it showing a letter instead. A cross-site load
+        // is refused, so the icon can't be used as a cross-site probe.
+        let iconPaths = ["/favicon.svg", "/favicon-32.png", "/favicon.ico", "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png"]
+        if req.method == "GET" && iconPaths.contains(path) && req.headers["sec-fetch-site"] == "cross-site" {
+            return .reply(.json(404, ["error": "not found"]))
+        }
         let iconHeaders = [("Cache-Control", "public, max-age=604800"), ("Cross-Origin-Resource-Policy", "cross-origin")]
         if req.method == "GET" && path == "/favicon.svg" {
-            return send(c, HTTPResponse(status: 200, contentType: "image/svg+xml", body: Data(Page.icon.utf8), headers: iconHeaders))
+            return .reply(HTTPResponse(status: 200, contentType: "image/svg+xml", body: Data(Page.icon.utf8), headers: iconHeaders))
         }
         if req.method == "GET" && ["/favicon-32.png", "/favicon.ico"].contains(path) {
-            return send(c, HTTPResponse(status: 200, contentType: "image/png", body: WaveMark.favicon32, headers: iconHeaders))
+            return .reply(HTTPResponse(status: 200, contentType: "image/png", body: WaveMark.favicon32, headers: iconHeaders))
         }
         if req.method == "GET" && ["/apple-touch-icon.png", "/apple-touch-icon-precomposed.png"].contains(path) {
-            return send(c, HTTPResponse(status: 200, contentType: "image/png", body: WaveMark.appleTouch, headers: iconHeaders))
+            return .reply(HTTPResponse(status: 200, contentType: "image/png", body: WaveMark.appleTouch, headers: iconHeaders))
         }
-        guard path.hasPrefix("/api/") else { return send(c, .json(404, ["error": "not found"])) }
-        guard sessionMatches(Self.cookieValue(Self.cookie, in: req.headers["cookie"])) else {
-            // Also what a tab from an earlier run gets: cookies ignore ports.
-            return send(c, .json(403, ["error": "session"]))
+        guard path.hasPrefix("/api/") else { return .reply(.json(404, ["error": "not found"])) }
+        if let origin = req.headers["origin"], !Self.hosts(port: boundPort).contains(where: { origin == "http://" + $0 }) {
+            return .reply(.json(403, ["error": "forbidden"]))
         }
-        if let origin = req.headers["origin"], !hosts.contains(where: { origin == "http://" + $0 }) {
-            return send(c, .json(403, ["error": "forbidden"]))
+        if req.method == "POST" {
+            // A header no cross-site form can send, and JSON only.
+            guard req.headers["x-harbor"] == "1" else { return .reply(.json(403, ["error": "forbidden"])) }
+            guard req.headers["content-type"]?.hasPrefix("application/json") == true else {
+                return .reply(.json(415, ["error": "send JSON"]))
+            }
         }
-        if req.method == "POST" && req.headers["x-harbor"] != "1" {
-            return send(c, .json(403, ["error": "forbidden"]))
+        // Signing in: there is no session yet, so these two rely on the guards
+        // above and refuse anything a browser marks as coming from another site.
+        if req.method == "POST" && ["/api/login", "/api/invite"].contains(path) {
+            guard req.headers["sec-fetch-site"] != "cross-site" else { return .reply(.json(403, ["error": "forbidden"])) }
+            return .reply(path == "/api/login" ? login(req.body, now) : invite(now))
         }
+        // Everything else needs both halves. Compare both before deciding, so
+        // the answer doesn't show which half was wrong.
+        let cookieOK = Self.constantEquals(Self.cookieValue(Self.cookie, in: req.headers["cookie"]), session)
+        let keyOK = Self.constantEquals(req.headers["x-harbor-key"], originKey)
+        guard cookieOK, keyOK else { return .reply(.json(403, ["error": "session"])) }
         switch (req.method, path) {
         case ("GET", "/api/state"):
+            return .state
+        case ("GET", "/api/qr"):
+            return .qr(port: Int(Self.param("port", in: query) ?? "") ?? 0, lan: Self.param("kind", in: query) == "lan")
+        case ("POST", "/api/action"):
+            return .action(req.body)
+        default:
+            return .reply(.json(404, ["error": "not found"]))
+        }
+    }
+
+    /// Trades a one-time code (used once, 120 s) for the cookie and the origin key.
+    private func login(_ body: Data, _ now: Date) -> HTTPResponse {
+        guard let code = ((try? JSONSerialization.jsonObject(with: body)) as? [String: Any])?["code"] as? String,
+              let issued = loginCodes.removeValue(forKey: code), now.timeIntervalSince(issued) < Self.codeLifetime else {
+            return .json(403, ["error": "code"])
+        }
+        var reply = HTTPResponse.json(200, ["key": originKey])
+        reply.headers = [("Set-Cookie", "\(Self.cookie)=\(session); Path=/; Max-Age=\(Int(Self.sessionMaxAge)); HttpOnly; SameSite=Strict")]
+        return reply
+    }
+
+    /// A signed-out page asks for a signed-in tab. harbor opens it itself through
+    /// LaunchServices, so the link only reaches this user's own browser; at most
+    /// once every 15 s, so a reload can't spawn tabs.
+    private func invite(_ now: Date) -> HTTPResponse {
+        if let last = lastInvite, now.timeIntervalSince(last) < 15 { return .json(200, ["result": "wait"]) }
+        lastInvite = now
+        opener()
+        return .json(200, ["result": "opening"])
+    }
+
+    private func handle(_ req: HTTPRequest, _ c: Client) {
+        switch route(req) {
+        case .reply(let r):
+            send(c, r)
+        case .page(let look, let crossNav):
+            let base = look ? PageLooks.html : Page.html
+            let nonce = scriptNonce
+            // The page's Appearance setting lives on the main actor; the page is sent from there.
+            DispatchQueue.main.async {
+                let page = Page.themed(base, MainActor.assumeIsolated { Monitor.shared.pageAppearance.rawValue },
+                                       nonce: nonce, crossNav: crossNav)
+                self.send(c, HTTPResponse(status: 200, contentType: "text/html; charset=utf-8", body: Data(page.utf8)))
+            }
+        case .state:
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     WebAPI.state { data in self.send(c, HTTPResponse(status: 200, contentType: "application/json", body: data)) }
                 }
             }
-        case ("GET", "/api/qr"):
-            let port = Int(Self.param("port", in: query) ?? "") ?? 0
-            let lan = Self.param("kind", in: query) == "lan"
+        case .qr(let port, let lan):
             DispatchQueue.main.async {
                 MainActor.assumeIsolated { WebAPI.qr(port: port, lan: lan) { status, json in self.send(c, .json(status, json)) } }
             }
-        case ("POST", "/api/action"):
-            guard req.headers["content-type"]?.hasPrefix("application/json") == true else {
-                return send(c, .json(415, ["error": "send JSON"]))
-            }
-            let body = req.body
+        case .action(let body):
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     WebAPI.action(body) { status, json in self.send(c, .json(status, json)) }
                 }
             }
-        default:
-            send(c, .json(404, ["error": "not found"]))
         }
+    }
+
+    /// The Host header values we answer to (DNS-rebinding guard).
+    static func hosts(port: UInt16) -> [String] {
+        ["\(host):\(port)", "127.0.0.1:\(port)", "[::1]:\(port)"]
+    }
+
+    static func hostAllowed(_ host: String?, port: UInt16) -> Bool {
+        guard let host else { return false }
+        return hosts(port: port).contains(host)
     }
 
     private static func param(_ name: String, in query: String) -> String? {
@@ -362,9 +490,10 @@ final class WebServer: @unchecked Sendable {
         return nil
     }
 
-    private func sessionMatches(_ given: String?) -> Bool {
+    /// Constant-time, so a wrong secret can't be guessed a character at a time.
+    static func constantEquals(_ given: String?, _ secret: String) -> Bool {
         guard let given else { return false }
-        let a = Array(given.utf8), b = Array(session.utf8)
+        let a = Array(given.utf8), b = Array(secret.utf8)
         guard a.count == b.count else { return false }
         var diff: UInt8 = 0
         for i in 0..<a.count { diff |= a[i] ^ b[i] }
@@ -379,7 +508,7 @@ final class WebServer: @unchecked Sendable {
         let custom = Set(r.headers.map { $0.0.lowercased() })
         if !custom.contains("cache-control") { head += "Cache-Control: no-store\r\n" }
         head += "Connection: close\r\n"
-        head += "Content-Security-Policy: \(Self.csp)\r\n"
+        head += "Content-Security-Policy: \(Self.csp(nonce: scriptNonce))\r\n"
         head += "X-Content-Type-Options: nosniff\r\n"
         head += "X-Frame-Options: DENY\r\n"
         head += "Referrer-Policy: no-referrer\r\n"
@@ -425,6 +554,8 @@ struct HTTPRequest {
     static func parse(_ data: Data) -> Parse {
         let sep = Data("\r\n\r\n".utf8)
         guard let end = data.range(of: sep) else { return data.count > 16_384 ? .invalid : .incomplete }
+        // Cap the head whether or not it arrived in one piece.
+        guard end.lowerBound - data.startIndex <= 16_384 else { return .invalid }
         guard let head = String(data: data[data.startIndex..<end.lowerBound], encoding: .utf8) else { return .invalid }
         var lines = head.components(separatedBy: "\r\n")
         let parts = lines.removeFirst().split(separator: " ")

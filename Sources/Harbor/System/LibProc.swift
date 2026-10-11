@@ -58,6 +58,14 @@ enum LibProc {
         return Date(timeIntervalSince1970: Double(b.pbi_start_tvsec) + Double(b.pbi_start_tvusec) / 1_000_000)
     }
 
+    /// A cheap identity for pid-reuse checks: the start time when we can read it
+    /// (own processes), else the executable path. "" when neither is known, so
+    /// an unknown-then-unknown pid matches and isn't refused by mistake.
+    static func identity(_ pid: pid_t) -> String {
+        if let b = bsdInfo(pid) { return "t\(b.pbi_start_tvsec).\(b.pbi_start_tvusec)" }
+        return path(pid).map { "p" + $0 } ?? ""
+    }
+
     /// Executable path. Readable for any process.
     static func path(_ pid: pid_t) -> String? {
         var buf = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
