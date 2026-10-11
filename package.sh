@@ -16,7 +16,8 @@ source ./app.conf
 SIGN_ID="${SIGN_ID:-IPS Local Apps}"
 # A release is signed with my certificate so permissions survive updates. Refuse
 # to ship an ad-hoc build by accident; ALLOW_ADHOC=1 is the deliberate override.
-if ! security find-identity -v -p codesigning | grep -q "$SIGN_ID"; then
+# No -v: a self-signed certificate is listed, but not among the "valid" (trusted) ones.
+if ! security find-identity -p codesigning | grep -q "\"$SIGN_ID\""; then
   [ "${ALLOW_ADHOC:-0}" = 1 ] || { echo "error: signing identity '$SIGN_ID' not found; set ALLOW_ADHOC=1 to sign ad-hoc" >&2; exit 1; }
   echo "warning: '$SIGN_ID' not found; ALLOW_ADHOC=1, signing ad-hoc"
 fi
