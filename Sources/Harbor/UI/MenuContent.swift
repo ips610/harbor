@@ -47,6 +47,12 @@ struct MenuContent: View {
     @State private var loginItem = SMAppService.mainApp.status == .enabled
 
     private var grouping: Monitor.Grouping { monitor.grouping }
+
+    /// Solid near-black in dark mode, like the page's panels: the see-through menu material let
+    /// the wallpaper tint the list. Light mode keeps the normal window colour.
+    private static let backdrop = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(hex: "#121215") : .windowBackgroundColor
+    })
     private var updates: Updates { .shared }
 
     var body: some View {
@@ -106,6 +112,7 @@ struct MenuContent: View {
             footer
         }
         .frame(width: 400)
+        .background(Self.backdrop)
         .onAppear {
             DispatchQueue.main.async { searchFocused = true }
             updates.check()  // at most once a day
