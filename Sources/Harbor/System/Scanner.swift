@@ -63,8 +63,9 @@ struct PortRow: Identifiable, Hashable {
     }
 
     /// Reachable from other devices: listening on all interfaces or a LAN address.
+    /// Not offered for harbor itself or macOS services (AirPlay and the like).
     var lanReachable: Bool {
-        !isSelf && (scope == .all || (scope == .specific && addresses.contains { !$0.contains(":") }))
+        !isSelf && !isSystem && (scope == .all || (scope == .specific && addresses.contains { !$0.contains(":") }))
     }
 
     /// The address a phone on the same network would open.

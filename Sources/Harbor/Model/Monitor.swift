@@ -34,16 +34,16 @@ final class Monitor {
     private(set) var notices: [Notice] = []
     // Port filters, shared by the menu and the page (Manfath's visible range).
     var showSystemPorts = UserDefaults.standard.bool(forKey: "showSystemPorts") {
-        didSet { UserDefaults.standard.set(showSystemPorts, forKey: "showSystemPorts"); refreshBadge() }
+        didSet { if !DebugCLI.isDebugRun { UserDefaults.standard.set(showSystemPorts, forKey: "showSystemPorts") }; refreshBadge() }
     }
     var onlyServers = UserDefaults.standard.bool(forKey: "onlyServers") {
-        didSet { UserDefaults.standard.set(onlyServers, forKey: "onlyServers"); refreshBadge() }
+        didSet { if !DebugCLI.isDebugRun { UserDefaults.standard.set(onlyServers, forKey: "onlyServers") }; refreshBadge() }
     }
     var minPort = (UserDefaults.standard.object(forKey: "minPort") as? Int) ?? 1024 {
-        didSet { UserDefaults.standard.set(minPort, forKey: "minPort"); refreshBadge() }
+        didSet { if !DebugCLI.isDebugRun { UserDefaults.standard.set(minPort, forKey: "minPort") }; refreshBadge() }
     }
     var maxPort = (UserDefaults.standard.object(forKey: "maxPort") as? Int) ?? 65535 {
-        didSet { UserDefaults.standard.set(maxPort, forKey: "maxPort"); refreshBadge() }
+        didSet { if !DebugCLI.isDebugRun { UserDefaults.standard.set(maxPort, forKey: "maxPort") }; refreshBadge() }
     }
 
     /// Show harbor in the Dock (on by default); the menu bar icon stays either way.
@@ -68,6 +68,21 @@ final class Monitor {
     /// How ports are grouped, in the menu and on the page alike.
     var grouping = Grouping(rawValue: UserDefaults.standard.string(forKey: "grouping") ?? "") ?? .project {
         didSet { if !DebugCLI.isDebugRun { UserDefaults.standard.set(grouping.rawValue, forKey: "grouping") } }
+    }
+
+    enum Appearance: String, CaseIterable, Identifiable {
+        case auto, light, dark
+        var id: String { rawValue }
+        var title: String { rawValue.capitalized }
+        /// For windows harbor draws itself (alerts); nil follows macOS.
+        var nsAppearance: NSAppearance? {
+            self == .auto ? nil : NSAppearance(named: self == .dark ? .darkAqua : .aqua)
+        }
+    }
+
+    /// Light or dark for the menu dropdown and the page; the menu bar icon always follows macOS.
+    var appearance = Appearance(rawValue: UserDefaults.standard.string(forKey: "appearance") ?? "") ?? .auto {
+        didSet { if !DebugCLI.isDebugRun { UserDefaults.standard.set(appearance.rawValue, forKey: "appearance") } }
     }
 
     /// Manfath's "Refresh": seconds between scans while the menu is open; 0 = manual.

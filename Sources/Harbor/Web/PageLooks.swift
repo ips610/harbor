@@ -8,15 +8,18 @@ enum PageLooks {
 
     private static let template = #"""
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="__theme__">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>__app__</title>
-<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=2">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg?v=3">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png?v=2">
 <style>
   /* ---------- shared: pills and tags match the menu bar ---------- */
+  :root[data-theme="light"] { color-scheme: light; }
   :root {
     color-scheme: light dark;
     --pill: #e3e3e5; --pill-ink: #2c2c2e; --pill-hover: #d6d6d9;
@@ -28,16 +31,7 @@ enum PageLooks {
     --f-body: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
     --f-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --pill: #3d3d40; --pill-ink: #e8e8ea; --pill-hover: #4a4a4e;
-      --open-bg: #1f3352; --open-ink: #a9c8ff;
-      --share-bg: #173b2e; --share-ink: #86e3bb;
-      --kill-bg: #4a201c; --kill-ink: #ff9a90;
-      --shared: #46d39a; --shared-ink: #0e0e10;
-      --warn-bg: #2c2112; --warn-ink: #f2b866;
-    }
-  }
+  \#(Page.dark("color-scheme: dark; --pill: #3d3d40; --pill-ink: #e8e8ea; --pill-hover: #4a4a4e; --open-bg: #1f3352; --open-ink: #a9c8ff; --share-bg: #173b2e; --share-ink: #86e3bb; --kill-bg: #4a201c; --kill-ink: #ff9a90; --shared: #46d39a; --shared-ink: #0e0e10; --warn-bg: #2c2112; --warn-ink: #f2b866;"))
   *, *::before, *::after { box-sizing: border-box; }
   html { -webkit-text-size-adjust: 100%; }
   body { margin: 0; font: 14px/1.45 var(--f-body); -webkit-font-smoothing: antialiased; background: var(--bg); color: var(--text); }
@@ -62,6 +56,7 @@ enum PageLooks {
   .tag { font: 600 11px/1 var(--f-body); padding: 3px 6px; border-radius: 5px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
   .tag.warn { border-color: transparent; background: var(--warn-bg); color: var(--warn-ink); }
   .tag.shared { border-color: transparent; background: var(--shared); color: var(--shared-ink); }
+  .tag.macos { border-color: transparent; background: var(--pill); color: var(--pill-ink); }
   .chip { width: 10px; height: 10px; border-radius: 3px; flex: none; display: inline-block; }
   .busy { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12.5px; }
   .spin { width: 13px; height: 13px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--text); animation: spin .8s linear infinite; }
@@ -136,10 +131,7 @@ enum PageLooks {
     --bg: #f7f7f8; --surface: #ffffff; --line: #e4e4e7; --line-2: #f1f1f3; --hover: #f7f7f9;
     --text: #18181b; --text-2: #3f3f46; --muted: #71717a; --accent: #5b5bd6;
   }
-  @media (prefers-color-scheme: dark) {
-    body.look-a { --bg: #0d0d0f; --surface: #161618; --line: #27272b; --line-2: #1e1e21; --hover: #1b1b1e;
-      --text: #ededef; --text-2: #c9c9ce; --muted: #8b8b93; --accent: #8e8ef5; }
-  }
+  \#(Page.dark("--bg: #0d0d0f; --surface: #161618; --line: #27272b; --line-2: #1e1e21; --hover: #1b1b1e; --text: #ededef; --text-2: #c9c9ce; --muted: #8b8b93; --accent: #8e8ef5;", "body.look-a"))
   .look-a .top { position: sticky; top: 0; z-index: 3; background: color-mix(in srgb, var(--surface) 92%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
   .look-a .top-in { max-width: 1120px; margin: 0 auto; padding: 10px 20px; display: flex; align-items: center; gap: 10px; }
   .look-a .brand { display: flex; align-items: center; gap: 8px; font-weight: 650; font-size: 15px; }
@@ -163,10 +155,7 @@ enum PageLooks {
     --text: #0d2433; --text-2: #33505f; --muted: #5a7482; --accent: #0e8a87;
     --navy: #0c2b45; --navy-ink: #eaf5f9; --navy-muted: #9cc1d0; --seg-bg: #e3edf1;
   }
-  @media (prefers-color-scheme: dark) {
-    body.look-b { --bg: #07131b; --surface: #0e1f2a; --line: #1b3442; --line-2: #132936; --hover: #122735;
-      --text: #e5f1f5; --text-2: #b6cfd9; --muted: #7e9cab; --accent: #3fd0c9; --navy: #051726; --seg-bg: #132936; }
-  }
+  \#(Page.dark("--bg: #07131b; --surface: #0e1f2a; --line: #1b3442; --line-2: #132936; --hover: #122735; --text: #e5f1f5; --text-2: #b6cfd9; --muted: #7e9cab; --accent: #3fd0c9; --navy: #051726; --seg-bg: #132936;", "body.look-b"))
   .look-b .top { background: var(--navy); color: var(--navy-ink); position: relative; overflow: hidden; }
   .look-b .top-in { max-width: 1120px; margin: 0 auto; padding: 18px 20px 30px; display: grid; gap: 6px; }
   .look-b .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; font-size: 19px; }
@@ -195,10 +184,7 @@ enum PageLooks {
     --bg: #f5f5f7; --side: #e9e9ec; --surface: #ffffff; --line: #e1e1e4; --line-2: #ededf0; --hover: #f6f6f8;
     --text: #1d1d1f; --text-2: #3a3a3e; --muted: #6e6e73; --accent: #0a64d6; --sel: #0a64d6; --sel-ink: #ffffff;
   }
-  @media (prefers-color-scheme: dark) {
-    body.look-c { --bg: #1c1c1e; --side: #252528; --surface: #2c2c2f; --line: #3a3a3e; --line-2: #343437; --hover: #333337;
-      --text: #f2f2f4; --text-2: #d0d0d5; --muted: #98989e; --accent: #4c8dff; --sel: #0a5bd3; }
-  }
+  \#(Page.dark("--bg: #1c1c1e; --side: #252528; --surface: #2c2c2f; --line: #3a3a3e; --line-2: #343437; --hover: #333337; --text: #f2f2f4; --text-2: #d0d0d5; --muted: #98989e; --accent: #4c8dff; --sel: #0a5bd3;", "body.look-c"))
   .look-c .app { display: grid; grid-template-columns: 250px minmax(0, 1fr); min-height: 100vh; }
   .look-c .side { background: var(--side); border-right: 1px solid var(--line); padding: 16px 10px; display: flex; flex-direction: column; gap: 2px; position: sticky; top: 0; height: 100vh; overflow: auto; }
   .look-c .brand { display: flex; align-items: center; gap: 8px; font-weight: 650; font-size: 15px; padding: 2px 8px 12px; }
@@ -391,6 +377,9 @@ function model(ports) {
 // ---------- render ----------
 function render() {
   if (state.settings.grouping) group = state.settings.grouping;
+  // Appearance is shared with the menu and the default page.
+  const theme = ['light', 'dark'].includes(state.settings.appearance) ? state.settings.appearance : 'auto';
+  if (document.documentElement.dataset.theme !== theme) document.documentElement.dataset.theme = theme;
   const all = visible();
   const groups = model(all.filter(matches));
   if (LOOK === 'c') renderSide(model(all));
@@ -570,6 +559,7 @@ function row(p, projectInRow) {
       el('div', { class: 'rtext' },
         el('div', { class: 'rtitle' }, el('span', { class: 't', text: title }),
           p.framework && p.framework !== title ? el('span', { class: 'tag', text: p.framework }) : null,
+          p.macos ? el('span', { class: 'tag macos', text: 'macOS', title: 'Part of macOS' }) : null,
           p.exposed ? el('span', { class: 'tag warn', text: p.address, title: 'Other devices on your network can reach this port.' }) : null,
           live ? el('span', { class: 'tag shared', text: 'shared', title: 'Public link: ' + live.url }) : null),
         el('div', { class: 'rsub' }, projectInRow ? el('i', { class: 'chip', style: { background: p.color } }) : null, facts)),

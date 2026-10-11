@@ -3,6 +3,26 @@ import SwiftUI
 
 /// Tells the Monitor when the hosting window is actually on screen, so full
 /// scans run only while someone can see them.
+/// Sets the hosting window's light or dark look (nil follows macOS). Only that
+/// window: the menu bar icon keeps following the menu bar.
+struct WindowAppearance: NSViewRepresentable {
+    let appearance: NSAppearance?
+
+    func makeNSView(context: Context) -> Probe { Probe() }
+    func updateNSView(_ v: Probe, context: Context) {
+        v.wanted = appearance
+        v.window?.appearance = appearance
+    }
+
+    final class Probe: NSView {
+        var wanted: NSAppearance?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            window?.appearance = wanted
+        }
+    }
+}
+
 struct WindowVisibilityReporter: NSViewRepresentable {
     let surface: Monitor.Surface
 

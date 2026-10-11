@@ -30,15 +30,6 @@ final class WebServer: @unchecked Sendable {
 
     static let csp = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; frame-ancestors 'none'"
 
-    /// The tab icon: harbor's mark on a rounded tile that reads on light and dark tab strips.
-    static let favicon = """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-    <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2ecc87"/><stop offset="1" stop-color="#0a6b9e"/></linearGradient></defs>
-    <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#g)"/>
-    <g fill="none" stroke="#fff" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M32 12v10M20 22h24l4 12H16z"/><path d="M10 44c4-3.4 7.4-3.4 11.4 0s7.4 3.4 11.4 0 7.4-3.4 11.4 0 7.4 3.4 9.8 1"/>
-    </g></svg>
-    """
     static let host = AppInfo.slug + ".localhost"
     static let cookie = AppInfo.slug
 
@@ -284,9 +275,14 @@ final class WebServer: @unchecked Sendable {
                     headers.append(("Set-Cookie", "\(Self.cookie)=\(session); Path=/; HttpOnly; SameSite=Strict"))
                 }
                 // ?look=a|b|c previews the candidate designs; the default page stays.
-                let page = ["a", "b", "c"].contains(Self.param("look", in: query) ?? "") ? PageLooks.html : Page.html
-                return send(c, HTTPResponse(status: 200, contentType: "text/html; charset=utf-8",
-                                            body: Data(page.utf8), headers: headers))
+                let base = ["a", "b", "c"].contains(Self.param("look", in: query) ?? "") ? PageLooks.html : Page.html
+                // The Appearance setting lives on the main actor; the page is sent from there.
+                DispatchQueue.main.async {
+                    let page = Page.themed(base, MainActor.assumeIsolated { Monitor.shared.appearance.rawValue })
+                    self.send(c, HTTPResponse(status: 200, contentType: "text/html; charset=utf-8",
+                                              body: Data(page.utf8), headers: headers))
+                }
+                return
             }
             // Login link: trade the code for the session cookie, then a clean URL.
             guard let issued = loginCodes[code], Date().timeIntervalSince(issued) < Self.codeLifetime else {
@@ -298,7 +294,14 @@ final class WebServer: @unchecked Sendable {
                                         headers: [("Location", "/"), ("Set-Cookie", cookie)]))
         }
         if req.method == "GET" && path == "/favicon.svg" {
-            return send(c, HTTPResponse(status: 200, contentType: "image/svg+xml", body: Data(Self.favicon.utf8)))
+            return send(c, HTTPResponse(status: 200, contentType: "image/svg+xml", body: Data(Page.icon.utf8)))
+        }
+        // PNG tab icons (and /favicon.ico as the same 32 px PNG) for Safari's tab bar and home screens.
+        if req.method == "GET" && ["/favicon-32.png", "/favicon.ico"].contains(path) {
+            return send(c, HTTPResponse(status: 200, contentType: "image/png", body: WaveMark.favicon32))
+        }
+        if req.method == "GET" && ["/apple-touch-icon.png", "/apple-touch-icon-precomposed.png"].contains(path) {
+            return send(c, HTTPResponse(status: 200, contentType: "image/png", body: WaveMark.appleTouch))
         }
         guard path.hasPrefix("/api/") else { return send(c, .json(404, ["error": "not found"])) }
         guard sessionMatches(Self.cookieValue(Self.cookie, in: req.headers["cookie"])) else {

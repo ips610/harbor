@@ -85,6 +85,7 @@ enum WebAPI {
                 "workers": r.workers,
                 "hidden": !m.isVisible(r),
                 "system": r.isSystem || r.isSelf,
+                "macos": r.isSystem,
                 "hint": n(r.hint),
                 "busy": m.busy.contains(r.pid),
             ]
@@ -116,6 +117,7 @@ enum WebAPI {
         return [
             "scannedAgo": m.lastFullScan.map { now.timeIntervalSince($0) } ?? 0,
             "scanMs": m.lastScanDuration * 1000,
+            "badgeCount": m.badgeCount,  // equals the visible rows (0 with the badge hidden)
             "ports": ports,
             "notices": m.notices.map { ["id": $0.id, "text": $0.text] },
             "share": ["available": tool != nil, "provider": n(tool?.name), "hint": hint.text, "command": hint.command],
@@ -126,6 +128,7 @@ enum WebAPI {
                 "showSystem": m.showSystemPorts, "onlyServers": m.onlyServers, "grouping": m.grouping.rawValue,
                 "interval": m.refreshInterval,
                 "showInDock": m.showInDock,
+                "appearance": m.appearance.rawValue,
             ],
             "memory": [
                 "physical": Double(mem.physical), "used": Double(mem.used), "app": Double(mem.app),
@@ -191,6 +194,7 @@ enum WebAPI {
             if let v = obj["showSystem"] as? Bool { m.showSystemPorts = v }
             if let v = obj["onlyServers"] as? Bool { m.onlyServers = v }
             if let v = obj["showInDock"] as? Bool { m.showInDock = v }
+            if let a = obj["appearance"] as? String, let v = Monitor.Appearance(rawValue: a) { m.appearance = v }
             if let g = obj["grouping"] as? String, let v = Monitor.Grouping(rawValue: g) { m.grouping = v }
             return done(200, ["result": "ok"])
         case "unshare":

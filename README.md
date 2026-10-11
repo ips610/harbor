@@ -10,7 +10,8 @@ kernel, so it idles at about 0% CPU.
 The menu bar dropdown works like Manfath: ports grouped into dev servers, databases, runtimes
 and so on, with open, share and kill on every row. Kill asks "confirm?" first and tells you which
 process and folder it's about to stop. You can set a port range and hide processes you don't care
-about.
+about. If you tick "macOS services", those rows get a grey macOS tag so they're easy to tell apart.
+The badge always counts exactly the rows the list shows, with the same range and filters.
 
 It refreshes every 5, 15 (the default), 30 or 60 seconds while the menu or the page is open, or
 every N seconds if you type your own (5 to 3600), or only when you press refresh. The menu and the
@@ -24,7 +25,11 @@ and it opens the server at this Mac's network address (or its `.local` name). Se
 
 For the full view, open harbor from Applications (or "Open harbor…" in the menu) and it opens
 `harbor.localhost:8470` in your browser. That page groups ports by project, with the folder, the
-framework, uptime and memory for each one. The tab shows harbor's icon and the port count.
+framework, uptime and memory for each one. The tab shows harbor's icon (the ferry from the app
+icon) and the port count.
+
+Appearance is Auto, Light or Dark, in the gear menu or on the page (top right, and in Settings).
+The menu and the page share it. Auto follows macOS. The menu bar icon always follows the menu bar.
 
 harbor shows in the Dock by default. Clicking the Dock icon opens the page. "Show in Dock" in the
 gear menu or the page's settings turns that off, and then it lives only in the menu bar.
@@ -118,6 +123,7 @@ second to appear after you open the menu or the page.
 ## Debugging
 
 The app binary has a few flags for testing: `--dump`, `--bench N`, `--serve`, `--no-open`,
-`--demo-menu --snapshot PATH`, `--demo-lan PORT` and `--test-stop PORT` (see
-`Sources/Harbor/DebugCLI.swift`). Test runs never add a menu bar or Dock icon and use the next
-free port, so they can run next to an installed copy.
+`--demo-menu --snapshot PATH`, `--demo-lan PORT`, `--theme light|dark`, `--show-system` and
+`--test-stop PORT` (see `Sources/Harbor/DebugCLI.swift`). Test runs never add a menu bar or Dock
+icon, never take the keyboard, don't save settings, and use the next free port, so they can run
+next to an installed copy.

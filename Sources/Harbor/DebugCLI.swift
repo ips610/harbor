@@ -13,8 +13,11 @@ import SwiftUI
 ///   --make-icon DIR        write an .iconset into DIR (used by build.sh)
 ///   --serve                start the page server, print its URL, open nothing
 ///   --no-open              normal launch, but log the page URL instead of opening it
+///   --menubar-icons DIR    write the menu bar glyph for each state as PNGs
 ///   --demo-menu            launch with the menu content in a plain panel
-///       --appearance light|dark   force the look for snapshots
+///       --appearance light|dark   force the look for snapshots (as if macOS were set so)
+///       --theme auto|light|dark      harbor's Appearance setting, not saved
+///       --show-system                list macOS services too, not saved
 ///   --snapshot PATH        with --demo-menu: save the panel as PNG
 ///       --snapshot-delay S, --snapshot-layer (render via CALayer instead)
 ///
@@ -33,6 +36,7 @@ enum DebugCLI {
         if args.contains("--bench") { bench(Int(value(after: "--bench") ?? "") ?? 20); return true }
         if let p = value(after: "--test-stop") { testStop(port: UInt16(p) ?? 0, force: args.contains("--force")); return true }
         if let dir = value(after: "--make-icon") { makeIcon(dir); return true }
+        if let dir = value(after: "--menubar-icons") { menubarIcons(dir); return true }
         return false
     }
 
@@ -119,6 +123,25 @@ enum DebugCLI {
 
     // MARK: Icon
 
+    /// The menu bar glyph in each state, at 2x, for checking by eye.
+    private static func menubarIcons(_ dir: String) {
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        for state in [IconState.good, .warn, .bad, .zombies] {
+            let img = StatusIcon.image(for: state)
+            let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(img.size.width * 2), pixelsHigh: Int(img.size.height * 2),
+                                       bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                       colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+            rep.size = img.size
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+            img.draw(in: NSRect(origin: .zero, size: img.size))
+            NSGraphicsContext.restoreGraphicsState()
+            try? rep.representation(using: .png, properties: [:])?
+                .write(to: URL(fileURLWithPath: dir).appendingPathComponent("menubar-\(state).png"))
+            out("menubar-\(state).png template=\(img.isTemplate)")
+        }
+    }
+
     private static func makeIcon(_ dir: String) {
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let sizes: [(String, Int)] = [
@@ -127,35 +150,10 @@ enum DebugCLI {
             ("icon_512x512", 512), ("icon_512x512@2x", 1024),
         ]
         for (name, px) in sizes {
-            if let data = renderIcon(px) {
+            if let data = WaveMark.png(px, inset: 0.1, radius: 0.225) {
                 try? data.write(to: URL(fileURLWithPath: dir).appendingPathComponent(name + ".png"))
             }
         }
-    }
-
-    private static func renderIcon(_ px: Int) -> Data? {
-        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: px, pixelsHigh: px, bitsPerSample: 8,
-                                         samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-                                         colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return nil }
-        let s = CGFloat(px)
-        rep.size = NSSize(width: s, height: s)
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-        let inset = s * 0.1
-        let rect = NSRect(x: inset, y: inset, width: s - 2 * inset, height: s - 2 * inset)
-        let shape = NSBezierPath(roundedRect: rect, xRadius: rect.width * 0.225, yRadius: rect.width * 0.225)
-        let gradient = NSGradient(starting: NSColor(srgbRed: 0.18, green: 0.80, blue: 0.52, alpha: 1),
-                                  ending: NSColor(srgbRed: 0.04, green: 0.42, blue: 0.62, alpha: 1))
-        gradient?.draw(in: shape, angle: -90)
-        let config = NSImage.SymbolConfiguration(pointSize: s * 0.40, weight: .bold)
-            .applying(NSImage.SymbolConfiguration(paletteColors: [.white]))
-        if let symbol = NSImage(systemSymbolName: "ferry.fill", accessibilityDescription: nil)?
-            .withSymbolConfiguration(config) {
-            let sz = symbol.size
-            symbol.draw(in: NSRect(x: (s - sz.width) / 2, y: (s - sz.height) / 2, width: sz.width, height: sz.height))
-        }
-        NSGraphicsContext.restoreGraphicsState()
-        return rep.representation(using: .png, properties: [:])
     }
 
     // MARK: UI demo modes
@@ -180,13 +178,16 @@ enum DebugCLI {
         if let look = value(after: "--appearance") {
             NSApp.appearance = NSAppearance(named: look == "dark" ? .darkAqua : .aqua)
         }
+        // --theme sets harbor's own Appearance setting (not saved in debug runs).
+        if let t = value(after: "--theme"), let v = Monitor.Appearance(rawValue: t) { Monitor.shared.appearance = v }
+        if args.contains("--show-system") { Monitor.shared.showSystemPorts = true }  // not saved either
         if let raw = value(after: "--demo-lan"), let port = UInt16(raw) {
             // The menu's "open on another device" card for one port, in a panel.
             Monitor.shared.requestFullScan()
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                 MainActor.assumeIsolated {
                     guard let row = Monitor.shared.ports.first(where: { $0.port == port }) else { out("no row for :\(port)"); return }
-                    let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 280, height: 300),
+                    let panel = DemoPanel(contentRect: NSRect(x: 0, y: 0, width: 280, height: 300),
                                         styleMask: [.titled, .nonactivatingPanel], backing: .buffered, defer: false)
                     panel.title = "LAN card (demo)"
                     let host = NSHostingView(rootView: LANCard(row: row).environment(Monitor.shared))
@@ -201,7 +202,7 @@ enum DebugCLI {
             return true
         }
         if args.contains("--demo-menu") {
-            let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 500),
+            let panel = DemoPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 500),
                                 styleMask: [.titled, .nonactivatingPanel], backing: .buffered, defer: false)
             panel.title = "\(AppInfo.name) menu (demo)"
             let host = NSHostingView(rootView: MenuContent().environment(Monitor.shared))
@@ -217,6 +218,12 @@ enum DebugCLI {
     }
 
     @MainActor private static var demoPanel: NSPanel?
+
+    /// Demo windows never take the keyboard, so typing elsewhere can't land in them.
+    private final class DemoPanel: NSPanel {
+        override var canBecomeKey: Bool { false }
+        override var canBecomeMain: Bool { false }
+    }
 
     @MainActor
     private static func report(_ w: NSWindow, _ snapshotPath: String?) {

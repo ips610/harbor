@@ -6,39 +6,84 @@ enum Page {
         .replacingOccurrences(of: "__APP__", with: AppInfo.name)
         .replacingOccurrences(of: "__app__", with: AppInfo.name.lowercased())
 
+    /// A page with the Appearance setting already on <html>, so the first paint is right.
+    static func themed(_ page: String, _ appearance: String) -> String {
+        page.replacingOccurrences(of: "data-theme=\"__theme__\"", with: "data-theme=\"\(appearance)\"")
+    }
+
+    /// Dark-mode CSS: under macOS dark mode unless the page is set to Light, and
+    /// always when it's set to Dark. `scope` narrows it, e.g. "body.look-a".
+    static func dark(_ decls: String, _ scope: String = "") -> String {
+        let s = scope.isEmpty ? "" : " " + scope
+        return """
+        @media (prefers-color-scheme: dark) { :root:not([data-theme="light"])\(s) { \(decls) } }
+          :root[data-theme="dark"]\(s) { \(decls) }
+        """
+    }
+
+    /// harbor's mark, the header's two waves, on an ink tile that reads on light and
+    /// dark tab strips. Served as /favicon.svg; the app icon and the menu bar glyph
+    /// draw the same paths (WaveMark).
+    static let icon = """
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+    <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#23252e"/><stop offset="1" stop-color="#0b0b0c"/></linearGradient></defs>
+    <rect width="64" height="64" rx="14" fill="url(#g)"/>
+    <g fill="none" stroke="#a7b4ff" stroke-width="6" stroke-linecap="round"><path d="M11 25c5-4.8 9-4.8 14 0s9 4.8 14 0 9-4.8 14 0"/><path d="M11 39c5-4.8 9-4.8 14 0s9 4.8 14 0 9-4.8 14 0"/></g>
+    </svg>
+    """
+
+    private static let darkTokens = """
+      color-scheme: dark;
+          --ink: #0b0b0c; --on-ink: #f3f3f1; --on-ink-2: #a2a5ac; --on-ink-3: #8a8d95; --ink-line: #24252a;
+          --signal: #a7b4ff; --live: #46d39a; --tick: #2c2e33; --hero-warn: #f5b25c;
+          --bg: #0e0e10; --panel: #16161a; --panel-2: #1d1d22; --line: #27272d;
+          --text: #f2f2f0; --text-2: #c7c9cf; --muted: #8d9099;
+          --danger: #ff5d4d; --danger-soft: #2a1513; --warn: #f2a54a; --warn-soft: #261c10;
+          --focus: #a7b4ff; --c-ports: #a7b4ff; --c-mac: #46d39a; --shared: #46d39a; --shared-ink: #0e0e10;
+          --open-bg: #1f3352; --open-ink: #a9c8ff; --share-bg: #173b2e; --share-ink: #86e3bb;
+          --seg-1: #3987e5; --seg-2: #d95926; --seg-3: #199e70; --seg-4: #c98500; --seg-free: #2a2a2f;
+          --seq: #3987e5; --seq-track: #1c2636;
+    """
+
     private static let template = #"""
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="__theme__">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>__app__</title>
-<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=2">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg?v=3">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png?v=2">
 <style>
+  /* Light tokens here; dark ones in Page.darkTokens, applied by macOS dark mode
+     or by the Appearance setting (data-theme on <html>, set by the server). */
   :root {
     color-scheme: light dark;
-    --ink: #0b0b0c;
-    --on-ink: #f3f3f1;
-    --on-ink-2: #a2a5ac;
-    --on-ink-3: #6d7078;
-    --ink-line: #24252a;
-    --signal: #a7b4ff;
-    --live: #46d39a;
+    --ink: #f3f3ef;
+    --on-ink: #0b0b0c;
+    --on-ink-2: #45474d;
+    --on-ink-3: #62656d;
+    --ink-line: #e0e0da;
+    --signal: #3d4bd1;
+    --live: #10915f;
+    --tick: #d8d8d1;
+    --hero-warn: #8f4c00;
     --bg: #ffffff;
     --panel: #f6f6f4;
     --panel-2: #efefec;
     --line: #e5e5e1;
     --text: #0b0b0c;
     --text-2: #45474d;
-    --muted: #6f727a;
-    --danger: #d4392b;
+    --muted: #65686f;
+    --danger: #c3301f;
     --danger-soft: #fbeae8;
     --warn: #a35a00;
     --warn-soft: #fbf1e3;
     --focus: #4a63f5;
-    --c-ports: #6c7cff;
-    --c-mac: #18a47c;
+    --c-ports: #4b5bdc;
+    --c-mac: #0e7d5d;
     --shared: #0f7f5f;
     --shared-ink: #ffffff;
     --open-bg: #dbe7fb;
@@ -51,30 +96,8 @@ enum Page {
     --gutter: clamp(16px, 3.2vw, 36px);
     --ease: cubic-bezier(.2, .7, .1, 1);
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #0e0e10;
-      --panel: #16161a;
-      --panel-2: #1d1d22;
-      --line: #27272d;
-      --text: #f2f2f0;
-      --text-2: #c7c9cf;
-      --muted: #8d9099;
-      --danger: #ff5d4d;
-      --danger-soft: #2a1513;
-      --warn: #f2a54a;
-      --warn-soft: #261c10;
-      --focus: #a7b4ff;
-      --c-ports: #a7b4ff;
-      --c-mac: #46d39a;
-      --shared: #46d39a;
-      --shared-ink: #0e0e10;
-      --open-bg: #1f3352;
-      --open-ink: #a9c8ff;
-      --share-bg: #173b2e;
-      --share-ink: #86e3bb;
-    }
-  }
+  :root[data-theme="light"] { color-scheme: light; }
+  \#(dark(darkTokens))
   *, *::before, *::after { box-sizing: border-box; }
   html { -webkit-text-size-adjust: 100%; }
   body {
@@ -96,6 +119,10 @@ enum Page {
   .nav { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-block: 18px; }
   .logo { display: inline-flex; align-items: center; gap: 10px; font: 800 19px/1 var(--f-display); letter-spacing: -.04em; }
   .logo svg { width: 26px; height: 18px; color: var(--signal); }
+  .nav-end { display: flex; align-items: center; gap: 18px; }
+  .nav .seg { background: var(--ink-line); }
+  .nav .seg button { color: var(--on-ink-2); }
+  .nav .seg button[aria-pressed="true"] { background: var(--bg); color: var(--text); }
   .nav-meta { color: var(--on-ink-3); }
   .strip {
     display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 24px;
@@ -113,11 +140,11 @@ enum Page {
   .hero-side { display: grid; gap: 10px; padding-bottom: 12px; }
   .hero-label { color: var(--signal); }
   .hero-lede { font-size: clamp(16px, 1.4vw, 19px); line-height: 1.38; font-weight: 500; }
-  .hero-lede .warn { color: #f5b25c; }
+  .hero-lede .warn { color: var(--hero-warn); }
   .map { margin-top: clamp(26px, 4vw, 44px); }
   .ticks { display: flex; align-items: flex-end; gap: 3px; height: 46px; }
   .ticks i {
-    flex: 1 1 0; min-width: 0; height: 22%; border-radius: 1px; background: #2c2e33;
+    flex: 1 1 0; min-width: 0; height: 22%; border-radius: 1px; background: var(--tick);
     transition: height .45s var(--ease), background-color .45s;
   }
   .ticks i.on { height: 100%; }
@@ -151,6 +178,7 @@ enum Page {
   .seg { display: inline-flex; background: var(--panel-2); border-radius: 999px; padding: 3px; }
   .seg button { border: 0; background: transparent; padding: 5px 14px; border-radius: 999px; font-size: 13px; font-weight: 600; cursor: pointer; color: var(--muted); }
   .seg button[aria-pressed="true"] { background: var(--bg); color: var(--text); box-shadow: 0 1px 2px #0000001f; }
+  .seg.small button { padding: 4px 10px; font-size: 12px; }
   .check { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); cursor: pointer; }
   .check input { width: 16px; height: 16px; margin: 0; accent-color: var(--c-ports); }
 
@@ -175,6 +203,7 @@ enum Page {
   .ptitle .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tag { font: 600 11px/1 var(--f-body); padding: 3px 6px; border-radius: 5px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
   .tag.warn { border-color: transparent; background: var(--warn-soft); color: var(--warn); }
+  .tag.macos { border-color: transparent; background: var(--panel-2); color: var(--text-2); }
   .tag.shared { border-color: transparent; background: var(--shared); color: var(--shared-ink); }
   .psub { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .pacts { display: flex; gap: 6px; align-items: center; }
@@ -244,10 +273,6 @@ enum Page {
     --seq: #2a78d6; --seq-track: #dfe9f6;
     --good: #0ca30c; --warning: #fab219; --critical: #d03b3b;
   }
-  @media (prefers-color-scheme: dark) {
-    :root { --seg-1: #3987e5; --seg-2: #d95926; --seg-3: #199e70; --seg-4: #c98500; --seg-free: #2a2a2f;
-      --seq: #3987e5; --seq-track: #1c2636; }
-  }
   .mac { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 16px; align-items: stretch; }
   .panel { background: var(--panel); border-radius: 14px; padding: 18px 20px; display: grid; gap: 14px; align-content: start; }
   .panel h3 { font: 650 15px/1.3 var(--f-body); }
@@ -294,9 +319,11 @@ enum Page {
     position: fixed; left: 50%; bottom: max(18px, env(safe-area-inset-bottom)); transform: translateX(-50%);
     display: flex; align-items: center; gap: 12px; padding: 7px 8px 7px 16px; border-radius: 999px;
     background: #111114f2; color: var(--on-ink); box-shadow: 0 10px 30px #00000038, inset 0 0 0 1px #ffffff14;
-    width: min(620px, calc(100vw - 24px)); z-index: 5; --focus: var(--signal);
+    width: min(620px, calc(100vw - 24px)); z-index: 5;
+    /* The pill stays dark ink in both themes. */
+    --on-ink: #f3f3f1; --on-ink-2: #a2a5ac; --on-ink-3: #8a8d95; --signal: #a7b4ff; --live: #46d39a; --focus: #a7b4ff;
   }
-  .pill .status { display: inline-flex; align-items: center; gap: 8px; color: var(--on-ink-2); white-space: nowrap; }
+  .pill .status { display: inline-flex; align-items: center; gap: 8px; color: var(--on-ink-2); white-space: nowrap; background: #ffffff14; }
   .pill input {
     flex: 1; min-width: 0; background: #ffffff12; border: 1px solid #ffffff1c; border-radius: 999px;
     padding: 8px 14px; color: var(--on-ink); outline: none; font-size: 14px;
@@ -351,7 +378,14 @@ enum Page {
         <svg viewBox="0 0 26 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 6c2.5-2.4 4.5-2.4 7 0s4.5 2.4 7 0 4.5-2.4 7 0"/><path d="M1 13c2.5-2.4 4.5-2.4 7 0s4.5 2.4 7 0 4.5-2.4 7 0"/></svg>
         __app__
       </span>
-      <span class="nav-meta mono">Ports on this Mac</span>
+      <span class="nav-end">
+        <span class="nav-meta mono">Ports on this Mac</span>
+        <span class="seg small" role="group" aria-label="Appearance">
+          <button type="button" data-appearance="auto" aria-pressed="false">Auto</button>
+          <button type="button" data-appearance="light" aria-pressed="false">Light</button>
+          <button type="button" data-appearance="dark" aria-pressed="false">Dark</button>
+        </span>
+      </span>
     </nav>
     <div class="strip mono">
       <span><i class="dot" id="live-dot"></i><span id="st-live">Connecting</span></span>
@@ -414,6 +448,13 @@ enum Page {
     <b>Settings</b>
     <label class="check"><input type="checkbox" id="login-item"> Open __APP__ at login</label>
     <label class="check"><input type="checkbox" id="show-dock"> Show __APP__ in the Dock</label>
+    <span class="check">Appearance
+      <span class="seg small" role="group" aria-label="Appearance">
+        <button type="button" data-appearance="auto" aria-pressed="false">Auto</button>
+        <button type="button" data-appearance="light" aria-pressed="false">Light</button>
+        <button type="button" data-appearance="dark" aria-pressed="false">Dark</button>
+      </span>
+    </span>
     <span id="settings-note"></span>
   </section>
 </main>
@@ -594,6 +635,7 @@ function render() {
   renderMac();
   $('login-item').checked = !!state.loginItem;
   $('show-dock').checked = !!state.settings.showInDock;
+  applyTheme(state.settings.appearance);
   $('settings-note').textContent = state.settings.interval > 0
     ? `Scans every ${state.settings.interval} s while the menu or this page is open; change it in the menu bar.`
     : 'Scans only when you open the menu or this page; change it in the menu bar.';
@@ -677,7 +719,7 @@ function renderPorts(ports, all) {
   for (const [id, v] of [['rmin', st.minPort], ['rmax', st.maxPort]]) if (document.activeElement !== $(id)) $(id).value = v;
   $('hidden-note').textContent = hidden
     ? `${plural(hidden, 'port is', 'ports are')} hidden by the range ${st.minPort}–${st.maxPort}${st.showSystem ? '' : ', macOS services'}${st.onlyServers ? ', the servers-only filter' : ''}.` : '';
-  for (const b of document.querySelectorAll('.seg button')) b.setAttribute('aria-pressed', String(b.dataset.group === group));
+  for (const b of document.querySelectorAll('[data-group]')) b.setAttribute('aria-pressed', String(b.dataset.group === group));
 
   let model;
   if (group === 'project') model = groups(ports).map((g) => ({ ...g, kind: 'card' }));
@@ -753,6 +795,7 @@ function row(p, showProject) {
         el('div', { class: 'ptext' },
           el('div', { class: 'ptitle' }, el('span', { class: 't', text: title }),
             p.framework && p.framework !== title ? el('span', { class: 'tag', text: p.framework }) : null,
+            p.macos ? el('span', { class: 'tag macos', text: 'macOS', title: 'Part of macOS' }) : null,
             p.exposed ? el('span', { class: 'tag warn', text: p.address, title: 'Other devices on your network can reach this port.' }) : null,
             live ? el('span', { class: 'tag shared', text: 'shared', title: 'Public link: ' + live.url }) : null),
           el('div', { class: 'psub', text: facts }))),
@@ -1013,8 +1056,18 @@ async function copy(p) {
 }
 
 // ---------- controls ----------
-for (const b of document.querySelectorAll('.seg button')) {
+for (const b of document.querySelectorAll('[data-group]')) {
   b.addEventListener('click', () => { group = b.dataset.group; if (state) { state.settings.grouping = group; render(); } saveSettings({ grouping: group }); });
+}
+// Appearance: shared with the menu. The server already put it on <html> for the first paint.
+function applyTheme(t) {
+  t = ['light', 'dark'].includes(t) ? t : 'auto';
+  if (document.documentElement.dataset.theme !== t) document.documentElement.dataset.theme = t;
+  for (const b of document.querySelectorAll('[data-appearance]')) b.setAttribute('aria-pressed', String(b.dataset.appearance === t));
+}
+applyTheme(document.documentElement.dataset.theme);
+for (const b of document.querySelectorAll('[data-appearance]')) {
+  b.addEventListener('click', () => { const t = b.dataset.appearance; applyTheme(t); if (state) state.settings.appearance = t; saveSettings({ appearance: t }); });
 }
 async function saveSettings(change) {
   await act('settings', 0, change);

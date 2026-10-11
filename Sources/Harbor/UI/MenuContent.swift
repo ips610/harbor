@@ -98,6 +98,7 @@ struct MenuContent: View {
         .onAppear { DispatchQueue.main.async { searchFocused = true } }
         .overlay(alignment: .bottom) { ToastView() }
         .background(WindowVisibilityReporter(surface: .menu))
+        .background(WindowAppearance(appearance: monitor.appearance.nsAppearance))
     }
 
     // MARK: Pieces
@@ -175,6 +176,10 @@ struct MenuContent: View {
             }
             Toggle("Open at login", isOn: Binding(get: { loginItem }, set: { setLoginItem($0) }))
             Toggle("Show in Dock", isOn: $monitor.showInDock)
+            // Same setting as on the page. The menu bar icon always follows macOS.
+            Picker("Appearance", selection: $monitor.appearance) {
+                ForEach(Monitor.Appearance.allCases) { Text($0.title).tag($0) }
+            }
             Divider()
             Button("Open \(AppInfo.name) page") { WebServer.shared.openInBrowser() }
             Button("Quit \(AppInfo.name)") { NSApp.terminate(nil) }
@@ -293,6 +298,7 @@ struct MenuContent: View {
     private func askCustomInterval() {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
+        alert.window.appearance = monitor.appearance.nsAppearance
         alert.messageText = "Scan every how many seconds?"
         alert.informativeText = "While the menu or the page is open. Whole seconds, from 5 to 3600."
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
@@ -361,7 +367,8 @@ private struct PortLine: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 // The project's colour, the same as on the page. Text stays in normal colours.
-                RoundedRectangle(cornerRadius: 1.5)
+                // Square-ish ends: a full capsule this thin reads soft, like a glow, on the menu's glass.
+                RoundedRectangle(cornerRadius: 1)
                     .fill(Color(hex: row.colorHex))
                     .frame(width: 3, height: 26)
                 Text(verbatim: ":\(row.port)")
@@ -369,12 +376,18 @@ private struct PortLine: View {
                     .frame(width: 58, alignment: .leading)
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 5) {
-                        Text(showTitle ? row.title : row.processName)
-                            .font(.system(size: 13))
-                            .lineLimit(1)
-                            .layoutPriority(1)
+                        let name = Text(showTitle ? row.title : row.processName).font(.system(size: 13)).lineLimit(1)
+                        // The framework tag only when it fits whole; otherwise just the name.
                         if let fw = row.framework, fw != row.title {
-                            FrameworkTag(text: fw)
+                            ViewThatFits(in: .horizontal) {
+                                HStack(spacing: 5) { name; FrameworkTag(text: fw).fixedSize() }
+                                name
+                            }
+                        } else {
+                            name
+                        }
+                        if row.isSystem {
+                            FrameworkTag(text: "macOS", filled: true).fixedSize().help("Part of macOS")
                         }
                         if tunnel != nil {
                             Text("shared")
@@ -631,6 +644,7 @@ struct LANCard: View {
         }
         .padding(12)
         .frame(width: 250)
+        .background(WindowAppearance(appearance: monitor.appearance.nsAppearance))  // the popover's own window
     }
 }
 
@@ -659,15 +673,19 @@ private struct DetailLine<Trailing: View>: View {
 
 private struct FrameworkTag: View {
     let text: String
+    var filled = false  // the neutral grey "macOS" tag
 
     var body: some View {
         Text(text)
             .font(.system(size: 10, weight: .medium))
             .padding(.horizontal, 5)
             .padding(.vertical, 1)
-            .foregroundStyle(.secondary)
-            .background(RoundedRectangle(cornerRadius: 4).strokeBorder(Color.secondary.opacity(0.35)))
-            .lineLimit(1)  // truncates before the name does, never wraps
+            .foregroundStyle(filled ? Tone.neutralInk : Color.secondary)
+            .background {
+                if filled { RoundedRectangle(cornerRadius: 4).fill(Tone.neutralBg) }
+                else { RoundedRectangle(cornerRadius: 4).strokeBorder(Color.secondary.opacity(0.35)) }
+            }
+            .lineLimit(1)
     }
 }
 
