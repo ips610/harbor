@@ -54,45 +54,45 @@ There's also a small "This Mac" part: memory and swap, the apps using the most m
 warning if stuck (zombie) processes start piling up. The menu bar icon turns orange or red when
 memory gets tight.
 
-## Download
+## Getting started
 
-Get the zip for your Mac from the [Releases page](https://github.com/ips610/harbor/releases/latest):
+You need macOS 14 or newer.
 
-- `harbor-apple-silicon.zip` for M1 and newer
-- `harbor-intel.zip` for Intel Macs
+1. **Check which Mac you have.** Apple menu → About This Mac. If it says "Chip" (Apple M1, M2…)
+   you have Apple Silicon. If it says "Processor" (Intel Core…) you have Intel.
+2. **Download the zip** from the [latest release](https://github.com/ips610/harbor/releases/latest),
+   under Assets:
+   - `harbor-apple-silicon.zip` for Apple Silicon
+   - `harbor-intel.zip` for Intel
+3. **Unzip it.** Safari does this by itself. Otherwise double-click the zip in Downloads. You get
+   `harbor.app`.
+4. **Move it to Applications.** Drag `harbor.app` onto Applications in the Finder sidebar.
+   Typing `harbor.localhost` only works once it runs from Applications.
+5. **Open it the first time.** Double-click harbor in Applications. macOS says it can't check the
+   app for malware, because I haven't paid Apple to notarise it. Click **Done** (not Move to
+   Trash). Then open System Settings → Privacy & Security, scroll down to Security, and next to
+   "harbor was blocked" click **Open Anyway**. Enter your password and click **Open Anyway** once
+   more. You only do this once per download.
+6. **Find it.** The waves icon appears in the menu bar, and harbor opens its page at
+   `harbor.localhost` in your browser. macOS may say it added a background item: that's the small
+   helper that lets you open harbor by typing the address. The first time you quit an app from
+   harbor, macOS asks whether harbor may control it; allow it, or Quit won't work.
+7. **Use it.** Click the waves for the list of ports, or keep the page open. Every row has open,
+   copy, QR, share and kill. The gear menu has the port range, how often it refreshes, Open at
+   login (off by default) and Show in Dock.
 
-You need macOS 14 or newer. Unzip it, drag harbor into Applications and open it. The first time,
-macOS won't open it because the app isn't notarised by Apple. Go to System Settings → Privacy &
-Security, scroll down and click Open Anyway. You only have to do that once.
+Only one harbor runs at a time; opening it again just brings up the page.
 
-Only one harbor runs at a time; opening it again just brings up the page. Open at login is in the
-gear menu and the page's settings, and off by default.
-
-### Updates
+### Updating
 
 When the menu or the page opens, harbor asks GitHub whether there's a newer version, at most once
-a day. If there is, the menu and the page say so, with a link to it. "Check for Updates…" in the
-gear menu and "Check for updates" in the page's settings ask right away. To update, download the
-new zip and drag harbor into Applications over the old one. That check and Share are the only
-times harbor talks to the internet.
+a day. If there is, the menu and the page say "harbor 1.2 is out" with a **Get it** button.
+**Check for Updates…** in the gear menu and **Check for updates** in the page's settings ask right
+away. That check and Share are the only times harbor talks to the internet.
 
-## Building it yourself
-
-You need Xcode.
-
-```sh
-./build.sh
-./install.sh
-open /Applications/harbor.app
-```
-
-`install.sh` puts it in `/Applications` and replaces a running copy. To rename the app, change
-`app.conf` and build again. `./package.sh` makes the two zips for the Releases page; build it on
-an Apple Silicon Mac.
-
-`build.sh` signs with my own certificate ("IPS Local Apps") when that's in the keychain, so
-macOS remembers what you allowed harbor to do after a rebuild. Without it, the app gets a
-throwaway signature. Set `SIGN_ID` to use a different certificate.
+To update, quit harbor (gear menu → Quit harbor), download the new zip, unzip it and drag harbor
+into Applications. Click **Replace** when Finder asks. A new download may need Open Anyway once
+more.
 
 ### Typing the address
 
@@ -112,10 +112,14 @@ behind my back. Only typing the address or opening the app starts it again.
 
 ### Uninstalling
 
+Quit harbor and drag it from Applications to the Trash. Then paste this into Terminal to remove
+its helper and settings:
+
 ```sh
-launchctl bootout gui/$(id -u)/local.harbor
-rm ~/Library/LaunchAgents/local.harbor.plist
-rm -rf /Applications/harbor.app
+launchctl bootout gui/$(id -u)/local.harbor 2>/dev/null
+rm -f ~/Library/LaunchAgents/local.harbor.plist
+defaults delete local.harbor 2>/dev/null
+rm -rf ~/Library/Application\ Support/local.harbor
 ```
 
 Only remove the door if headroom isn't using it either:
@@ -125,7 +129,25 @@ launchctl bootout gui/$(id -u)/local.localhost.door
 rm ~/Library/LaunchAgents/local.localhost.door.plist
 ```
 
-If I move or delete the app, harbor fixes the agent's path the next time I open it.
+If you move the app somewhere else instead, harbor fixes its helper's path the next time you open it.
+
+## Building it yourself
+
+You need Xcode.
+
+```sh
+./build.sh
+./install.sh
+open /Applications/harbor.app
+```
+
+`install.sh` puts it in `/Applications` and replaces a running copy. To rename the app, change
+`app.conf` and build again. `./package.sh` makes the two zips for the Releases page; build it on
+an Apple Silicon Mac.
+
+`build.sh` signs with my own certificate ("IPS Local Apps") when that's in the keychain, so
+macOS remembers what you allowed harbor to do after a rebuild. Without it, the app gets a
+throwaway signature. Set `SIGN_ID` to use a different certificate.
 
 ## Why it's so light
 
