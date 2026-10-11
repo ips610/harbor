@@ -10,7 +10,8 @@ kernel, so it idles at about 0% CPU.
 The menu bar dropdown works like Manfath: ports grouped into dev servers, databases, runtimes
 and so on, with open, share and kill on every row. Kill asks "confirm?" first and tells you which
 process and folder it's about to stop. You can set a port range and hide processes you don't care
-about. If you tick "macOS services", those rows get a grey macOS tag so they're easy to tell apart.
+about. If you tick "macOS services", they're marked plainly: a "macOS service" badge on their card,
+a grey card style and a macOS pill on each row.
 The badge always counts exactly the rows the list shows, with the same range and filters.
 
 It refreshes every 5, 15 (the default), 30 or 60 seconds while the menu or the page is open, or
@@ -19,9 +20,14 @@ page use the same setting. If the menu bar badge is on (a count or a dot), harbo
 interval with everything closed, so the number stays right. With the badge off, nothing is scanned
 until you look.
 
-Servers that listen on all interfaces get a QR button. Scan it with your phone on the same Wi-Fi
-and it opens the server at this Mac's network address (or its `.local` name). Servers bound to
-`127.0.0.1` only get a note saying how to make them reachable, or to use share instead.
+Like Manfath, it shows the network address in plain sight: the header says "On your network:
+172.17.131.1 · Name.local" (or "Not on a network"), and each row shows where other devices reach it,
+like `172.17.131.1:3000` (click to copy), or "this Mac only". It's read again on every scan, so a
+new Wi-Fi shows up on the next refresh.
+
+Every row has a QR button, and the QR is also in a row's details. A server on all interfaces gets
+its network address as a QR for your phone on the same Wi-Fi. One bound to `127.0.0.1` can't be
+reached from a phone, so it says so and offers share; once shared, the QR opens the public link.
 
 For the full view, open harbor from Applications (or "Open harbor…" in the menu) and it opens
 `harbor.localhost:8470` in your browser. That page groups ports by project, with the folder, the

@@ -108,6 +108,7 @@ struct MenuContent: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("Listening on localhost").font(.system(size: 13, weight: .semibold))
                 Text(meta(count)).font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
+                Text(networkLine).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).textSelection(.enabled)
             }
             Spacer()
             Button { monitor.requestFullScan() } label: { Image(systemName: "arrow.clockwise") }
@@ -120,6 +121,12 @@ struct MenuContent: View {
         .padding(.horizontal, 12)
         .padding(.top, 11)
         .padding(.bottom, 8)
+    }
+
+    /// "On your network: 172.17.131.1 · Name.local", like Manfath's network address.
+    private var networkLine: String {
+        guard let ip = monitor.lanIP else { return "Not on a network" }
+        return "On your network: " + ([ip] + [monitor.lanName].compactMap { $0 }).joined(separator: " · ")
     }
 
     private func meta(_ count: Int) -> String {
@@ -387,7 +394,7 @@ private struct PortLine: View {
                             name
                         }
                         if row.isSystem {
-                            FrameworkTag(text: "macOS", filled: true).fixedSize().help("Part of macOS")
+                            FrameworkTag(text: "macOS", filled: true, symbol: "desktopcomputer").fixedSize().help("A macOS service")
                         }
                         if tunnel != nil {
                             Text("shared")
@@ -404,17 +411,31 @@ private struct PortLine: View {
                                 .help("Listening on all interfaces: other devices on your network can reach it.")
                         }
                     }
-                    Text(subtitle)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    HStack(spacing: 0) {
+                        // Where other devices reach it (click to copy), or "this Mac only".
+                        if let net = row.networkAddress(ip: monitor.lanIP) {
+                            Button {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString("http://\(net)", forType: .string)
+                                monitor.flash("Copied http://\(net)")
+                            } label: { Text(net).foregroundStyle(Tone.openInk) }
+                            .buttonStyle(.plain)
+                            .help("Copy http://\(net)")
+                            .fixedSize()
+                        } else {
+                            Text(row.onNetwork ? "not on a network" : "this Mac only").fixedSize()
+                        }
+                        Text(" · " + subtitle).lineLimit(1)
+                    }
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 4)
                 Pill(title: "open", style: .open, help: "Open \(row.url.absoluteString)") { Engine.open(row) }
-                if row.lanReachable {
+                if !(row.isSystem || row.isSelf) {
                     Button { showLAN.toggle() } label: { Image(systemName: "qrcode") }
                         .buttonStyle(.borderless)
-                        .help("Open it on another device on this network")
+                        .help(row.lanReachable ? "Open it on another device on this network" : "Open it on your phone")
                         .popover(isPresented: $showLAN, arrowEdge: .bottom) { LANCard(row: row) }
                 }
                 if !(row.isSystem || row.isSelf) {
@@ -603,48 +624,91 @@ private struct ShareControl: View {
     }
 }
 
-/// "Open it on your phone": the LAN address as a QR code, like Manfath's.
+/// "Open it on your phone". Reachable servers get their network address as a QR code,
+/// like Manfath's. Loopback-only ones say why a phone can't reach them and offer share;
+/// once shared, the QR opens the public link instead.
 struct LANCard: View {
     @Environment(Monitor.self) private var monitor
     let row: PortRow
+    @State private var confirming = false
+    @State private var note: String?
 
     var body: some View {
-        let url = row.lanURL(ip: LAN.ipv4())
         VStack(alignment: .leading, spacing: 8) {
             Text("Open on another device").font(.system(size: 12, weight: .semibold))
-            if let url {
-                if let cg = Tunnels.shared.qr(url) {
-                    Image(decorative: cg, scale: 1)
-                        .interpolation(.none)
-                        .resizable()
-                        .frame(width: 150, height: 150)
-                        .padding(6)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
-                }
-                HStack(spacing: 6) {
-                    Text(url).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
-                    Spacer(minLength: 4)
-                    Pill(title: "copy") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(url, forType: .string)
-                        monitor.flash("Copied \(url)")
-                    }
-                }
-                if let bonjour = row.bonjourURL(LAN.bonjourName()) {
-                    Text("Or \(bonjour)").font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled)
-                }
-                if LAN.firewallOn {
-                    Text("The macOS firewall is on, so macOS may ask to allow incoming connections for this server.")
-                        .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-            } else {
-                Text("This Mac isn't on a network right now, so other devices can't reach it.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
+            if row.lanReachable { network } else { loopback }
         }
         .padding(12)
         .frame(width: 250)
         .background(WindowAppearance(appearance: monitor.appearance.nsAppearance))  // the popover's own window
+    }
+
+    @ViewBuilder private var network: some View {
+        if let url = row.lanURL(ip: monitor.lanIP) {
+            qr(url)
+            link(url)
+            if let bonjour = row.bonjourURL(monitor.lanName) {
+                Text("Or \(bonjour)").font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled)
+            }
+            if LAN.firewallOn {
+                small("The macOS firewall is on, so macOS may ask to allow incoming connections for this server.")
+            }
+        } else {
+            small("This Mac isn't on a network right now, so other devices can't reach it.")
+        }
+    }
+
+    @ViewBuilder private var loopback: some View {
+        switch Tunnels.shared.active[row.port]?.phase {
+        case .ready(let url)?:
+            small("Phones can't reach 127.0.0.1, so this opens the public link.")
+            qr(url)
+            link(url)
+        case .starting?:
+            HStack(spacing: 6) { ProgressView().controlSize(.mini); small("Opening a public link…") }
+        default:
+            small("Phones can't reach 127.0.0.1. Share it to get a link and QR that work anywhere.")
+            if confirming {
+                Text("Anyone with the link can open \(row.title) on port \(row.port) until you stop sharing.")
+                    .font(.system(size: 11)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 6) {
+                    Pill(title: "share", style: .go) { confirming = false; note = Tunnels.shared.start(row) }
+                    Pill(title: "cancel") { confirming = false }
+                }
+            } else {
+                Pill(title: "share", style: .share, help: "Get a public link for :\(row.port)") {
+                    if Tunnels.tool == nil { note = "\(Tunnels.hint.text) \(Tunnels.hint.command)" } else { confirming = true }
+                }
+            }
+            if let note { small(note).textSelection(.enabled) }
+        }
+    }
+
+    @ViewBuilder private func qr(_ url: String) -> some View {
+        if let cg = Tunnels.shared.qr(url) {
+            Image(decorative: cg, scale: 1)
+                .interpolation(.none)
+                .resizable()
+                .frame(width: 150, height: 150)
+                .padding(6)
+                .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+        }
+    }
+
+    private func link(_ url: String) -> some View {
+        HStack(spacing: 6) {
+            Text(url).font(.system(size: 11, design: .monospaced)).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+            Spacer(minLength: 4)
+            Pill(title: "copy") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(url, forType: .string)
+                monitor.flash("Copied \(url)")
+            }
+        }
+    }
+
+    private func small(_ text: String) -> some View {
+        Text(text).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -674,10 +738,14 @@ private struct DetailLine<Trailing: View>: View {
 private struct FrameworkTag: View {
     let text: String
     var filled = false  // the neutral grey "macOS" tag
+    var symbol: String?
 
     var body: some View {
-        Text(text)
-            .font(.system(size: 10, weight: .medium))
+        HStack(spacing: 3) {
+            if let symbol { Image(systemName: symbol).font(.system(size: 8.5, weight: .semibold)) }
+            Text(text)
+        }
+            .font(.system(size: 10, weight: filled ? .semibold : .medium))
             .padding(.horizontal, 5)
             .padding(.vertical, 1)
             .foregroundStyle(filled ? Tone.neutralInk : Color.secondary)

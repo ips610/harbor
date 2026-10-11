@@ -62,17 +62,23 @@ struct PortRow: Identifiable, Hashable {
         return path.hasPrefix(home + "/") || path.hasPrefix("/private/tmp/") || path.hasPrefix("/tmp/") || path.hasPrefix("/Volumes/")
     }
 
-    /// Reachable from other devices: listening on all interfaces or a LAN address.
-    /// Not offered for harbor itself or macOS services (AirPlay and the like).
-    var lanReachable: Bool {
-        !isSelf && !isSystem && (scope == .all || (scope == .specific && addresses.contains { !$0.contains(":") }))
+    /// Other devices can connect: listening on all interfaces or a LAN IPv4 address.
+    var onNetwork: Bool { scope == .all || (scope == .specific && addresses.contains { !$0.contains(":") }) }
+
+    /// The QR for another device. Not offered for harbor itself or macOS services (AirPlay and the like).
+    var lanReachable: Bool { !isSelf && !isSystem && onNetwork }
+
+    /// "172.17.131.1:3000": where other devices reach it (nil when only this Mac can).
+    func networkAddress(ip: String?) -> String? {
+        guard onNetwork else { return nil }
+        if scope == .all { return ip.map { "\($0):\(port)" } }
+        return addresses.first { !$0.contains(":") }.map { "\($0):\(port)" }
     }
 
     /// The address a phone on the same network would open.
     func lanURL(ip: String?) -> String? {
-        guard lanReachable else { return nil }
-        if scope == .all { return ip.map { "http://\($0):\(port)/" } }
-        return addresses.first { !$0.contains(":") }.map { "http://\($0):\(port)/" }
+        guard lanReachable, let a = networkAddress(ip: ip) else { return nil }
+        return "http://\(a)/"
     }
 
     func bonjourURL(_ name: String?) -> String? {

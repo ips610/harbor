@@ -43,6 +43,7 @@ enum Page {
           --open-bg: #1f3352; --open-ink: #a9c8ff; --share-bg: #173b2e; --share-ink: #86e3bb;
           --seg-1: #3987e5; --seg-2: #d95926; --seg-3: #199e70; --seg-4: #c98500; --seg-free: #2a2a2f;
           --seq: #3987e5; --seq-track: #1c2636;
+          --mac-tint: #1e1e23; --mac-stripe: #8e8e93; --mac-pill-bg: #3a3a3e; --mac-pill-ink: #f2f2f7;
     """
 
     private static let template = #"""
@@ -82,6 +83,7 @@ enum Page {
     --warn: #a35a00;
     --warn-soft: #fbf1e3;
     --focus: #4a63f5;
+    --mac-tint: #eeeef1; --mac-stripe: #8e8e93; --mac-pill-bg: #e3e3e8; --mac-pill-ink: #1d1d1f;
     --c-ports: #4b5bdc;
     --c-mac: #0e7d5d;
     --shared: #0f7f5f;
@@ -203,7 +205,16 @@ enum Page {
   .ptitle .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tag { font: 600 11px/1 var(--f-body); padding: 3px 6px; border-radius: 5px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
   .tag.warn { border-color: transparent; background: var(--warn-soft); color: var(--warn); }
-  .tag.macos { border-color: transparent; background: var(--panel-2); color: var(--text-2); }
+  .tag.macos { border-color: transparent; background: var(--mac-pill-bg); color: var(--mac-pill-ink); display: inline-flex; align-items: center; gap: 4px; }
+  .tag.macos svg, .card-badge svg { width: 12px; height: 12px; flex: none; }
+  .card.mac-svc { border-top-color: var(--mac-stripe); }
+  .card.mac-svc .card-head { background: var(--mac-tint); }
+  .card-badge { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; padding: 4px 9px 4px 7px; border-radius: 999px;
+    background: var(--mac-pill-bg); color: var(--mac-pill-ink); font: 600 12px/1 var(--f-body); }
+  .netaddr { font: inherit; border: 0; background: none; padding: 0; color: var(--open-ink); cursor: copy;
+    text-decoration: underline dotted; text-underline-offset: 3px; }
+  .netaddr:hover { text-decoration-style: solid; }
+  .netaddr.local { color: var(--muted); cursor: inherit; text-decoration: none; }
   .tag.shared { border-color: transparent; background: var(--shared); color: var(--shared-ink); }
   .psub { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .pacts { display: flex; gap: 6px; align-items: center; }
@@ -389,6 +400,7 @@ enum Page {
     </nav>
     <div class="strip mono">
       <span><i class="dot" id="live-dot"></i><span id="st-live">Connecting</span></span>
+      <span id="st-net"></span>
       <span id="st-scan">127.0.0.1 only</span>
     </div>
     <div class="hero">
@@ -627,6 +639,8 @@ function render() {
   const all = state.ports.filter((p) => !p.hidden);
   const ports = visiblePorts();
   setLive(true, `Updated ${Math.round(state.scannedAgo)}s ago`);
+  const net = state.network || {};
+  $('st-net').textContent = net.ip ? 'On your network: ' + [net.ip, net.name].filter(Boolean).join(' · ') : 'Not on a network';
   $('st-scan').textContent = `${location.host} · this Mac only · scanned in ${state.scanMs.toFixed(0)} ms · ${cadence()}`;
   renderHero(all);
   renderAlarm();
@@ -731,7 +745,8 @@ function renderPorts(ports, all) {
 
   const shape = model.map((g) => [g.key, g.rows.map((p) => [p.id, p.title, p.name, p.framework, p.command, p.address,
     uptime(p.uptime), bytes(p.memory), p.workers, p.busy, p.system, p.hint, phase.get(p.id), opened.has(p.id),
-    p.tunnel, sharing.get(p.id), qrShown.has(p.port), state.share.available, lanShown.has(p.id), p.lan, p.lanBonjour, state.network])]);
+    p.tunnel, sharing.get(p.id), qrShown.has(p.port), state.share.available, lanShown.has(p.id), p.lan, p.lanBonjour, p.net,
+    p.lanReachable, p.loopbackOnly, p.macos, state.network])]);
   swap('cards', group + query + JSON.stringify(shape), () => {
     $('cards').className = group === 'project' ? 'cards' : 'stack-list';
     if (!ports.length) {
@@ -743,14 +758,16 @@ function renderPorts(ports, all) {
 }
 
 function card(g) {
+  const mac = g.rows.every((p) => p.macos);
   const frameworks = [...new Set(g.rows.map((p) => p.framework).filter(Boolean))];
   const head = el('div', { class: 'card-head' },
     el('div', { class: 'card-title' },
       el('h3', { text: g.title }),
-      el('p', { class: 'card-path mono', text: g.path || 'App or service' }),
+      mac ? el('p', { class: 'card-badge' }, macGlyph(), 'macOS service')
+        : el('p', { class: 'card-path mono', text: g.path || 'App or service' }),
       frameworks.length ? el('div', { class: 'chips' }, frameworks.map((f) => el('span', { class: 'chip', text: f }))) : null),
     g.folder ? el('button', { class: 'btn quiet', text: 'Reveal', title: 'Show this folder in Finder', onclick: () => act('reveal', g.rows[0].pid) }) : null);
-  return el('article', { class: 'card', style: { '--pc': g.rows[0].color } },
+  return el('article', { class: 'card' + (mac ? ' mac-svc' : ''), style: { '--pc': g.rows[0].color } },
     head, el('ul', { class: 'rows' }, g.rows.map((p) => row(p, false))));
 }
 
@@ -781,12 +798,13 @@ function row(p, showProject) {
   else acts = [
     el('a', { class: 'pl open', href: safeUrl(p.url), target: '_blank', rel: 'noopener noreferrer', text: 'open', title: 'Open ' + p.url, onclick: stop }),
     pill('copy', '', () => copy(p), { title: 'Copy ' + p.url }),
-    p.lanReachable ? qrButton(p) : null,
+    p.system ? null : qrButton(p),
     p.system ? null : shareAction(p, pill),
     p.system ? null : pill('kill', 'kill', () => armKill(p), { title: `Kill PID ${p.pid}` }),
   ];
 
   const isOpen = opened.has(p.id);
+  const area = !p.system && (lanShown.has(p.id) || isOpen);
   const li = el('li', { class: isOpen ? 'open' : '' },
     el('div', { class: 'prow', role: 'button', tabindex: '0', 'aria-expanded': String(isOpen),
       onclick: () => toggle(p.id), onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(p.id); } } },
@@ -795,19 +813,19 @@ function row(p, showProject) {
         el('div', { class: 'ptext' },
           el('div', { class: 'ptitle' }, el('span', { class: 't', text: title }),
             p.framework && p.framework !== title ? el('span', { class: 'tag', text: p.framework }) : null,
-            p.macos ? el('span', { class: 'tag macos', text: 'macOS', title: 'Part of macOS' }) : null,
+            p.macos ? el('span', { class: 'tag macos', title: 'A macOS service' }, macGlyph(), 'macOS') : null,
             p.exposed ? el('span', { class: 'tag warn', text: p.address, title: 'Other devices on your network can reach this port.' }) : null,
             live ? el('span', { class: 'tag shared', text: 'shared', title: 'Public link: ' + live.url }) : null),
-          el('div', { class: 'psub', text: facts }))),
+          el('div', { class: 'psub' }, netAddress(p), ' · ' + facts))),
       el('div', { class: 'pacts' }, acts)),
     ph && ph.text ? el('p', { class: 'pline' + (ph.kind === 'msg' ? ' info' : '') , text: ph.text }) : null,
     sh && sh.kind === 'confirm' ? el('p', { class: 'pline share', text: sh.text }) : null,
     sh && sh.kind === 'hint' ? el('p', { class: 'pline info' }, sh.text + ' ', el('code', { text: sh.command }), ' ',
       pill('copy command', '', () => copyText(sh.command))) : null,
     tunnelLine(p, pill),
-    live && qrShown.has(p.port) ? qrBox(p.port) : null,
-    lanShown.has(p.id) ? lanBox(p, pill) : null,
-    isOpen && p.loopbackOnly ? el('p', { class: 'pline info', text: 'Only this Mac can reach it. Start it on 0.0.0.0 to open it from your phone, or use share for a public link.' }) : null,
+    live && qrShown.has(p.port) && !(area && !p.lanReachable) ? qrBox(p.port) : null,
+    // The QR area: open from the QR pill, and always part of the details.
+    area ? (p.lanReachable ? lanBox(p, pill) : loopBox(p, pill, live)) : null,
     isOpen ? details(p) : null);
   return li;
 }
@@ -883,10 +901,35 @@ function qrButton(p) {
     r.setAttribute('x', x); r.setAttribute('y', y); r.setAttribute('width', 2.2); r.setAttribute('height', 2.2); r.setAttribute('fill', 'currentColor');
     svg.append(r);
   }
-  const on = lanShown.has(p.id);
-  return el('button', { class: 'pl icon' + (on ? ' on' : ''), title: on ? 'Hide the QR code' : 'Open it on another device on this network',
+  const on = lanShown.has(p.id) || opened.has(p.id);
+  return el('button', { class: 'pl icon' + (on ? ' on' : ''), title: on ? 'Hide the QR code' : p.lanReachable ? 'Open it on another device on this network' : 'Open it on your phone',
     'aria-label': 'QR code for another device', 'aria-pressed': String(on),
-    onclick: (e) => { e.stopPropagation(); if (on) lanShown.delete(p.id); else lanShown.add(p.id); render(); } }, svg);
+    onclick: (e) => { e.stopPropagation(); if (on) { lanShown.delete(p.id); opened.delete(p.id); } else lanShown.add(p.id); render(); } }, svg);
+}
+// Where other devices reach a row (click copies the URL), or why they can't.
+function netAddress(p) {
+  if (p.net) return el('button', { class: 'netaddr', text: p.net, title: 'Copy http://' + p.net, onclick: (e) => { e.stopPropagation(); copyText('http://' + p.net); } });
+  return el('span', { class: 'netaddr local', text: p.loopbackOnly ? 'this Mac only' : 'not on a network' });
+}
+// Loopback-only: phones can't reach it, so offer share; once shared, the public link's QR.
+function loopBox(p, pill, live) {
+  if (live) return el('div', {}, el('p', { class: 'pline info', text: "Phones can't reach 127.0.0.1, so this QR opens the public link." }), qrBox(p.port));
+  if (p.tunnel && p.tunnel.state === 'starting') return el('p', { class: 'pline info', text: 'Opening a public link…' });
+  const sh = sharing.get(p.id);
+  return el('div', { class: 'ptunnel' }, "Phones can't reach 127.0.0.1. Share it to get a link and QR that work anywhere.",
+    sh && sh.kind === 'confirm' ? null : pill('share', 'share', () => askShare(p)));
+}
+// A small computer glyph for macOS services (plain shapes, not Apple's logo).
+function macGlyph() {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 16 16'); svg.setAttribute('aria-hidden', 'true');
+  const r = document.createElementNS(NS, 'rect');
+  for (const [k, v] of Object.entries({ x: 1.5, y: 2, width: 13, height: 9, rx: 1.8, fill: 'none', stroke: 'currentColor', 'stroke-width': 1.7 })) r.setAttribute(k, v);
+  const stand = document.createElementNS(NS, 'path');
+  for (const [k, v] of Object.entries({ d: 'M5.5 14h5M8 11v3', stroke: 'currentColor', 'stroke-width': 1.7, 'stroke-linecap': 'round' })) stand.setAttribute(k, v);
+  svg.append(r, stand);
+  return svg;
 }
 
 function lanBox(p, pill) {

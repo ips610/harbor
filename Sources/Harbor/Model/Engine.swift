@@ -232,5 +232,12 @@ enum Engine {
 
     static func reveal(_ path: String) {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+        // A click on the page leaves harbor in the background, and macOS won't let a
+        // background app bring Finder forward, so the window opened behind the browser.
+        // Launch Services may: open Finder with activation, as `open -a Finder` does.
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: "/System/Library/CoreServices/Finder.app"),
+                                           configuration: config)
     }
 }

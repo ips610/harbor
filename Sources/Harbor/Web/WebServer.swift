@@ -293,15 +293,18 @@ final class WebServer: @unchecked Sendable {
             return send(c, HTTPResponse(status: 303, contentType: "text/plain", body: Data(),
                                         headers: [("Location", "/"), ("Set-Cookie", cookie)]))
         }
+        // Tab icons. Unlike everything else they're cacheable and allowed for loads the
+        // browser makes itself: Safari keeps tab icons in its own store, and a no-store
+        // or same-origin-only icon left it showing a letter instead.
+        let iconHeaders = [("Cache-Control", "public, max-age=604800"), ("Cross-Origin-Resource-Policy", "cross-origin")]
         if req.method == "GET" && path == "/favicon.svg" {
-            return send(c, HTTPResponse(status: 200, contentType: "image/svg+xml", body: Data(Page.icon.utf8)))
+            return send(c, HTTPResponse(status: 200, contentType: "image/svg+xml", body: Data(Page.icon.utf8), headers: iconHeaders))
         }
-        // PNG tab icons (and /favicon.ico as the same 32 px PNG) for Safari's tab bar and home screens.
         if req.method == "GET" && ["/favicon-32.png", "/favicon.ico"].contains(path) {
-            return send(c, HTTPResponse(status: 200, contentType: "image/png", body: WaveMark.favicon32))
+            return send(c, HTTPResponse(status: 200, contentType: "image/png", body: WaveMark.favicon32, headers: iconHeaders))
         }
         if req.method == "GET" && ["/apple-touch-icon.png", "/apple-touch-icon-precomposed.png"].contains(path) {
-            return send(c, HTTPResponse(status: 200, contentType: "image/png", body: WaveMark.appleTouch))
+            return send(c, HTTPResponse(status: 200, contentType: "image/png", body: WaveMark.appleTouch, headers: iconHeaders))
         }
         guard path.hasPrefix("/api/") else { return send(c, .json(404, ["error": "not found"])) }
         guard sessionMatches(Self.cookieValue(Self.cookie, in: req.headers["cookie"])) else {
@@ -373,13 +376,14 @@ final class WebServer: @unchecked Sendable {
         var head = "HTTP/1.1 \(r.status) \(HTTPResponse.reason(r.status))\r\n"
         head += "Content-Type: \(r.contentType)\r\n"
         head += "Content-Length: \(r.body.count)\r\n"
-        head += "Cache-Control: no-store\r\n"
+        let custom = Set(r.headers.map { $0.0.lowercased() })
+        if !custom.contains("cache-control") { head += "Cache-Control: no-store\r\n" }
         head += "Connection: close\r\n"
         head += "Content-Security-Policy: \(Self.csp)\r\n"
         head += "X-Content-Type-Options: nosniff\r\n"
         head += "X-Frame-Options: DENY\r\n"
         head += "Referrer-Policy: no-referrer\r\n"
-        head += "Cross-Origin-Resource-Policy: same-origin\r\n"
+        if !custom.contains("cross-origin-resource-policy") { head += "Cross-Origin-Resource-Policy: same-origin\r\n" }
         for (k, v) in r.headers { head += "\(k): \(v)\r\n" }
         head += "\r\n"
         var data = Data(head.utf8)

@@ -41,8 +41,8 @@ enum WebAPI {
         var pids = Set<pid_t>()
 
         let tunnels = Tunnels.shared.active
-        let lanIP = LAN.ipv4()
-        let bonjour = LAN.bonjourName()
+        let lanIP = m.lanIP
+        let bonjour = m.lanName
         var portsShown = Set<UInt16>()
         let ports: [[String: Any]] = m.ports.map { r in
             pids.insert(r.pid)
@@ -61,6 +61,7 @@ enum WebAPI {
                 "lan": n(r.lanURL(ip: lanIP)),
                 "lanBonjour": n(r.bonjourURL(bonjour)),
                 "lanReachable": r.lanReachable,
+                "net": n(r.networkAddress(ip: lanIP)),
                 "loopbackOnly": r.scope == .loopback,
                 "id": r.id,
                 "port": Int(r.port),
@@ -122,7 +123,7 @@ enum WebAPI {
             "notices": m.notices.map { ["id": $0.id, "text": $0.text] },
             "share": ["available": tool != nil, "provider": n(tool?.name), "hint": hint.text, "command": hint.command],
             "loginItem": loginItemOn,
-            "network": ["ip": n(lanIP), "firewall": LAN.firewallOn],
+            "network": ["ip": n(lanIP), "name": n(bonjour), "firewall": LAN.firewallOn],
             "settings": [
                 "minPort": m.minPort, "maxPort": m.maxPort,
                 "showSystem": m.showSystemPorts, "onlyServers": m.onlyServers, "grouping": m.grouping.rawValue,
@@ -154,7 +155,7 @@ enum WebAPI {
         }
         let url: String?
         if lan {
-            url = Monitor.shared.ports.first { $0.port == p && $0.lanReachable }?.lanURL(ip: LAN.ipv4())
+            url = Monitor.shared.ports.first { $0.port == p && $0.lanReachable }?.lanURL(ip: Monitor.shared.lanIP)
         } else if case .ready(let u)? = Tunnels.shared.active[p]?.phase {
             url = u
         } else {

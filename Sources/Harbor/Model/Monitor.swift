@@ -339,8 +339,15 @@ final class Monitor {
         }
     }
 
+    /// This Mac's LAN address and Bonjour name, read again on every scan so a new Wi-Fi shows up.
+    private(set) var lanIP = LAN.ipv4()
+    private(set) var lanName = LAN.bonjourName()
+
     private func apply(_ scan: FullScan, memory m: MemorySnapshot) {
         if ports != scan.ports { ports = scan.ports }
+        let ip = LAN.ipv4(), name = LAN.bonjourName()
+        if ip != lanIP { lanIP = ip }
+        if name != lanName { lanName = name }
         refreshBadge()
         Tunnels.shared.prune(listening: Set(scan.ports.map(\.port)))
         if apps != scan.apps {
