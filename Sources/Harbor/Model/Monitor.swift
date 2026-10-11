@@ -46,6 +46,17 @@ final class Monitor {
         didSet { UserDefaults.standard.set(maxPort, forKey: "maxPort") }
     }
 
+    enum Grouping: String, CaseIterable, Identifiable {
+        case project, category, flat
+        var id: String { rawValue }
+        var title: String { rawValue.capitalized }
+    }
+
+    /// How ports are grouped, in the menu and on the page alike.
+    var grouping = Grouping(rawValue: UserDefaults.standard.string(forKey: "grouping") ?? "") ?? .project {
+        didSet { if !DebugCLI.isDebugRun { UserDefaults.standard.set(grouping.rawValue, forKey: "grouping") } }
+    }
+
     /// Manfath's "Refresh": seconds between scans while the menu is open; 0 = manual.
     var refreshInterval = (UserDefaults.standard.object(forKey: "refreshInterval") as? Double) ?? 3 {
         didSet {

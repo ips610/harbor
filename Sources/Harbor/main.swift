@@ -1,13 +1,27 @@
 import AppKit
 
+// The port-80 door (started by launchd): redirect and exit, no app, no menu bar.
+if CommandLine.arguments.contains("--door") {
+    Door.run()
+}
+
 // Debug/test commands (`--dump`, `--bench`, `--test-stop`, `--make-icon`) run
 // without any UI and exit. Everything else starts the menu bar app.
 if DebugCLI.handle(CommandLine.arguments) {
     exit(0)
 }
-// One harbor at a time: a second launch asks the running one to show its page.
-if !DebugCLI.isDebugRun, handOffToRunningCopy() {
-    exit(0)
+// A normal launch (Finder, Spotlight, login item). The instance that runs is
+// the one launchd starts with `--launchd`, because launchd owns port 8470.
+if !DebugCLI.isDebugRun && !LaunchAgent.underLaunchd {
+    if LaunchAgent.pointsAtMissingApp { LaunchAgent.ensureInstalled() }  // the app moved or was deleted
+    Door.ensureInstalled()  // harbor.localhost without a port
+    // One harbor at a time: a running one is asked to show its page.
+    if handOffToRunningCopy() { exit(0) }
+    if LaunchAgent.ensureInstalled() {
+        if !LaunchAgent.soonAfterBoot { LaunchAgent.requestPage() }
+        if LaunchAgent.kickstart() { exit(0) }
+    }
+    // No agent (e.g. launchctl refused): run here and bind the port ourselves.
 }
 if DebugCLI.isDebugRun {
     // Test runs: no SwiftUI scene, so no second icon in the real menu bar.

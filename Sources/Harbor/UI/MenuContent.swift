@@ -35,32 +35,31 @@ struct PortRange: Identifiable {
     ]
 }
 
-enum MenuGrouping: String, CaseIterable, Identifiable {
-    case category, project, flat
-    var id: String { rawValue }
-    var title: String {
-        switch self {
-        case .category: return "Group by category"
-        case .project: return "Group by project"
-        case .flat: return "Flat list"
-        }
-    }
-}
-
 /// The menu bar dropdown, modelled on Manfath: what is listening on
 /// localhost, in compact rows with open and kill. Memory and stuck-process
 /// notes sit apart, below the list, and only take space when they matter.
 struct MenuContent: View {
     @Environment(Monitor.self) private var monitor
-    @AppStorage("menuGrouping") private var grouping: MenuGrouping = .category
     @State private var query = ""
     @State private var loginItem = SMAppService.mainApp.status == .enabled
 
+    private var grouping: Monitor.Grouping { monitor.grouping }
+
     var body: some View {
+        @Bindable var monitor = monitor
         let rows = filteredRows
         VStack(spacing: 0) {
             header(count: monitor.visiblePorts.count)
             searchField.padding(.horizontal, 12).padding(.bottom, 8)
+            // Same switch as on the page, and the same setting.
+            Picker("Group", selection: $monitor.grouping) {
+                ForEach(Monitor.Grouping.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .controlSize(.small)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 8)
             if let notice = monitor.notices.last {
                 NoticeStrip(notice: notice)
             }
@@ -72,7 +71,7 @@ struct MenuContent: View {
                 // scroll position steady while rows refresh.
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
-                        ForEach(sections(rows), id: \.title) { section in
+                        ForEach(sections(rows), id: \.id) { section in
                             if grouping != .flat {
                                 SectionTitle(title: section.title, count: section.rows.count,
                                              color: grouping == .project ? section.rows.first.map { Color(hex: $0.colorHex) } : nil)
@@ -129,11 +128,6 @@ struct MenuContent: View {
     private var settingsMenu: some View {
         @Bindable var monitor = monitor
         return Menu {
-            Picker("Rows", selection: $grouping) {
-                ForEach(MenuGrouping.allCases) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.inline)
-            Divider()
             Menu("Visible range: \(monitor.minPort)–\(monitor.maxPort)") {
                 ForEach(PortRange.presets) { r in
                     Button {
@@ -257,6 +251,7 @@ struct MenuContent: View {
     private struct MenuSection {
         let title: String
         let rows: [PortRow]
+        var id: String { (rows.first?.groupKey ?? "") + title }
     }
 
     private func sections(_ rows: [PortRow]) -> [MenuSection] {
@@ -269,14 +264,16 @@ struct MenuContent: View {
                 return rs.isEmpty ? nil : MenuSection(title: c.title, rows: rs)
             }
         case .project:
-            let groups = Dictionary(grouping: rows) { $0.title }
-            return groups.keys.sorted { a, b in
-                let pa = groups[a]!.contains { $0.projectFolder != nil }
-                let pb = groups[b]!.contains { $0.projectFolder != nil }
-                if pa != pb { return pa }
-                return a.localizedCaseInsensitiveCompare(b) == .orderedAscending
-            }
-            .map { MenuSection(title: $0, rows: groups[$0]!.sorted { $0.port < $1.port }) }
+            // Like the page's cards: projects, then plain folders, then apps.
+            let groups = Dictionary(grouping: rows) { $0.groupKey }
+            func rank(_ r: PortRow) -> Int { r.projectRoot != nil ? 0 : r.projectFolder != nil ? 1 : 2 }
+            return groups.values
+                .map { rs in MenuSection(title: rs[0].title, rows: rs.sorted { $0.port < $1.port }) }
+                .sorted { a, b in
+                    let ra = rank(a.rows[0]), rb = rank(b.rows[0])
+                    if ra != rb { return ra < rb }
+                    return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+                }
         }
     }
 

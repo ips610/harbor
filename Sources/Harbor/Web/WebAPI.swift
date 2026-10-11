@@ -14,7 +14,22 @@ enum WebAPI {
 
     // MARK: State
 
+    static var quitting = false
+    private static var quitReplied = false
+
+    static func finishQuit() {
+        guard quitting, !quitReplied else { return }
+        quitReplied = true
+        NSApp.reply(toApplicationShouldTerminate: true)
+    }
+
     static func state(_ done: @escaping (Data) -> Void) {
+        if quitting {
+            // Every visible tab polls within 3 s; tell each one to stop before
+            // harbor exits (finishQuit runs 3.5 s after Quit).
+            done(Data(#"{"quit":true}"#.utf8))
+            return
+        }
         let m = Monitor.shared
         m.webTouch()
         m.fresh(maxAge: 2.0) {
@@ -106,7 +121,7 @@ enum WebAPI {
             "loginItem": SMAppService.mainApp.status == .enabled,
             "settings": [
                 "minPort": m.minPort, "maxPort": m.maxPort,
-                "showSystem": m.showSystemPorts, "onlyServers": m.onlyServers,
+                "showSystem": m.showSystemPorts, "onlyServers": m.onlyServers, "grouping": m.grouping.rawValue,
             ],
             "memory": [
                 "physical": Double(mem.physical), "used": Double(mem.used), "app": Double(mem.app),
@@ -158,6 +173,7 @@ enum WebAPI {
             if let lo = obj["minPort"] as? Int, let hi = obj["maxPort"] as? Int { m.setRange(lo, hi) }
             if let v = obj["showSystem"] as? Bool { m.showSystemPorts = v }
             if let v = obj["onlyServers"] as? Bool { m.onlyServers = v }
+            if let g = obj["grouping"] as? String, let v = Monitor.Grouping(rawValue: g) { m.grouping = v }
             return done(200, ["result": "ok"])
         case "unshare":
             guard let port = obj["port"] as? Int, let p = UInt16(exactly: port), Tunnels.shared.active[p] != nil else {

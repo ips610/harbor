@@ -24,6 +24,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stopTunnelsOnSignals()
         Monitor.shared.start()
         if DebugCLI.afterLaunch() { return }
+        if LaunchAgent.underLaunchd {
+            // Started by launchd: a browser may already be waiting on the socket.
+            WebServer.shared.start { _ in }
+            if LaunchAgent.takePageRequest() { WebServer.shared.openInBrowser() }
+            DispatchQueue.global(qos: .utility).async { Door.ensureInstalled() }
+            return
+        }
         // Opened from Applications or Spotlight: show the page. At login: stay in the menu bar.
         if !atLogin { WebServer.shared.openInBrowser() }
     }
@@ -36,6 +43,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
+    /// With a page open, its next poll would make launchd start harbor again.
+    /// So answer that poll with "quit" first (at most 3.5 s), then exit.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard Monitor.shared.webActive, !WebAPI.quitting else { return .terminateNow }
+        WebAPI.quitting = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { WebAPI.finishQuit() }
+        return .terminateLater
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         Tunnels.shared.stopAll()
     }
@@ -47,9 +63,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for sig in [SIGTERM, SIGINT] {
             signal(sig, SIG_IGN)
             let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            // Quit the normal way: an open page is told first, tunnels are stopped
+            // in applicationWillTerminate.
+            // Via the run loop, not inside this GCD block: terminateLater runs a
+            // nested event loop that must still drain the main queue.
             src.setEventHandler {
-                MainActor.assumeIsolated { Tunnels.shared.stopAll() }
-                exit(0)
+                RunLoop.main.perform { MainActor.assumeIsolated { NSApp.terminate(nil) } }
             }
             src.resume()
             signalSources.append(src)

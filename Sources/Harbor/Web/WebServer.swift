@@ -57,6 +57,12 @@ final class WebServer: @unchecked Sendable {
             self.waiting.append(deliver)
             guard !self.starting else { return }
             self.starting = true
+            // Started by launchd: serve on the sockets it hands over.
+            if LaunchAgent.underLaunchd {
+                let fds = LaunchAgent.activatedSockets()
+                if !fds.isEmpty { return self.adopt(fds, port: UInt16(LaunchAgent.port)) }
+                DebugCLI.log("launch_activate_socket gave nothing; binding ourselves")
+            }
             self.tryPort(0)
         }
     }
@@ -92,7 +98,13 @@ final class WebServer: @unchecked Sendable {
         }
         let wanted: UInt16 = i < Self.ports.count ? Self.ports[i] : 0
         guard let (fds, port) = Self.bindLoopback(wanted) else { return tryPort(i + 1) }
+        adopt(fds, port: port)
+    }
+
+    /// Serve on these listening sockets (ours, or launchd's).
+    private func adopt(_ fds: [Int32], port: UInt16) {
         for fd in fds {
+            _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
             let src = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
             src.setEventHandler { [weak self] in self?.acceptAll(fd) }
             src.setCancelHandler { close(fd) }
@@ -101,7 +113,7 @@ final class WebServer: @unchecked Sendable {
         }
         boundPort = port
         starting = false
-        DebugCLI.log("listening on 127.0.0.1 and [::1] port \(port)")
+        DebugCLI.log("serving on 127.0.0.1 and [::1] port \(port)\(LaunchAgent.underLaunchd ? " (launchd)" : "")")
         flush(loginURL())
     }
 
@@ -238,7 +250,20 @@ final class WebServer: @unchecked Sendable {
         let query = parts.count > 1 ? String(parts[1]) : ""
         if req.method == "GET" && path == "/" {
             guard let code = Self.param("k", in: query) else {
-                return send(c, HTTPResponse(status: 200, contentType: "text/html; charset=utf-8", body: Data(Page.html.utf8)))
+                // A top-level visit that's typed, bookmarked, or came through the
+                // port-80 door's redirect signs this tab in. Cross-site or no Fetch
+                // Metadata gets the page without a session, so no website can mint one.
+                var headers: [(String, String)] = []
+                let signedIn = sessionMatches(Self.cookieValue(Self.cookie, in: req.headers["cookie"]))
+                let navigation = req.headers["sec-fetch-mode"] == "navigate"
+                let site = req.headers["sec-fetch-site"] ?? ""
+                if !signedIn && navigation && ["none", "same-origin", "same-site"].contains(site) {
+                    headers.append(("Set-Cookie", "\(Self.cookie)=\(session); Path=/; HttpOnly; SameSite=Strict"))
+                }
+                // ?look=a|b|c previews the candidate designs; the default page stays.
+                let page = ["a", "b", "c"].contains(Self.param("look", in: query) ?? "") ? PageLooks.html : Page.html
+                return send(c, HTTPResponse(status: 200, contentType: "text/html; charset=utf-8",
+                                            body: Data(page.utf8), headers: headers))
             }
             // Login link: trade the code for the session cookie, then a clean URL.
             guard let issued = loginCodes[code], Date().timeIntervalSince(issued) < Self.codeLifetime else {

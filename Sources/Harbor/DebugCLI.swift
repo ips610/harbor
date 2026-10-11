@@ -173,6 +173,9 @@ enum DebugCLI {
             }
             return true
         }
+        if let g = value(after: "--grouping"), let v = Monitor.Grouping(rawValue: g) {
+            Monitor.shared.grouping = v  // not saved in debug runs
+        }
         if let look = value(after: "--appearance") {
             NSApp.appearance = NSAppearance(named: look == "dark" ? .darkAqua : .aqua)
         }

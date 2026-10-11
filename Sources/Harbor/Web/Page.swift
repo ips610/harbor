@@ -343,7 +343,7 @@ enum Page {
         <div class="seg" role="group" aria-label="Group ports">
           <button type="button" data-group="project" aria-pressed="true">Project</button>
           <button type="button" data-group="category" aria-pressed="false">Category</button>
-          <button type="button" data-group="port" aria-pressed="false">Flat</button>
+          <button type="button" data-group="flat" aria-pressed="false">Flat</button>
         </div>
         <span class="range" title="Ports outside this range are hidden, like Manfath's visible range.">Ports
           <input type="number" id="rmin" min="1" max="65535" aria-label="Lowest port shown"> –
@@ -401,7 +401,7 @@ const qrCache = new Map();
 
 function store(key, value) { try { localStorage.setItem(key, value); } catch (e) {} }
 function load(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
-group = ['project', 'category', 'port'].includes(load('harbor.group')) ? load('harbor.group') : 'project';
+// The grouping is a setting in the app, shared with the menu; see render().
 
 // Build DOM without ever parsing strings as HTML.
 function el(tag, props, ...kids) {
@@ -458,14 +458,22 @@ async function poll() {
   timer = null;
   if (document.visibilityState !== 'visible') return;
   try {
-    state = await api('/api/state');
+    const next = await api('/api/state');
+    if (next.quit) {
+      // harbor was quit from its menu: stop asking, or launchd would start it again.
+      $('offline').hidden = false;
+      $('offline-text').textContent = '__APP__ was quit. Type harbor.localhost:8470 in the address bar to start it again.';
+      setLive(false, 'Quit');
+      return;
+    }
+    state = next;
     $('offline').hidden = true;
     render();
   } catch (e) {
     $('offline').hidden = false;
     if (e.message === 'session') {
       // A tab from an earlier run (or opened without the link): stop asking.
-      $('offline-text').textContent = 'This tab belongs to an earlier __APP__ session. Open __APP__ from the menu bar to get a fresh one.';
+      $('offline-text').textContent = "This tab isn't signed in to __APP__. Type harbor.localhost:8470 in the address bar, or open __APP__ from the menu bar.";
       setLive(false, 'Old session');
       return;
     }
@@ -513,6 +521,7 @@ function groups(ports) {
 }
 
 function render() {
+  if (state.settings.grouping) group = state.settings.grouping;
   const all = state.ports.filter((p) => !p.hidden);
   const ports = visiblePorts();
   setLive(true, `Updated ${Math.round(state.scannedAgo)}s ago`);
@@ -867,7 +876,7 @@ async function copy(p) {
 
 // ---------- controls ----------
 for (const b of document.querySelectorAll('.seg button')) {
-  b.addEventListener('click', () => { group = b.dataset.group; store('harbor.group', group); if (state) render(); });
+  b.addEventListener('click', () => { group = b.dataset.group; if (state) { state.settings.grouping = group; render(); } saveSettings({ grouping: group }); });
 }
 async function saveSettings(change) {
   await act('settings', 0, change);

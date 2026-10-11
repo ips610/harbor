@@ -25,7 +25,8 @@ for path in "$TARGET" "$OLD"; do
   if [ -n "$RUNNING" ]; then
     echo "==> Quitting the running $APP_NAME ($RUNNING)"
     kill $RUNNING || true
-    sleep 1
+    for _ in 1 2 3 4 5 6; do pgrep -f "$path/Contents/MacOS/$EXECUTABLE" >/dev/null || break; sleep 1; done
+    pkill -9 -f "$path/Contents/MacOS/$EXECUTABLE" 2>/dev/null || true
   fi
 done
 

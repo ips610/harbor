@@ -39,6 +39,38 @@ open /Applications/harbor.app
 time; opening it again just brings up the page. Open at login is in the gear menu and off by
 default. To rename the app, change `app.conf` and build again.
 
+### Typing the address
+
+The first time harbor runs it adds a small LaunchAgent, `~/Library/LaunchAgents/local.harbor.plist`.
+launchd then holds `127.0.0.1:8470` and `[::1]:8470` for me, and nothing runs until something
+connects. So I can quit harbor, type `harbor.localhost:8470` in Safari, and it starts and shows the
+page. Typing the address (or using a bookmark) also signs the tab in; a link from another website
+can't.
+
+If `local.localhost.door` isn't already there (headroom adds the same one), harbor also adds that
+agent. It answers on port 80 and sends `harbor.localhost` to `:8470` and `headroom.localhost` to
+`:8460`, so the bare name works too. It exits ten seconds after the last visit.
+
+If I quit harbor while its page is open, the page is told first and stops asking, so it doesn't
+start harbor again behind my back.
+
+### Uninstalling
+
+```sh
+launchctl bootout gui/$(id -u)/local.harbor
+rm ~/Library/LaunchAgents/local.harbor.plist
+rm -rf /Applications/harbor.app
+```
+
+Only remove the door if headroom isn't using it either:
+
+```sh
+launchctl bootout gui/$(id -u)/local.localhost.door
+rm ~/Library/LaunchAgents/local.localhost.door.plist
+```
+
+If I move or delete the app, harbor fixes the agent's path the next time I open it.
+
 ## Why it's so light
 
 It never runs `lsof`, `ps` or `netstat`. It asks the kernel directly (libproc, sysctl,
