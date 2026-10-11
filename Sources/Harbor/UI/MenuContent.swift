@@ -7,7 +7,7 @@ struct MenuBarLabel: View {
 
     var body: some View {
         // Manfath-style badge: the port count or a dot next to the icon.
-        let count = monitor.badgeMode == "hidden" ? 0 : monitor.visiblePorts.count
+        let count = monitor.badgeCount  // changes only when the number does
         HStack(spacing: 3) {
             Image(nsImage: StatusIcon.image(for: monitor.iconState))
             if monitor.badgeMode == "count", count > 0 {
@@ -41,6 +41,9 @@ struct PortRange: Identifiable {
 struct MenuContent: View {
     @Environment(Monitor.self) private var monitor
     @State private var query = ""
+    // With keyboard navigation on, the window's first control opens highlighted;
+    // start in the search field instead, so typing filters straight away.
+    @FocusState private var searchFocused: Bool
     @State private var loginItem = SMAppService.mainApp.status == .enabled
 
     private var grouping: Monitor.Grouping { monitor.grouping }
@@ -92,6 +95,7 @@ struct MenuContent: View {
             footer
         }
         .frame(width: 400)
+        .onAppear { DispatchQueue.main.async { searchFocused = true } }
         .overlay(alignment: .bottom) { ToastView() }
         .background(WindowVisibilityReporter(surface: .menu))
     }
@@ -154,17 +158,23 @@ struct MenuContent: View {
             }
             Divider()
             Picker("Refresh while open", selection: $monitor.refreshInterval) {
-                Text("Every 1 second").tag(1.0)
-                Text("Every 3 seconds").tag(3.0)
-                Text("Every 10 seconds").tag(10.0)
+                Text("Every 5 seconds").tag(5.0)
+                Text("Every 15 seconds").tag(15.0)
+                Text("Every 30 seconds").tag(30.0)
+                Text("Every minute").tag(60.0)
+                if !Monitor.presetIntervals.contains(monitor.refreshInterval) {
+                    Text("Every \(Int(monitor.refreshInterval)) seconds (custom)").tag(monitor.refreshInterval)
+                }
                 Text("Manual only").tag(0.0)
             }
+            Button("Custom interval…") { askCustomInterval() }
             Picker("Menu bar badge", selection: $monitor.badgeMode) {
                 Text("Count").tag("count")
                 Text("Dot").tag("dot")
                 Text("Hidden").tag("hidden")
             }
             Toggle("Open at login", isOn: Binding(get: { loginItem }, set: { setLoginItem($0) }))
+            Toggle("Show in Dock", isOn: $monitor.showInDock)
             Divider()
             Button("Open \(AppInfo.name) page") { WebServer.shared.openInBrowser() }
             Button("Quit \(AppInfo.name)") { NSApp.terminate(nil) }
@@ -183,6 +193,7 @@ struct MenuContent: View {
             TextField("Search ports, processes, PIDs…", text: $query)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12))
+                .focused($searchFocused)
             if !query.isEmpty {
                 Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
                     .buttonStyle(.borderless)
@@ -228,9 +239,8 @@ struct MenuContent: View {
     private var scanLabel: String {
         switch monitor.refreshInterval {
         case 0: return "Manual scan only"
-        case 1: return "Scanning every 1s"
-        case 10: return "Scanning every 10s"
-        default: return "Scanning every 3s"
+        case 60: return "Scanning every minute"
+        default: return "Scanning every \(Int(monitor.refreshInterval))s"
         }
     }
 
@@ -272,9 +282,31 @@ struct MenuContent: View {
                 .sorted { a, b in
                     let ra = rank(a.rows[0]), rb = rank(b.rows[0])
                     if ra != rb { return ra < rb }
-                    return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+                    let t = a.title.localizedCaseInsensitiveCompare(b.title)
+                    // Two folders can share a name ("web"): the lower port first, so the order holds.
+                    return t == .orderedSame ? a.rows[0].port < b.rows[0].port : t == .orderedAscending
                 }
         }
+    }
+
+    /// Whole seconds, 5 to 3600. Lower is raised to 5, higher capped at 3600.
+    private func askCustomInterval() {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Scan every how many seconds?"
+        alert.informativeText = "While the menu or the page is open. Whole seconds, from 5 to 3600."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
+        field.stringValue = monitor.refreshInterval > 0 ? String(Int(monitor.refreshInterval)) : "15"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Set")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn,
+              let typed = Double(field.stringValue.trimmingCharacters(in: .whitespaces)), typed > 0 else { return }
+        let value = Monitor.clampInterval(typed)
+        monitor.refreshInterval = value
+        if typed < 5 { monitor.flash("Raised to 5 seconds, the shortest interval.") }
+        else if typed > 3600 { monitor.flash("Capped at 3600 seconds (one hour).") }
     }
 
     private func setLoginItem(_ on: Bool) {
@@ -284,6 +316,7 @@ struct MenuContent: View {
             monitor.flash(error.localizedDescription)
         }
         loginItem = SMAppService.mainApp.status == .enabled
+        WebAPI.loginItemCache = nil
         if SMAppService.mainApp.status == .requiresApproval {
             monitor.flash("Approve \(AppInfo.name) in System Settings → General → Login Items.")
         }
@@ -321,6 +354,7 @@ private struct PortLine: View {
     @State private var caption: String?
     @State private var shareNote: String?
     @State private var showQR = false
+    @State private var showLAN = false
 
     var body: some View {
         let tunnel = Tunnels.shared.active[row.port]
@@ -338,6 +372,7 @@ private struct PortLine: View {
                         Text(showTitle ? row.title : row.processName)
                             .font(.system(size: 13))
                             .lineLimit(1)
+                            .layoutPriority(1)
                         if let fw = row.framework, fw != row.title {
                             FrameworkTag(text: fw)
                         }
@@ -363,6 +398,12 @@ private struct PortLine: View {
                 }
                 Spacer(minLength: 4)
                 Pill(title: "open", style: .open, help: "Open \(row.url.absoluteString)") { Engine.open(row) }
+                if row.lanReachable {
+                    Button { showLAN.toggle() } label: { Image(systemName: "qrcode") }
+                        .buttonStyle(.borderless)
+                        .help("Open it on another device on this network")
+                        .popover(isPresented: $showLAN, arrowEdge: .bottom) { LANCard(row: row) }
+                }
                 if !(row.isSystem || row.isSelf) {
                     ShareControl(row: row, note: $shareNote)
                 }
@@ -497,6 +538,12 @@ private struct PortLine: View {
             if let hint = row.hint {
                 Text(hint).font(.system(size: 11)).foregroundStyle(.secondary)
             }
+            if row.scope == .loopback {
+                Text("Only this Mac can reach it. Start it on 0.0.0.0 to open it from your phone, or use share for a public link.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }
@@ -543,6 +590,50 @@ private struct ShareControl: View {
     }
 }
 
+/// "Open it on your phone": the LAN address as a QR code, like Manfath's.
+struct LANCard: View {
+    @Environment(Monitor.self) private var monitor
+    let row: PortRow
+
+    var body: some View {
+        let url = row.lanURL(ip: LAN.ipv4())
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Open on another device").font(.system(size: 12, weight: .semibold))
+            if let url {
+                if let cg = Tunnels.shared.qr(url) {
+                    Image(decorative: cg, scale: 1)
+                        .interpolation(.none)
+                        .resizable()
+                        .frame(width: 150, height: 150)
+                        .padding(6)
+                        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+                }
+                HStack(spacing: 6) {
+                    Text(url).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
+                    Spacer(minLength: 4)
+                    Pill(title: "copy") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(url, forType: .string)
+                        monitor.flash("Copied \(url)")
+                    }
+                }
+                if let bonjour = row.bonjourURL(LAN.bonjourName()) {
+                    Text("Or \(bonjour)").font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled)
+                }
+                if LAN.firewallOn {
+                    Text("The macOS firewall is on, so macOS may ask to allow incoming connections for this server.")
+                        .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                Text("This Mac isn't on a network right now, so other devices can't reach it.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(12)
+        .frame(width: 250)
+    }
+}
+
 private struct DetailLine<Trailing: View>: View {
     let label: String
     let value: String
@@ -576,6 +667,7 @@ private struct FrameworkTag: View {
             .padding(.vertical, 1)
             .foregroundStyle(.secondary)
             .background(RoundedRectangle(cornerRadius: 4).strokeBorder(Color.secondary.opacity(0.35)))
+            .lineLimit(1)  // truncates before the name does, never wraps
     }
 }
 

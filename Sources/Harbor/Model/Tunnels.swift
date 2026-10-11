@@ -191,12 +191,17 @@ final class Tunnels {
 
     // MARK: QR codes
 
+    /// Pixels per QR module. Scaled here with nearest sampling so the code stays
+    /// sharp however it is drawn (snapshots ignore SwiftUI's .interpolation).
+    private static let qrScale = 8
+
     func qr(_ text: String) -> CGImage? {
         if let c = qrCache[text] { return c }
         guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
         filter.setValue(Data(text.utf8), forKey: "inputMessage")
         filter.setValue("M", forKey: "inputCorrectionLevel")
-        guard let image = filter.outputImage,
+        let k = CGFloat(Self.qrScale)
+        guard let image = filter.outputImage?.samplingNearest().transformed(by: CGAffineTransform(scaleX: k, y: k)),
               let cg = CIContext(options: [.useSoftwareRenderer: true]).createCGImage(image, from: image.extent) else { return nil }
         qrCache[text] = cg
         return cg
@@ -210,6 +215,7 @@ final class Tunnels {
         guard let ctx = CGContext(data: &pixels, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w,
                                   space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
         ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
-        return (0..<h).map { y in String((0..<w).map { pixels[y * w + $0] < 128 ? "1" : "0" }) }
+        let k = Self.qrScale, n = w / k  // one sample from the middle of each module
+        return (0..<n).map { y in String((0..<n).map { pixels[(y * k + k / 2) * w + $0 * k + k / 2] < 128 ? "1" : "0" }) }
     }
 }

@@ -34,16 +34,29 @@ final class Monitor {
     private(set) var notices: [Notice] = []
     // Port filters, shared by the menu and the page (Manfath's visible range).
     var showSystemPorts = UserDefaults.standard.bool(forKey: "showSystemPorts") {
-        didSet { UserDefaults.standard.set(showSystemPorts, forKey: "showSystemPorts") }
+        didSet { UserDefaults.standard.set(showSystemPorts, forKey: "showSystemPorts"); refreshBadge() }
     }
     var onlyServers = UserDefaults.standard.bool(forKey: "onlyServers") {
-        didSet { UserDefaults.standard.set(onlyServers, forKey: "onlyServers") }
+        didSet { UserDefaults.standard.set(onlyServers, forKey: "onlyServers"); refreshBadge() }
     }
     var minPort = (UserDefaults.standard.object(forKey: "minPort") as? Int) ?? 1024 {
-        didSet { UserDefaults.standard.set(minPort, forKey: "minPort") }
+        didSet { UserDefaults.standard.set(minPort, forKey: "minPort"); refreshBadge() }
     }
     var maxPort = (UserDefaults.standard.object(forKey: "maxPort") as? Int) ?? 65535 {
-        didSet { UserDefaults.standard.set(maxPort, forKey: "maxPort") }
+        didSet { UserDefaults.standard.set(maxPort, forKey: "maxPort"); refreshBadge() }
+    }
+
+    /// Show harbor in the Dock (on by default); the menu bar icon stays either way.
+    var showInDock = (UserDefaults.standard.object(forKey: "showInDock") as? Bool) ?? true {
+        didSet {
+            if !DebugCLI.isDebugRun { UserDefaults.standard.set(showInDock, forKey: "showInDock") }
+            applyDockPolicy()
+        }
+    }
+
+    func applyDockPolicy() {
+        guard !DebugCLI.isDebugRun else { return }
+        NSApp.setActivationPolicy(showInDock ? .regular : .accessory)
     }
 
     enum Grouping: String, CaseIterable, Identifiable {
@@ -58,23 +71,65 @@ final class Monitor {
     }
 
     /// Manfath's "Refresh": seconds between scans while the menu is open; 0 = manual.
-    var refreshInterval = (UserDefaults.standard.object(forKey: "refreshInterval") as? Double) ?? 3 {
+    static let presetIntervals: [Double] = [5, 15, 30, 60, 0]
+
+    /// Whole seconds, 5 to 3600; 0 means manual.
+    static func clampInterval(_ v: Double) -> Double {
+        v == 0 ? 0 : Double(min(3600, max(5, Int(v.rounded()))))
+    }
+
+    var refreshInterval: Double = {
+        // Older choices (1, 3, 10 s) become the new default of 15 s.
+        guard let saved = UserDefaults.standard.object(forKey: "refreshInterval") as? Double,
+              ![1, 3, 10].contains(saved) else { return 15 }
+        return Monitor.clampInterval(saved)
+    }() {
         didSet {
-            UserDefaults.standard.set(refreshInterval, forKey: "refreshInterval")
+            if !DebugCLI.isDebugRun { UserDefaults.standard.set(refreshInterval, forKey: "refreshInterval") }
             if isFastMode { enterFastMode() }
+            updateBadgeTimer()
         }
     }
     /// Manfath's "Menu bar badge": "hidden" (default), "count" or "dot". With a
-    /// badge, the 60 s idle pass also counts ports (one ~6 ms scan a minute).
+    /// badge, ports are scanned at the refresh interval even when nothing is open
+    /// (manual: on the 60 s tick), so the count stays live.
     var badgeMode = UserDefaults.standard.string(forKey: "badgeMode") ?? "hidden" {
         didSet {
             UserDefaults.standard.set(badgeMode, forKey: "badgeMode")
             if badgeMode != "hidden" && !isFastMode { requestFullScan() }
+            updateBadgeTimer()
+            refreshBadge()
         }
+    }
+
+    /// What the menu bar shows next to the icon. Set only when it changes, so a
+    /// scan that finds the same ports doesn't redraw the status item.
+    private(set) var badgeCount = 0
+    @ObservationIgnored private var badgeTimer: Timer?
+
+    func refreshBadge() {
+        let c = badgeMode == "hidden" ? 0 : visiblePorts.count
+        if c != badgeCount { badgeCount = c }
+    }
+
+    private func updateBadgeTimer() {
+        badgeTimer?.invalidate()
+        badgeTimer = nil
+        guard started, badgeMode != "hidden", refreshInterval > 0 else { return }
+        let t = Timer(timeInterval: refreshInterval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                // The open menu, or the page's polls, already scan and refresh the badge.
+                guard let self, !self.isFastMode, !self.webActive else { return }
+                self.requestFullScan()
+            }
+        }
+        t.tolerance = refreshInterval / 5
+        RunLoop.main.add(t, forMode: .common)
+        badgeTimer = t
     }
     /// Manfath's "Process blocklist": rows whose process name matches are hidden.
     var blocklist = UserDefaults.standard.stringArray(forKey: "blocklist") ?? [] {
-        didSet { UserDefaults.standard.set(blocklist, forKey: "blocklist") }
+        didSet { UserDefaults.standard.set(blocklist, forKey: "blocklist"); refreshBadge() }
     }
 
     func hideProcess(_ name: String) {
@@ -146,6 +201,7 @@ final class Monitor {
         t.tolerance = 10
         RunLoop.main.add(t, forMode: .common)
         idleTimer = t
+        updateBadgeTimer()
     }
 
     /// Swap, RAM breakdown and zombie counts. Runs every 60 s, always.
@@ -253,6 +309,7 @@ final class Monitor {
     func requestFullScan() {
         guard !scanInFlight else { return }
         scanInFlight = true
+        DebugCLI.log("full scan")
         let sampleCPU = isFastMode || !visible.isEmpty || webActive
         queue.async { [weak self, scanner] in
             let scan = scanner.fullScan(sampleCPU: sampleCPU)
@@ -269,6 +326,7 @@ final class Monitor {
 
     private func apply(_ scan: FullScan, memory m: MemorySnapshot) {
         if ports != scan.ports { ports = scan.ports }
+        refreshBadge()
         Tunnels.shared.prune(listening: Set(scan.ports.map(\.port)))
         if apps != scan.apps {
             // Load icons here, not while the list is laying out its rows.
@@ -287,8 +345,11 @@ final class Monitor {
 
     // MARK: Localhost page
 
-    /// True while the page has polled in the last 10 s.
-    var webActive: Bool { webLastSeen.map { Date().timeIntervalSince($0) < 10 } ?? false }
+    /// How long the page counts as open after a poll: a little over two of its intervals.
+    var webWindow: Double { refreshInterval == 0 ? 60 : refreshInterval * 2 + 5 }
+
+    /// True while the page has polled recently.
+    var webActive: Bool { webLastSeen.map { Date().timeIntervalSince($0) < webWindow } ?? false }
 
     /// Called on every page request. When the page stops asking (tab closed or
     /// hidden), a one-shot timer drops the CPU samples; nothing keeps running.
@@ -303,7 +364,7 @@ final class Monitor {
             }
         }
         webIdleWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + webWindow, execute: work)
     }
 
     /// Runs `done` with data no older than `maxAge` seconds, scanning if needed.

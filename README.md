@@ -9,12 +9,25 @@ kernel, so it idles at about 0% CPU.
 
 The menu bar dropdown works like Manfath: ports grouped into dev servers, databases, runtimes
 and so on, with open, share and kill on every row. Kill asks "confirm?" first and tells you which
-process and folder it's about to stop. You can set a port range, hide processes you don't care
-about, and choose how often it refreshes while open.
+process and folder it's about to stop. You can set a port range and hide processes you don't care
+about.
+
+It refreshes every 5, 15 (the default), 30 or 60 seconds while the menu or the page is open, or
+every N seconds if you type your own (5 to 3600), or only when you press refresh. The menu and the
+page use the same setting. If the menu bar badge is on (a count or a dot), harbor also scans at that
+interval with everything closed, so the number stays right. With the badge off, nothing is scanned
+until you look.
+
+Servers that listen on all interfaces get a QR button. Scan it with your phone on the same Wi-Fi
+and it opens the server at this Mac's network address (or its `.local` name). Servers bound to
+`127.0.0.1` only get a note saying how to make them reachable, or to use share instead.
 
 For the full view, open harbor from Applications (or "Open harbor…" in the menu) and it opens
 `harbor.localhost:8470` in your browser. That page groups ports by project, with the folder, the
-framework, uptime and memory for each one.
+framework, uptime and memory for each one. The tab shows harbor's icon and the port count.
+
+harbor shows in the Dock by default. Clicking the Dock icon opens the page. "Show in Dock" in the
+gear menu or the page's settings turns that off, and then it lives only in the menu bar.
 
 Share puts a port on the internet through a Cloudflare quick tunnel and gives you a link and a
 QR code. It always asks first, and the tunnel stops when you unshare, when the server stops, or
@@ -36,8 +49,8 @@ open /Applications/harbor.app
 ```
 
 `install.sh` puts it in `/Applications` and replaces a running copy. Only one harbor runs at a
-time; opening it again just brings up the page. Open at login is in the gear menu and off by
-default. To rename the app, change `app.conf` and build again.
+time; opening it again just brings up the page. Open at login is in the gear menu and the page's
+settings, and off by default. To rename the app, change `app.conf` and build again.
 
 ### Typing the address
 
@@ -51,8 +64,9 @@ If `local.localhost.door` isn't already there (headroom adds the same one), harb
 agent. It answers on port 80 and sends `harbor.localhost` to `:8470` and `headroom.localhost` to
 `:8460`, so the bare name works too. It exits ten seconds after the last visit.
 
-If I quit harbor while its page is open, the page is told first and stops asking, so it doesn't
-start harbor again behind my back.
+When I quit harbor (from the menu, with ⌘Q or from the Dock), it stays quit. An open page that
+asks in the background is told harbor has quit and stops asking, so it doesn't start harbor again
+behind my back. Only typing the address or opening the app starts it again.
 
 ### Uninstalling
 
@@ -74,17 +88,18 @@ If I move or delete the app, harbor fixes the agent's path the next time I open 
 ## Why it's so light
 
 It never runs `lsof`, `ps` or `netstat`. It asks the kernel directly (libproc, sysctl,
-`host_statistics64`), so a full scan takes about 6 ms. With the menu and the page closed it only
+`host_statistics64`), so a full scan takes about 6–10 ms. With the menu and the page closed it only
 does a tiny check once a minute, about 0.3 ms, for memory and stuck processes. Ports get scanned
-only while you're looking at them. Sharing is the one thing that starts another program
+only while you're looking at them, or at your refresh interval if the badge is on. Sharing is the one thing that starts another program
 (`cloudflared`), and only when you click it.
 
 On my Mac (16 GB, lots of swap in use):
 
 | | CPU | Memory |
 | --- | --- | --- |
-| Nothing open | 0.01% | 17 MB |
-| Page open | about 0.5% | 19 MB |
+| Nothing open, badge off | 0.01% | 9 MB |
+| Nothing open, badge on (every 15 s) | 0.15% | 20 MB |
+| Page open (every 15 s) | 0.15–0.25% | 20 MB |
 | Menu open | 2.6% | 46 MB |
 
 ## Is it safe?
@@ -103,6 +118,6 @@ second to appear after you open the menu or the page.
 ## Debugging
 
 The app binary has a few flags for testing: `--dump`, `--bench N`, `--serve`, `--no-open`,
-`--demo-menu --snapshot PATH` and `--test-stop PORT` (see `Sources/Harbor/DebugCLI.swift`). Test
-runs never add a menu bar icon and use the next free port, so they can run next to an installed
-copy.
+`--demo-menu --snapshot PATH`, `--demo-lan PORT` and `--test-stop PORT` (see
+`Sources/Harbor/DebugCLI.swift`). Test runs never add a menu bar or Dock icon and use the next
+free port, so they can run next to an installed copy.

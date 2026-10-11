@@ -13,7 +13,8 @@ enum Page {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
-<title>__APP__</title>
+<title>__app__</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>
   :root {
     color-scheme: light dark;
@@ -195,6 +196,9 @@ enum Page {
   .pline.share { color: var(--warn); }
   .pline code { font: 12px var(--f-mono); background: var(--panel-2); padding: 2px 6px; border-radius: 5px; color: var(--text-2); }
   .pl.go { background: var(--shared); color: var(--shared-ink); }
+  .pl.icon { padding: 5px 8px; display: inline-flex; align-items: center; }
+  .pl.icon.on { background: var(--open-bg); color: var(--open-ink); }
+  .ptitle { flex-wrap: wrap; row-gap: 3px; }
   .pl.go:hover { background: var(--shared); color: var(--shared-ink); filter: brightness(1.08); }
   .ptunnel { padding: 0 18px 12px 128px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); }
   .ptunnel a { font: 12.5px/1.4 var(--f-mono); color: var(--c-mac); overflow-wrap: anywhere; }
@@ -230,22 +234,60 @@ enum Page {
   .empty b { display: block; color: var(--text); font: 700 20px/1.2 var(--f-display); letter-spacing: -.02em; margin-bottom: 6px; }
   .hidden-note { color: var(--muted); font-size: 13px; margin-top: 14px; }
 
-  /* ---------- this mac (extras) ---------- */
-  .mac { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 16px; }
-  .panel { background: var(--panel); border-radius: 14px; padding: 18px; border-top: 3px solid var(--c-mac); }
-  .panel h3 { font: 700 15px/1.3 var(--f-body); margin-bottom: 4px; display: flex; gap: 8px; align-items: center; }
-  .panel .dot { width: 8px; height: 8px; }
-  .panel p.note { color: var(--muted); font-size: 13.5px; }
-  .stack { display: flex; height: 12px; border-radius: 3px; overflow: hidden; gap: 2px; margin: 16px 0 10px; }
-  .stack i { display: block; min-width: 2px; }
-  .keys { display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--muted); font-size: 12.5px; }
-  .keys span { display: inline-flex; align-items: center; gap: 6px; }
-  .keys b { color: var(--text); font-weight: 600; }
-  .bars li { display: grid; grid-template-columns: minmax(0, 9em) minmax(0, 1fr) 4.6em auto; gap: 12px; align-items: center; padding: 7px 0; }
-  .bars .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 14px; }
-  .bars .track { height: 10px; border-radius: 2px; background: var(--panel-2); overflow: hidden; }
-  .bars .fill { display: block; height: 100%; border-radius: 2px; transition: width .45s var(--ease); }
-  .bars .val { font: 600 12.5px/1 var(--f-mono); text-align: right; }
+  /* ---------- this mac ----------
+     Colour by job (validated with the dataviz validator, light and dark):
+     the RAM bar is a composition, four categorical slots in fixed order plus a
+     neutral "free" track; app bars are magnitude, one sequential hue; pressure
+     is a status, always with an icon and a label. */
+  :root {
+    --seg-1: #2a78d6; --seg-2: #eb6834; --seg-3: #1baf7a; --seg-4: #eda100; --seg-free: #e2e2de;
+    --seq: #2a78d6; --seq-track: #dfe9f6;
+    --good: #0ca30c; --warning: #fab219; --critical: #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --seg-1: #3987e5; --seg-2: #d95926; --seg-3: #199e70; --seg-4: #c98500; --seg-free: #2a2a2f;
+      --seq: #3987e5; --seq-track: #1c2636; }
+  }
+  .mac { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 16px; align-items: stretch; }
+  .panel { background: var(--panel); border-radius: 14px; padding: 18px 20px; display: grid; gap: 14px; align-content: start; }
+  .panel h3 { font: 650 15px/1.3 var(--f-body); }
+  .panel .sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .mac-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .status { display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px 4px 8px; border-radius: 999px; background: var(--panel-2); font-size: 12.5px; font-weight: 600; color: var(--text); white-space: nowrap; }
+  .status i { width: 10px; height: 10px; display: inline-block; }
+  .status.good i { background: var(--good); border-radius: 50%; }
+  .status.warning i { background: var(--warning); clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+  .status.critical i { background: var(--critical); border-radius: 2px; }
+  .verdict { font-size: 14px; color: var(--text-2); }
+  .mac-stat { font-size: 13.5px; color: var(--muted); }
+  .mac-stat b { font: 650 26px/1.1 var(--f-body); color: var(--text); letter-spacing: -.01em; margin-right: 4px; }
+  .comp { display: flex; gap: 2px; height: 14px; }
+  .comp i { display: block; min-width: 3px; }
+  .comp i:first-child { border-radius: 4px 0 0 4px; }
+  .comp i:last-child { border-radius: 0 4px 4px 0; }
+  .legend-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px 14px; font-size: 12.5px; }
+  .legend-grid span { display: flex; align-items: center; gap: 7px; color: var(--text-2); }
+  .legend-grid b { margin-left: auto; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .sw { width: 10px; height: 10px; border-radius: 3px; display: inline-block; flex: none; }
+  .meter-head { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; color: var(--text-2); }
+  .meter-head b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .meter { height: 8px; border-radius: 4px; background: var(--seq-track); overflow: hidden; margin-top: 6px; }
+  .meter i { display: block; height: 100%; border-radius: 0 4px 4px 0; background: var(--seq); }
+  .meter.heavy i { background: var(--warning); }
+  .spark { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; margin-top: 8px; }
+  .spark svg { flex: 1; height: 28px; overflow: visible; }
+  .action { font-size: 13.5px; color: var(--text); padding-top: 12px; border-top: 1px solid var(--line); }
+  .apps { display: grid; }
+  .apps li { display: grid; grid-template-columns: minmax(0, 9em) minmax(0, 1fr) 4.6em 7em; gap: 12px; align-items: center; min-height: 34px; }
+  .apps li + li { border-top: 1px solid var(--line); }
+  .apps .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 14px; }
+  .apps .nm small { display: block; font-weight: 400; color: var(--muted); font-size: 11.5px; }
+  .apps .track { height: 10px; border-radius: 0 4px 4px 0; background: var(--seq-track); }
+  .apps .fill { display: block; height: 100%; border-radius: 0 4px 4px 0; background: var(--seq); }
+  .apps .val { font: 600 13px/1 var(--f-body); font-variant-numeric: tabular-nums; text-align: right; }
+  .apps .slot { display: flex; justify-content: flex-end; }
+  .settings { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; margin-top: 28px; padding: 14px 18px; border-radius: 12px; background: var(--panel); font-size: 13px; color: var(--muted); }
+  .settings b { color: var(--text); font-weight: 600; }
 
   /* ---------- floating pill ---------- */
   .pill {
@@ -261,6 +303,8 @@ enum Page {
   }
   .pill input::placeholder { color: var(--on-ink-3); }
   .pill input:focus { border-color: var(--signal); }
+  .pill-refresh { background: #ffffff14; border: 1px solid #ffffff26; color: var(--on-ink); border-radius: 999px; padding: 8px 14px; font: 600 13px/1 var(--f-body); cursor: pointer; white-space: nowrap; }
+  .pill-refresh:hover { background: #ffffff24; }
   .toast {
     position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(max(18px, env(safe-area-inset-bottom)) + 62px);
     background: var(--text); color: var(--bg); padding: 9px 16px; border-radius: 10px; font-size: 14px; z-index: 6;
@@ -292,8 +336,8 @@ enum Page {
     .pline, .pdetails, .ptunnel { padding-left: 18px; }
     .qr { margin-left: 18px; }
     .pdetails { grid-template-columns: 5.5em minmax(0, 1fr) auto; }
-    .bars li { grid-template-columns: minmax(0, 7em) minmax(0, 1fr) 4.2em; }
-    .bars li .btn { grid-column: 1 / -1; justify-self: start; }
+    .apps li { grid-template-columns: minmax(0, 1fr) auto 5em; grid-template-areas: "nm val slot" "bar bar bar"; row-gap: 6px; padding: 6px 0; }
+    .apps .nm { grid-area: nm; } .apps .val { grid-area: val; } .apps .slot { grid-area: slot; } .apps .track { grid-area: bar; }
     .nav-meta { display: none; }
   }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
@@ -362,15 +406,22 @@ enum Page {
         <div class="sec-title"><span class="sec-num">02</span><h2 class="display">This Mac</h2></div>
         <p class="sec-sub">Memory, and the apps holding most of it.</p>
       </div>
-      <label class="check"><input type="checkbox" id="login-item"> Open __APP__ at login</label>
     </div>
     <div class="mac" id="mac"></div>
+  </section>
+
+  <section class="settings" aria-label="Settings">
+    <b>Settings</b>
+    <label class="check"><input type="checkbox" id="login-item"> Open __APP__ at login</label>
+    <label class="check"><input type="checkbox" id="show-dock"> Show __APP__ in the Dock</label>
+    <span id="settings-note"></span>
   </section>
 </main>
 
 <div class="pill" role="search">
   <span class="status mono"><i class="dot" id="pill-dot"></i><span id="pill-status">Live</span></span>
   <input id="q" type="search" placeholder="Filter by port, project or PID" autocomplete="off" spellcheck="false" aria-label="Filter ports">
+  <button type="button" class="pill-refresh" id="refresh" title="Scan again now">Refresh</button>
 </div>
 <div class="toast" id="toast" role="status" hidden></div>
 
@@ -389,7 +440,12 @@ enum Page {
 'use strict';
 const $ = (id) => document.getElementById(id);
 const PALETTE = ['#4f8cf7', '#19a77d', '#9a84f4', '#de5a88', '#cf9214', '#16a6c2', '#e8743f', '#6b8f2a'];
-const POLL_MS = 3000;
+// The scan interval is a setting in the app (shared with the menu); 0 = manual.
+function pollMs() { const s = state ? state.settings.interval : 15; return s > 0 ? s * 1000 : 0; }
+function cadence() {
+  const s = state ? state.settings.interval : 15;
+  return s === 0 ? 'refreshes when you click Refresh or come back to the tab' : s === 60 ? 'refreshes every minute while open' : `refreshes every ${s} s while open`;
+}
 let state = null, timer = null, group = 'project', query = '';
 const phase = new Map();   // row id -> { kind: confirm|working|force|admin|msg, text }
 const opened = new Set();  // expanded row ids
@@ -397,6 +453,8 @@ const busy = new Set();
 const sig = {};
 const sharing = new Map();  // row id -> { kind: confirm|hint, text, command }
 const qrShown = new Set();  // ports showing a QR code
+const lanShown = new Set(); // rows showing "open on another device"
+const swapHist = [];        // swap in use, one sample per poll, only while the page is open
 const qrCache = new Map();
 
 function store(key, value) { try { localStorage.setItem(key, value); } catch (e) {} }
@@ -467,6 +525,8 @@ async function poll() {
       return;
     }
     state = next;
+    swapHist.push(state.memory.swapUsed);
+    if (swapHist.length > 40) swapHist.shift();
     $('offline').hidden = true;
     render();
   } catch (e) {
@@ -480,8 +540,9 @@ async function poll() {
     $('offline-text').textContent = "__APP__ isn't answering. Open it from the menu bar or Applications, then reload this page.";
     setLive(false, 'Not answering');
   }
-  if (document.visibilityState === 'visible') timer = setTimeout(poll, POLL_MS);
+  if (document.visibilityState === 'visible' && pollMs() > 0) timer = setTimeout(poll, pollMs());
 }
+window.addEventListener('focus', () => poll());
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') poll();
   else { clearTimeout(timer); timer = null; setLive(false, 'Paused'); }
@@ -517,7 +578,7 @@ function groups(ports) {
   }
   return [...map.values()]
     .map((g) => ({ ...g, rows: g.rows.sort((a, b) => a.port - b.port) }))
-    .sort((a, b) => a.rank - b.rank || a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }));
+    .sort((a, b) => a.rank - b.rank || a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }) || a.rows[0].port - b.rows[0].port);
 }
 
 function render() {
@@ -525,16 +586,22 @@ function render() {
   const all = state.ports.filter((p) => !p.hidden);
   const ports = visiblePorts();
   setLive(true, `Updated ${Math.round(state.scannedAgo)}s ago`);
-  $('st-scan').textContent = `${location.host} · this Mac only · scanned in ${state.scanMs.toFixed(0)} ms · refreshes every 3 s while open`;
+  $('st-scan').textContent = `${location.host} · this Mac only · scanned in ${state.scanMs.toFixed(0)} ms · ${cadence()}`;
   renderHero(all);
   renderAlarm();
   renderNotices();
   renderPorts(ports, all);
   renderMac();
   $('login-item').checked = !!state.loginItem;
+  $('show-dock').checked = !!state.settings.showInDock;
+  $('settings-note').textContent = state.settings.interval > 0
+    ? `Scans every ${state.settings.interval} s while the menu or this page is open; change it in the menu bar.`
+    : 'Scans only when you open the menu or this page; change it in the menu bar.';
 }
 
 function renderHero(all) {
+  const title = all.length ? `__app__ · ${plural(all.length, 'port', 'ports')}` : '__app__';
+  if (document.title !== title) document.title = title;
   const gs = groups(all);
   const projects = gs.filter((g) => g.rank === 0).length;
   const apps = gs.length - projects;
@@ -622,7 +689,7 @@ function renderPorts(ports, all) {
 
   const shape = model.map((g) => [g.key, g.rows.map((p) => [p.id, p.title, p.name, p.framework, p.command, p.address,
     uptime(p.uptime), bytes(p.memory), p.workers, p.busy, p.system, p.hint, phase.get(p.id), opened.has(p.id),
-    p.tunnel, sharing.get(p.id), qrShown.has(p.port), state.share.available])]);
+    p.tunnel, sharing.get(p.id), qrShown.has(p.port), state.share.available, lanShown.has(p.id), p.lan, p.lanBonjour, state.network])]);
   swap('cards', group + query + JSON.stringify(shape), () => {
     $('cards').className = group === 'project' ? 'cards' : 'stack-list';
     if (!ports.length) {
@@ -672,6 +739,7 @@ function row(p, showProject) {
   else acts = [
     el('a', { class: 'pl open', href: safeUrl(p.url), target: '_blank', rel: 'noopener noreferrer', text: 'open', title: 'Open ' + p.url, onclick: stop }),
     pill('copy', '', () => copy(p), { title: 'Copy ' + p.url }),
+    p.lanReachable ? qrButton(p) : null,
     p.system ? null : shareAction(p, pill),
     p.system ? null : pill('kill', 'kill', () => armKill(p), { title: `Kill PID ${p.pid}` }),
   ];
@@ -695,6 +763,8 @@ function row(p, showProject) {
       pill('copy command', '', () => copyText(sh.command))) : null,
     tunnelLine(p, pill),
     live && qrShown.has(p.port) ? qrBox(p.port) : null,
+    lanShown.has(p.id) ? lanBox(p, pill) : null,
+    isOpen && p.loopbackOnly ? el('p', { class: 'pline info', text: 'Only this Mac can reach it. Start it on 0.0.0.0 to open it from your phone, or use share for a public link.' }) : null,
     isOpen ? details(p) : null);
   return li;
 }
@@ -754,18 +824,53 @@ function tunnelLine(p, pill) {
     pill('copy', '', () => copyText(url)),
     pill(qrShown.has(p.port) ? 'hide qr' : 'qr', '', () => { if (qrShown.has(p.port)) qrShown.delete(p.port); else qrShown.add(p.port); render(); }));
 }
-function qrBox(port) {
+// A compact QR glyph: "open it on another device on this network".
+function qrButton(p) {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 16 16'); svg.setAttribute('width', '14'); svg.setAttribute('height', '14'); svg.setAttribute('aria-hidden', 'true');
+  for (const [x, y] of [[1, 1], [10, 1], [1, 10]]) {
+    const r = document.createElementNS(NS, 'rect');
+    r.setAttribute('x', x); r.setAttribute('y', y); r.setAttribute('width', 5); r.setAttribute('height', 5); r.setAttribute('rx', 1);
+    r.setAttribute('fill', 'none'); r.setAttribute('stroke', 'currentColor'); r.setAttribute('stroke-width', '1.6');
+    svg.append(r);
+  }
+  for (const [x, y] of [[10, 10], [13, 13], [13, 10], [10, 13]]) {
+    const r = document.createElementNS(NS, 'rect');
+    r.setAttribute('x', x); r.setAttribute('y', y); r.setAttribute('width', 2.2); r.setAttribute('height', 2.2); r.setAttribute('fill', 'currentColor');
+    svg.append(r);
+  }
+  const on = lanShown.has(p.id);
+  return el('button', { class: 'pl icon' + (on ? ' on' : ''), title: on ? 'Hide the QR code' : 'Open it on another device on this network',
+    'aria-label': 'QR code for another device', 'aria-pressed': String(on),
+    onclick: (e) => { e.stopPropagation(); if (on) lanShown.delete(p.id); else lanShown.add(p.id); render(); } }, svg);
+}
+
+function lanBox(p, pill) {
+  if (!p.lan) return el('p', { class: 'pline info', text: "This Mac isn't on a network right now, so other devices can't reach it." });
+  return el('div', {},
+    el('div', { class: 'ptunnel' }, 'On your network',
+      el('a', { href: safeLan(p.lan), target: '_blank', rel: 'noopener noreferrer', text: p.lan, onclick: (e) => e.stopPropagation() }),
+      pill('copy', '', () => copyText(p.lan))),
+    p.lanBonjour ? el('p', { class: 'pline info', text: 'Or ' + p.lanBonjour }) : null,
+    qrBox(p.port, 'lan'),
+    state.network.firewall ? el('p', { class: 'pline info', text: 'The macOS firewall is on, so macOS may ask to allow incoming connections for this server.' }) : null);
+}
+function safeLan(u) { return /^http:\/\/[a-z0-9.\-]+:\d+\/?$/i.test(u) ? u : '#'; }
+
+function qrBox(port, kind) {
   const box = el('div', { class: 'qr', title: 'Scan with your phone camera' });
   const draw = (rows) => {
     const scale = 4, size = rows.length;
-    const c = el('canvas', { width: size * scale, height: size * scale, 'aria-label': 'QR code of the public link' });
+    const c = el('canvas', { width: size * scale, height: size * scale, 'aria-label': kind === 'lan' ? 'QR code of the network link' : 'QR code of the public link' });
     const g = c.getContext('2d');
     g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.fillStyle = '#000';
     rows.forEach((r, y) => { for (let x = 0; x < r.length; x++) if (r[x] === '1') g.fillRect(x * scale, y * scale, scale, scale); });
     box.replaceChildren(c);
   };
-  if (qrCache.has(port)) draw(qrCache.get(port));
-  else api('/api/qr?port=' + port).then((d) => { qrCache.set(port, d.rows); draw(d.rows); }).catch((e) => toast(e.message));
+  const key = (kind || 'public') + port;
+  if (qrCache.has(key)) draw(qrCache.get(key));
+  else api('/api/qr?port=' + port + (kind === 'lan' ? '&kind=lan' : '')).then((d) => { qrCache.set(key, d.rows); draw(d.rows); }).catch((e) => toast(e.message));
   return box;
 }
 function setShare(id, v) { if (v) sharing.set(id, v); else sharing.delete(id); render(); }
@@ -785,7 +890,7 @@ async function stopShare(p) {
   const r = await act('unshare', p.pid, { port: p.port });
   if (r) toast(r.message);
   qrShown.delete(p.port);
-  qrCache.delete(p.port);
+  qrCache.delete('public' + p.port);
   poll();
 }
 async function copyText(text) {
@@ -793,31 +898,64 @@ async function copyText(text) {
   catch (e) { toast('Copy failed; select the text instead.'); }
 }
 
+function statusPill(pressure) {
+  const [cls, label] = { normal: ['good', 'Pressure normal'], elevated: ['warning', 'Pressure elevated'], critical: ['critical', 'Pressure critical'] }[pressure] || ['good', 'Pressure ' + pressure];
+  return el('span', { class: 'status ' + cls }, el('i', { 'aria-hidden': 'true' }), label);
+}
+
+function sparkline(values) {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 200 28'); svg.setAttribute('preserveAspectRatio', 'none'); svg.setAttribute('aria-hidden', 'true');
+  const lo = Math.min(...values), hi = Math.max(...values), span = Math.max(1, hi - lo);
+  const pts = values.map((v, i) => [i / (values.length - 1) * 200, 24 - (v - lo) / span * 20]);
+  const line = document.createElementNS(NS, 'polyline');
+  line.setAttribute('points', pts.map((p) => p.join(',')).join(' '));
+  line.setAttribute('fill', 'none'); line.setAttribute('stroke', 'var(--seq)'); line.setAttribute('stroke-width', '2');
+  line.setAttribute('stroke-linejoin', 'round'); line.setAttribute('stroke-linecap', 'round'); line.setAttribute('vector-effect', 'non-scaling-stroke');
+  svg.append(line);
+  return svg;
+}
+
 function renderMac() {
-  const m = state.memory, v = state.verdict, apps = state.apps;
-  const shape = JSON.stringify([v.headline, bytes(m.used), bytes(m.swapUsed), m.pressure,
-    apps.map((a) => [a.id, bytes(a.memory), a.canQuit, busy.has(a.pid)])]);
+  const m = state.memory, v = state.verdict, apps = state.apps.slice(0, 6);
+  const shape = JSON.stringify([v.headline, bytes(m.used), bytes(m.swapUsed), bytes(m.swapTotal), m.pressure, swapHist.length > 1 ? swapHist.slice(-20).map(bytes) : 0,
+    apps.map((a) => [a.id, bytes(a.memory), a.count, a.canQuit, busy.has(a.pid)])]);
   swap('mac', shape, () => {
-    const parts = [['Apps', m.app, '#4f8cf7'], ['Wired', m.wired, '#cf9214'], ['Compressed', m.compressed, '#9a84f4'],
-      ['Cached files', m.cached, '#16a6c2'], ['Free', m.free, 'var(--line)']];
-    const lvl = { good: 'var(--live)', warn: '#e39a2f', bad: 'var(--danger)' }[v.level];
+    const parts = [['Apps', m.app, 'var(--seg-1)'], ['Wired', m.wired, 'var(--seg-2)'], ['Compressed', m.compressed, 'var(--seg-3)'], ['Cached files', m.cached, 'var(--seg-4)'], ['Free', m.free, 'var(--seg-free)']];
+    const biggest = state.apps.find((a) => a.canQuit);
+    const action = !biggest ? null : v.level === 'good'
+      ? `Plenty of room. The biggest app is ${biggest.name} at ${bytes(biggest.memory)}.`
+      : `Quitting ${biggest.name} would free about ${bytes(biggest.memory)}.`;
+    const recent = swapHist.slice(-20);
     const memPanel = el('div', { class: 'panel' },
-      el('h3', {}, el('i', { class: 'dot', style: { background: lvl } }), v.headline),
-      el('p', { class: 'note', text: `${bytes(m.used)} of ${bytes(m.physical)} in use · ${bytes(m.swapUsed)} of swap · pressure ${m.pressure}.` }),
-      el('div', { class: 'stack', title: 'How the RAM is used' }, parts.map(([name, val, c]) =>
-        el('i', { title: `${name}: ${bytes(val)}`, style: { width: (val / m.physical * 100).toFixed(2) + '%', background: c } }))),
-      el('div', { class: 'keys' }, parts.map(([name, val, c]) => el('span', {}, el('i', { class: 'sw', style: { background: c } }), name, el('b', { text: bytes(val) })))));
+      el('div', { class: 'mac-head' }, statusPill(m.pressure), el('p', { class: 'verdict', text: v.headline })),
+      el('p', { class: 'mac-stat' }, el('b', { text: bytes(m.used) }), `of ${bytes(m.physical)} in use`),
+      el('div', {},
+        el('div', { class: 'comp', role: 'img', 'aria-label': parts.map(([n, val]) => `${n} ${bytes(val)}`).join(', ') },
+          parts.map(([n, val, c]) => el('i', { title: `${n}: ${bytes(val)}`, style: { 'flex-grow': String(Math.max(val, 1)), 'flex-basis': '0', background: c } }))),
+        el('div', { class: 'legend-grid', style: { 'margin-top': '10px' } },
+          parts.map(([n, val, c]) => el('span', {}, el('i', { class: 'sw', style: { background: c } }), n, el('b', { text: bytes(val) }))))),
+      el('div', {},
+        el('div', { class: 'meter-head' }, el('span', { text: 'Swap' }), el('b', { text: `${bytes(m.swapUsed)} of ${bytes(m.swapTotal)}` })),
+        el('div', { class: 'meter' + (m.swapHeavy ? ' heavy' : ''), title: m.swapHeavy ? 'More than half your RAM is parked on disk' : 'Swap in use' },
+          el('i', { style: { width: Math.min(100, m.swapUsed / Math.max(1, m.swapTotal) * 100).toFixed(1) + '%' } })),
+        recent.length > 1 ? el('div', { class: 'spark', title: 'Swap in use, sampled each time this page refreshed' }, sparkline(recent), el('span', { text: `last ${recent.length} checks` })) : null),
+      action ? el('p', { class: 'action', text: action }) : null);
     const top = Math.max(1, ...apps.map((a) => a.memory));
     const appPanel = el('div', { class: 'panel' },
-      el('h3', { text: 'Biggest apps' }),
-      el('p', { class: 'note', text: 'Real memory, the number Activity Monitor shows.' }),
-      el('ul', { class: 'bars' }, apps.slice(0, 6).map((a) => el('li', {},
-        el('span', { class: 'nm', text: a.name, title: a.folder ? `${a.name} · ${a.folder}` : a.name }),
-        el('span', { class: 'track' }, el('i', { class: 'fill', style: { width: (a.memory / top * 100).toFixed(1) + '%', background: colour('app' + a.name) } })),
-        el('span', { class: 'val', text: bytes(a.memory) }),
-        a.canQuit ? (busy.has(a.pid) ? el('span', { class: 'busy' }, el('i', { class: 'spinner' }))
-          : el('button', { class: 'btn quiet', text: 'Quit', onclick: () => quitProcess(a.pid, a.name, `${a.name} is using ${bytes(a.memory)}${a.count > 1 ? ' across ' + a.count + ' processes' : ''}. It closes the normal way and may ask you to save your work.`) }))
-          : el('span')))));
+      el('div', {}, el('h3', { text: 'Biggest apps' }), el('p', { class: 'sub', text: 'Real memory, the number Activity Monitor shows. Helpers count toward their app.' })),
+      el('ul', { class: 'apps' }, apps.map((a) => {
+        const tip = `${a.name} · ${plural(a.count, 'process', 'processes')} · ${bytes(a.memory)}${a.folder ? ' · ' + a.folder : ''}`;
+        return el('li', { title: tip },
+          el('span', { class: 'nm' }, a.name, a.count > 1 ? el('small', { text: plural(a.count, 'process', 'processes') }) : null),
+          el('span', { class: 'track' }, el('i', { class: 'fill', style: { width: (a.memory / top * 100).toFixed(1) + '%' } })),
+          el('span', { class: 'val', text: bytes(a.memory) }),
+          el('span', { class: 'slot' }, a.canQuit
+            ? (busy.has(a.pid) ? el('span', { class: 'busy' }, el('i', { class: 'spinner' }))
+              : el('button', { class: 'pl kill', text: 'quit', onclick: () => quitProcess(a.pid, a.name, `${a.name} is using ${bytes(a.memory)}${a.count > 1 ? ' across ' + a.count + ' processes' : ''}. It closes the normal way and may ask you to save your work.`) }))
+            : null));
+      })));
     return [memPanel, appPanel];
   });
 }
@@ -889,12 +1027,14 @@ for (const id of ['rmin', 'rmax']) $(id).addEventListener('change', () => {
   if (lo >= 1 && hi >= 1) saveSettings({ minPort: lo, maxPort: hi });
 });
 $('q').addEventListener('input', (e) => { query = e.target.value.trim(); if (state) render(); });
+$('show-dock').addEventListener('change', (e) => saveSettings({ showInDock: e.target.checked }));
 $('login-item').addEventListener('change', async (e) => {
   const r = await act('login-item', 0, { enabled: e.target.checked });
   if (r) toast(r.message);
   poll();
 });
 window.addEventListener('resize', () => { if (state) renderHero(state.ports.filter((p) => !p.hidden)); });
+$('refresh').addEventListener('click', () => poll());
 
 poll();
 </script>

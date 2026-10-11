@@ -62,6 +62,23 @@ struct PortRow: Identifiable, Hashable {
         return path.hasPrefix(home + "/") || path.hasPrefix("/private/tmp/") || path.hasPrefix("/tmp/") || path.hasPrefix("/Volumes/")
     }
 
+    /// Reachable from other devices: listening on all interfaces or a LAN address.
+    var lanReachable: Bool {
+        !isSelf && (scope == .all || (scope == .specific && addresses.contains { !$0.contains(":") }))
+    }
+
+    /// The address a phone on the same network would open.
+    func lanURL(ip: String?) -> String? {
+        guard lanReachable else { return nil }
+        if scope == .all { return ip.map { "http://\($0):\(port)/" } }
+        return addresses.first { !$0.contains(":") }.map { "http://\($0):\(port)/" }
+    }
+
+    func bonjourURL(_ name: String?) -> String? {
+        guard lanReachable, scope == .all, let name else { return nil }
+        return "http://\(name):\(port)/"
+    }
+
     /// The card a row belongs to: its project folder, else its app.
     var groupKey: String { projectFolder.map { "p:" + Fmt.path($0) } ?? "a:" + (appName ?? processName) }
 

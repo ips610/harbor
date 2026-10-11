@@ -14,22 +14,7 @@ enum WebAPI {
 
     // MARK: State
 
-    static var quitting = false
-    private static var quitReplied = false
-
-    static func finishQuit() {
-        guard quitting, !quitReplied else { return }
-        quitReplied = true
-        NSApp.reply(toApplicationShouldTerminate: true)
-    }
-
     static func state(_ done: @escaping (Data) -> Void) {
-        if quitting {
-            // Every visible tab polls within 3 s; tell each one to stop before
-            // harbor exits (finishQuit runs 3.5 s after Quit).
-            done(Data(#"{"quit":true}"#.utf8))
-            return
-        }
         let m = Monitor.shared
         m.webTouch()
         m.fresh(maxAge: 2.0) {
@@ -40,12 +25,24 @@ enum WebAPI {
 
     private static func n(_ v: Any?) -> Any { v ?? NSNull() }
 
+    /// SMAppService.status is a blocking XPC call to the system: read it at most
+    /// once a minute, and again right after either surface toggles it.
+    static var loginItemCache: (on: Bool, at: Date)?
+    private static var loginItemOn: Bool {
+        if let c = loginItemCache, Date().timeIntervalSince(c.at) < 60 { return c.on }
+        let on = SMAppService.mainApp.status == .enabled
+        loginItemCache = (on, Date())
+        return on
+    }
+
     private static func build() -> [String: Any] {
         let m = Monitor.shared
         let now = Date()
         var pids = Set<pid_t>()
 
         let tunnels = Tunnels.shared.active
+        let lanIP = LAN.ipv4()
+        let bonjour = LAN.bonjourName()
         var portsShown = Set<UInt16>()
         let ports: [[String: Any]] = m.ports.map { r in
             pids.insert(r.pid)
@@ -61,6 +58,10 @@ enum WebAPI {
             }
             return [
                 "tunnel": tunnel,
+                "lan": n(r.lanURL(ip: lanIP)),
+                "lanBonjour": n(r.bonjourURL(bonjour)),
+                "lanReachable": r.lanReachable,
+                "loopbackOnly": r.scope == .loopback,
                 "id": r.id,
                 "port": Int(r.port),
                 "pid": Int(r.pid),
@@ -118,10 +119,13 @@ enum WebAPI {
             "ports": ports,
             "notices": m.notices.map { ["id": $0.id, "text": $0.text] },
             "share": ["available": tool != nil, "provider": n(tool?.name), "hint": hint.text, "command": hint.command],
-            "loginItem": SMAppService.mainApp.status == .enabled,
+            "loginItem": loginItemOn,
+            "network": ["ip": n(lanIP), "firewall": LAN.firewallOn],
             "settings": [
                 "minPort": m.minPort, "maxPort": m.maxPort,
                 "showSystem": m.showSystemPorts, "onlyServers": m.onlyServers, "grouping": m.grouping.rawValue,
+                "interval": m.refreshInterval,
+                "showInDock": m.showInDock,
             ],
             "memory": [
                 "physical": Double(mem.physical), "used": Double(mem.used), "app": Double(mem.app),
@@ -139,10 +143,22 @@ enum WebAPI {
     }
 
     /// The QR code of a shared port's public link, as rows of 0/1.
-    static func qr(port: Int, _ done: @escaping (Int, [String: Any]) -> Void) {
-        guard let p = UInt16(exactly: port), case .ready(let url)? = Tunnels.shared.active[p]?.phase,
-              let rows = Tunnels.shared.qrRows(url) else {
-            return done(404, ["error": "That port isn't shared."])
+    /// QR codes only for ports the page was shown: the public link, or (lan)
+    /// the address other devices on this network would open.
+    static func qr(port: Int, lan: Bool, _ done: @escaping (Int, [String: Any]) -> Void) {
+        guard let p = UInt16(exactly: port), shownPorts.contains(p) else {
+            return done(404, ["error": "That port isn't on the page any more."])
+        }
+        let url: String?
+        if lan {
+            url = Monitor.shared.ports.first { $0.port == p && $0.lanReachable }?.lanURL(ip: LAN.ipv4())
+        } else if case .ready(let u)? = Tunnels.shared.active[p]?.phase {
+            url = u
+        } else {
+            url = nil
+        }
+        guard let url, let rows = Tunnels.shared.qrRows(url) else {
+            return done(404, ["error": lan ? "No network address for that port." : "That port isn't shared."])
         }
         done(200, ["url": url, "rows": rows])
     }
@@ -164,6 +180,7 @@ enum WebAPI {
                 return done(200, ["result": "failed", "message": error.localizedDescription])
             }
             let status = SMAppService.mainApp.status
+            loginItemCache = nil
             let msg = status == .requiresApproval
                 ? "Approve \(AppInfo.name) in System Settings → General → Login Items."
                 : (status == .enabled ? "\(AppInfo.name) will open at login." : "\(AppInfo.name) won't open at login.")
@@ -173,6 +190,7 @@ enum WebAPI {
             if let lo = obj["minPort"] as? Int, let hi = obj["maxPort"] as? Int { m.setRange(lo, hi) }
             if let v = obj["showSystem"] as? Bool { m.showSystemPorts = v }
             if let v = obj["onlyServers"] as? Bool { m.onlyServers = v }
+            if let v = obj["showInDock"] as? Bool { m.showInDock = v }
             if let g = obj["grouping"] as? String, let v = Monitor.Grouping(rawValue: g) { m.grouping = v }
             return done(200, ["result": "ok"])
         case "unshare":

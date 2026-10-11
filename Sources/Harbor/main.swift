@@ -12,7 +12,12 @@ if DebugCLI.handle(CommandLine.arguments) {
 }
 // A normal launch (Finder, Spotlight, login item). The instance that runs is
 // the one launchd starts with `--launchd`, because launchd owns port 8470.
+// Started by launchd after a Quit: only a visit to the page brings harbor back.
+if LaunchAgent.underLaunchd && LaunchAgent.quitMarkerSet {
+    LaunchAgent.gate()
+}
 if !DebugCLI.isDebugRun && !LaunchAgent.underLaunchd {
+    LaunchAgent.clearQuitMarker()  // opened on purpose
     if LaunchAgent.pointsAtMissingApp { LaunchAgent.ensureInstalled() }  // the app moved or was deleted
     Door.ensureInstalled()  // harbor.localhost without a port
     // One harbor at a time: a running one is asked to show its page.

@@ -14,6 +14,7 @@ enum PageLooks {
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>__app__</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>
   /* ---------- shared: pills and tags match the menu bar ---------- */
   :root {
@@ -270,6 +271,7 @@ enum PageLooks {
         <input type="number" id="rmax" min="1" max="65535" aria-label="Highest port shown"></span>
       <label class="check"><input type="checkbox" id="only-servers"> Servers only</label>
       <label class="check"><input type="checkbox" id="show-system"> <span id="show-system-label">macOS services</span></label>
+      <button type="button" class="pl" id="refresh" title="Scan again now">Refresh</button>
     </div>
     <div class="list" id="list"></div>
     <p class="foot" id="foot"></p>
@@ -283,7 +285,8 @@ enum PageLooks {
 const $ = (id) => document.getElementById(id);
 const LOOK = ['a', 'b', 'c'].includes(new URLSearchParams(location.search).get('look')) ? new URLSearchParams(location.search).get('look') : 'a';
 document.body.className = 'look-' + LOOK;
-const POLL_MS = 3000;
+function pollMs() { const s = state ? state.settings.interval : 15; return s > 0 ? s * 1000 : 0; }
+function cadence() { const s = state ? state.settings.interval : 15; return s === 0 ? 'manual' : s === 60 ? 'every minute' : `every ${s} s`; }
 let state = null, timer = null, group = 'project', query = '', sel = 'all';
 const phase = new Map(), sharing = new Map(), opened = new Set(), qrShown = new Set(), qrCache = new Map(), appPhase = new Map();
 const sig = {};
@@ -353,8 +356,9 @@ async function poll() {
     renderBanners();
     if (e.message === 'session') return;
   }
-  if (document.visibilityState === 'visible') timer = setTimeout(poll, POLL_MS);
+  if (document.visibilityState === 'visible' && pollMs() > 0) timer = setTimeout(poll, pollMs());
 }
+window.addEventListener('focus', () => poll());
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') poll(); else { clearTimeout(timer); timer = null; } });
 let toastTimer = null;
 function toast(text) { const t = $('toast'); t.textContent = text; t.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 4200); }
@@ -381,7 +385,7 @@ function model(ports) {
     map.get(k).rows.push(p);
   }
   return [...map.values()].map((g) => ({ ...g, rows: g.rows.sort((a, b) => a.port - b.port) }))
-    .sort((a, b) => a.rank - b.rank || a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }));
+    .sort((a, b) => a.rank - b.rank || a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }) || a.rows[0].port - b.rows[0].port);
 }
 
 // ---------- render ----------
@@ -398,8 +402,10 @@ function render() {
 }
 
 function renderTop(all) {
+  const title = all.length ? `__app__ · ${plural(all.length, 'port', 'ports')}` : '__app__';
+  if (document.title !== title) document.title = title;
   const exposed = all.filter((p) => p.exposed).length, shared = all.filter((p) => p.tunnel && p.tunnel.state === 'ready').length;
-  const status = `Updated ${Math.round(state.scannedAgo)} s ago`;
+  const status = `Updated ${Math.round(state.scannedAgo)} s ago · ${cadence()}`;
   if (LOOK === 'c') {
     swap('side-status', status + all.length, () => [el('span', { text: plural(all.length, 'port', 'ports') + ' listening' }), el('span', { text: status })]);
     return;
@@ -673,6 +679,7 @@ for (const id of ['rmin', 'rmax']) $(id).addEventListener('change', () => {
   if (lo >= 1 && hi >= 1) saveSettings({ minPort: lo, maxPort: hi });
 });
 $('q').addEventListener('input', (e) => { query = e.target.value.trim(); if (state) render(); });
+$('refresh').addEventListener('click', () => poll());
 poll();
 </script>
 </body>

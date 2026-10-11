@@ -19,8 +19,13 @@ struct HarborApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        if !DebugCLI.isDebugRun {
+            Monitor.shared.applyDockPolicy()
+            NSApp.mainMenu = mainMenu()
+        }
         let atLogin = launchedAtLogin()
         Tunnels.shared.cleanUpOrphans()
+        _ = LAN.firewallOn  // warm the cached firewall state in the background
         stopTunnelsOnSignals()
         Monitor.shared.start()
         if DebugCLI.afterLaunch() { return }
@@ -43,17 +48,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
-    /// With a page open, its next poll would make launchd start harbor again.
-    /// So answer that poll with "quit" first (at most 3.5 s), then exit.
-    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard Monitor.shared.webActive, !WebAPI.quitting else { return .terminateNow }
-        WebAPI.quitting = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { WebAPI.finishQuit() }
-        return .terminateLater
+    // MARK: Dock
+
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let menu = NSMenu()
+        menu.addItem(withTitle: "Open \(AppInfo.name)", action: #selector(openPage), keyEquivalent: "").target = self
+        return menu
+    }
+
+    @MainActor @objc private func openPage() { WebServer.shared.openInBrowser() }
+
+    /// The app menu while harbor is in the Dock: open the page, or quit (⌘Q).
+    private func mainMenu() -> NSMenu {
+        let main = NSMenu()
+        let appItem = NSMenuItem()
+        main.addItem(appItem)
+        let app = NSMenu(title: AppInfo.name)
+        app.addItem(withTitle: "Open \(AppInfo.name)", action: #selector(openPage), keyEquivalent: "o").target = self
+        app.addItem(.separator())
+        app.addItem(withTitle: "Quit \(AppInfo.name)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = app
+        return main
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         Tunnels.shared.stopAll()
+        // Remember the quit: a tab's later poll must not bring harbor back.
+        if LaunchAgent.underLaunchd { LaunchAgent.setQuitMarker() }
     }
 
     /// `kill` (e.g. from install.sh) skips applicationWillTerminate, so catch

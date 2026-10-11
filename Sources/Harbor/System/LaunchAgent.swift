@@ -97,6 +97,72 @@ enum LaunchAgent {
         return p.terminationStatus == 0
     }
 
+    // MARK: Staying quit
+
+    private static var quitMarkerURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/\(label)/quit")
+    }
+
+    static var quitMarkerSet: Bool { FileManager.default.fileExists(atPath: quitMarkerURL.path) }
+
+    static func setQuitMarker() {
+        try? FileManager.default.createDirectory(at: quitMarkerURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? Data().write(to: quitMarkerURL)
+    }
+
+    static func clearQuitMarker() {
+        try? FileManager.default.removeItem(at: quitMarkerURL)
+    }
+
+    /// Sockets taken by the gate, and the connection that woke harbor, for the
+    /// web server to use (launch_activate_socket is only called once).
+    static var gatedSockets: [Int32]?
+    static var pendingClient: Int32?
+
+    /// Started by launchd after a Quit: look at the request that woke us before
+    /// any app or menu bar item exists. A tab's background poll gets "quit" and
+    /// harbor exits; a visit to the page clears the marker and harbor starts.
+    static func gate() {
+        let fds = activatedSockets()
+        guard !fds.isEmpty else { return }
+        gatedSockets = fds
+        var pfds = fds.map { pollfd(fd: $0, events: Int16(POLLIN), revents: 0) }
+        guard poll(&pfds, nfds_t(pfds.count), 3000) > 0,
+              let ready = pfds.first(where: { $0.revents & Int16(POLLIN) != 0 }) else { exit(0) }
+        let client = accept(ready.fd, nil, nil)
+        guard client >= 0 else { exit(0) }
+        var tv = timeval(tv_sec: 2, tv_usec: 0)
+        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        // Peek, so the request is still there for the web server if we start.
+        var buf = [UInt8](repeating: 0, count: 8192)
+        var head = ""
+        for _ in 0..<40 {
+            let n = recv(client, &buf, buf.count, MSG_PEEK)
+            if n <= 0 { break }
+            head = String(decoding: buf[0..<n], as: UTF8.self)
+            if head.contains("\r\n\r\n") { break }
+            usleep(50_000)
+        }
+        let lines = head.components(separatedBy: "\r\n")
+        let parts = lines.first?.split(separator: " ") ?? []
+        let path = parts.count > 1 ? String(parts[1]) : ""
+        let mode = lines.dropFirst().first { $0.lowercased().hasPrefix("sec-fetch-mode:") }
+            .map { $0.split(separator: ":", maxSplits: 1)[1].trimmingCharacters(in: .whitespaces).lowercased() }
+        let pageVisit = parts.first == "GET" && (path == "/" || path.hasPrefix("/?")) && (mode == nil || mode == "navigate")
+        if pageVisit {
+            clearQuitMarker()
+            pendingClient = client
+            return
+        }
+        let body = #"{"quit":true}"#
+        let reply = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(body.utf8.count)\r\n"
+            + "Cache-Control: no-store\r\nConnection: close\r\n\r\n" + body
+        _ = reply.withCString { write(client, $0, strlen($0)) }
+        close(client)
+        exit(0)
+    }
+
     // MARK: "Open the page" from a Finder-started copy to the launchd one
 
     private static var flagURL: URL {

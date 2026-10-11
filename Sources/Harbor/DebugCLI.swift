@@ -173,11 +173,32 @@ enum DebugCLI {
             }
             return true
         }
+        if let i = Double(value(after: "--interval") ?? "") { Monitor.shared.refreshInterval = Monitor.clampInterval(i) }
         if let g = value(after: "--grouping"), let v = Monitor.Grouping(rawValue: g) {
             Monitor.shared.grouping = v  // not saved in debug runs
         }
         if let look = value(after: "--appearance") {
             NSApp.appearance = NSAppearance(named: look == "dark" ? .darkAqua : .aqua)
+        }
+        if let raw = value(after: "--demo-lan"), let port = UInt16(raw) {
+            // The menu's "open on another device" card for one port, in a panel.
+            Monitor.shared.requestFullScan()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                MainActor.assumeIsolated {
+                    guard let row = Monitor.shared.ports.first(where: { $0.port == port }) else { out("no row for :\(port)"); return }
+                    let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 280, height: 300),
+                                        styleMask: [.titled, .nonactivatingPanel], backing: .buffered, defer: false)
+                    panel.title = "LAN card (demo)"
+                    let host = NSHostingView(rootView: LANCard(row: row).environment(Monitor.shared))
+                    panel.contentView = host
+                    panel.setContentSize(host.fittingSize)
+                    panel.center()
+                    panel.orderFrontRegardless()
+                    demoPanel = panel
+                    report(panel, snapshotPath)
+                }
+            }
+            return true
         }
         if args.contains("--demo-menu") {
             let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 500),
@@ -241,7 +262,7 @@ enum DebugCLI {
 
     /// Any test flag: run without a menu bar icon and alongside an installed copy.
     static var isDebugRun: Bool {
-        args.contains { ["--no-open", "--serve", "--demo-menu", "--snapshot"].contains($0) }
+        args.contains { ["--no-open", "--serve", "--demo-menu", "--demo-lan", "--snapshot"].contains($0) }
     }
 
     /// Set HARBOR_DEBUG=1 to log mode changes to stdout.

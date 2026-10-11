@@ -28,7 +28,17 @@ final class WebServer: @unchecked Sendable {
     private static let ports: [UInt16] = Array(8470...8489)
     private static let codeLifetime: Double = 120
 
-    static let csp = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'"
+    static let csp = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; frame-ancestors 'none'"
+
+    /// The tab icon: harbor's mark on a rounded tile that reads on light and dark tab strips.
+    static let favicon = """
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+    <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2ecc87"/><stop offset="1" stop-color="#0a6b9e"/></linearGradient></defs>
+    <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#g)"/>
+    <g fill="none" stroke="#fff" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M32 12v10M20 22h24l4 12H16z"/><path d="M10 44c4-3.4 7.4-3.4 11.4 0s7.4 3.4 11.4 0 7.4-3.4 11.4 0 7.4 3.4 9.8 1"/>
+    </g></svg>
+    """
     static let host = AppInfo.slug + ".localhost"
     static let cookie = AppInfo.slug
 
@@ -59,8 +69,21 @@ final class WebServer: @unchecked Sendable {
             self.starting = true
             // Started by launchd: serve on the sockets it hands over.
             if LaunchAgent.underLaunchd {
-                let fds = LaunchAgent.activatedSockets()
-                if !fds.isEmpty { return self.adopt(fds, port: UInt16(LaunchAgent.port)) }
+                let fds = LaunchAgent.gatedSockets ?? LaunchAgent.activatedSockets()
+                if !fds.isEmpty {
+                    self.adopt(fds, port: UInt16(LaunchAgent.port))
+                    // The connection the gate already accepted (its request is still unread).
+                    if let fd = LaunchAgent.pendingClient {
+                        LaunchAgent.pendingClient = nil
+                        var one: Int32 = 1
+                        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
+                        var tv = timeval(tv_sec: 0, tv_usec: 0)
+                        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+                        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+                        self.start(Client(fd: fd))
+                    }
+                    return
+                }
                 DebugCLI.log("launch_activate_socket gave nothing; binding ourselves")
             }
             self.tryPort(0)
@@ -274,6 +297,9 @@ final class WebServer: @unchecked Sendable {
             return send(c, HTTPResponse(status: 303, contentType: "text/plain", body: Data(),
                                         headers: [("Location", "/"), ("Set-Cookie", cookie)]))
         }
+        if req.method == "GET" && path == "/favicon.svg" {
+            return send(c, HTTPResponse(status: 200, contentType: "image/svg+xml", body: Data(Self.favicon.utf8)))
+        }
         guard path.hasPrefix("/api/") else { return send(c, .json(404, ["error": "not found"])) }
         guard sessionMatches(Self.cookieValue(Self.cookie, in: req.headers["cookie"])) else {
             // Also what a tab from an earlier run gets: cookies ignore ports.
@@ -294,8 +320,9 @@ final class WebServer: @unchecked Sendable {
             }
         case ("GET", "/api/qr"):
             let port = Int(Self.param("port", in: query) ?? "") ?? 0
+            let lan = Self.param("kind", in: query) == "lan"
             DispatchQueue.main.async {
-                MainActor.assumeIsolated { WebAPI.qr(port: port) { status, json in self.send(c, .json(status, json)) } }
+                MainActor.assumeIsolated { WebAPI.qr(port: port, lan: lan) { status, json in self.send(c, .json(status, json)) } }
             }
         case ("POST", "/api/action"):
             guard req.headers["content-type"]?.hasPrefix("application/json") == true else {
