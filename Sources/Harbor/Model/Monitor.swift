@@ -258,6 +258,7 @@ final class Monitor {
 
     private func apply(_ scan: FullScan, memory m: MemorySnapshot) {
         if ports != scan.ports { ports = scan.ports }
+        Tunnels.shared.prune(listening: Set(scan.ports.map(\.port)))
         if apps != scan.apps {
             // Load icons here, not while the list is laying out its rows.
             IconCache.shared.warm(scan.apps.prefix(60).compactMap(\.bundlePath))
@@ -363,6 +364,7 @@ final class Monitor {
         if (r.isSystem || r.isSelf) && !showSystemPorts { return false }
         if onlyServers && ![.dev, .database, .runtime].contains(r.category) { return false }
         if !blocklist.isEmpty, blocklist.contains(r.processName.lowercased()) { return false }
+        if !showSystemPorts && Tunnels.shared.isTunnelPid(r.pid) { return false }
         return true
     }
 

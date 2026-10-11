@@ -7,4 +7,10 @@ enum AppInfo {
 
     static let name: String =
         (Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String) ?? fallbackName
+
+    /// The name as a hostname label and cookie name: "harbor".
+    static let slug: String = {
+        let s = name.lowercased().map { $0.isLetter || $0.isNumber ? String($0) : "-" }.joined()
+        return s.isEmpty ? "app" : s
+    }()
 }

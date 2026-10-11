@@ -14,10 +14,8 @@ import SwiftUI
 ///   --serve                start the page server, print its URL, open nothing
 ///   --no-open              normal launch, but log the page URL instead of opening it
 ///   --demo-menu            launch with the menu content in a plain panel
-///   --demo-statusitem      find the real status item and try to open it
 ///   --snapshot PATH        with --demo-menu: save the panel as PNG
 ///       --snapshot-delay S, --snapshot-layer (render via CALayer instead)
-///   --snapshot-dir DIR     with --demo-statusitem: where to save images
 ///
 /// HARBOR_DEBUG=1 logs scan-mode changes to stdout.
 enum DebugCLI {
@@ -168,10 +166,10 @@ enum DebugCLI {
         if args.contains("--serve") {
             // Start the page server and print its URL without opening a browser.
             WebServer.shared.start { url in out("PAGE \(url?.absoluteString ?? "failed")") }
-            return true
-        }
-        if args.contains("--demo-statusitem") {
-            statusItemDemo(snapshotDir: value(after: "--snapshot-dir"))
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                let bars = NSApp.windows.filter { String(describing: type(of: $0)).contains("StatusBar") && $0.isVisible }
+                out("STATUS ITEMS \(bars.count)")
+            }
             return true
         }
         if args.contains("--demo-menu") {
@@ -191,55 +189,6 @@ enum DebugCLI {
     }
 
     @MainActor private static var demoPanel: NSPanel?
-
-    /// Finds the real status item, saves its icon, clicks it to open the real
-    /// MenuBarExtra panel, saves that, hides it again and logs fast mode.
-    @MainActor
-    private static func statusItemDemo(snapshotDir: String?) {
-        func statusButton() -> NSButton? {
-            for w in NSApp.windows where String(describing: type(of: w)).contains("StatusBar") {
-                if let b = w.contentView?.firstSubview(of: NSStatusBarButton.self) { return b }
-            }
-            return nil
-        }
-        func extraPanel() -> NSWindow? {
-            NSApp.windows.first { $0.isVisible && String(describing: type(of: $0)).contains("MenuBarExtra") }
-        }
-        func save(_ view: NSView, _ name: String) {
-            guard let dir = snapshotDir, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
-            view.cacheDisplay(in: view.bounds, to: rep)
-            let path = (dir as NSString).appendingPathComponent(name)
-            try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
-            out("SAVED \(path)")
-        }
-        func after(_ s: Double, _ body: @escaping @MainActor () -> Void) {
-            DispatchQueue.main.asyncAfter(deadline: .now() + s) { MainActor.assumeIsolated { body() } }
-        }
-        func tryOpen(_ attempt: Int, _ button: NSButton) {
-            NSApp.activate(ignoringOtherApps: true)
-            if attempt % 2 == 1 { button.performClick(nil) } else { _ = button.sendAction(button.action, to: button.target) }
-            after(2) {
-                guard let panel = extraPanel() else {
-                    out("attempt \(attempt): panel not open")
-                    if attempt < 4 { tryOpen(attempt + 1, button) }
-                    return
-                }
-                out("panel open \(panel.frame.size), fastMode=\(Monitor.shared.isFastMode)")
-                if let v = panel.contentView { save(v, "menubarextra.png") }
-                after(5) {
-                    out("still open after 5 s: fastMode=\(Monitor.shared.isFastMode)")
-                    panel.orderOut(nil)
-                    after(2) { out("after hiding panel: fastMode=\(Monitor.shared.isFastMode)") }
-                }
-            }
-        }
-        after(2) {
-            guard let button = statusButton() else { out("no status item button found"); return }
-            out("status item found: \(button.frame.size) icon state=\(Monitor.shared.iconState)")
-            save(button, "statusitem.png")
-            tryOpen(1, button)
-        }
-    }
 
     @MainActor
     private static func report(_ w: NSWindow, _ snapshotPath: String?) {
@@ -283,6 +232,11 @@ enum DebugCLI {
     /// --no-open (or --serve): never open the browser, only log the page URL.
     static var noOpen: Bool { args.contains("--no-open") || args.contains("--serve") }
 
+    /// Any test flag: run without a menu bar icon and alongside an installed copy.
+    static var isDebugRun: Bool {
+        args.contains { ["--no-open", "--serve", "--demo-menu", "--snapshot"].contains($0) }
+    }
+
     /// Set HARBOR_DEBUG=1 to log mode changes to stdout.
     static let verbose = ProcessInfo.processInfo.environment["HARBOR_DEBUG"] == "1"
 
@@ -293,15 +247,5 @@ enum DebugCLI {
     static func out(_ s: String) {
         print(s)
         fflush(stdout)
-    }
-}
-
-private extension NSView {
-    func firstSubview<T: NSView>(of type: T.Type) -> T? {
-        for v in subviews {
-            if let t = v as? T { return t }
-            if let t = v.firstSubview(of: type) { return t }
-        }
-        return nil
     }
 }

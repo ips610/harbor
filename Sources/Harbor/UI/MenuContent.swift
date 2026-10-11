@@ -317,8 +317,11 @@ private struct PortLine: View {
     @State private var hovering = false
     @State private var expanded = false
     @State private var caption: String?
+    @State private var shareNote: String?
+    @State private var showQR = false
 
     var body: some View {
+        let tunnel = Tunnels.shared.active[row.port]
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 Text(verbatim: ":\(row.port)")
@@ -331,6 +334,14 @@ private struct PortLine: View {
                             .lineLimit(1)
                         if let fw = row.framework, fw != row.title {
                             FrameworkTag(text: fw)
+                        }
+                        if tunnel != nil {
+                            Text("shared")
+                                .font(.system(size: 10, weight: .semibold))
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .foregroundStyle(.white)
+                                .background(RoundedRectangle(cornerRadius: 4).fill(Color.green))
                         }
                         if row.scope == .all {
                             Image(systemName: "dot.radiowaves.up.forward")
@@ -346,6 +357,9 @@ private struct PortLine: View {
                 }
                 Spacer(minLength: 4)
                 Pill(title: "open", help: "Open \(row.url.absoluteString)") { Engine.open(row) }
+                if !(row.isSystem || row.isSelf) {
+                    ShareControl(row: row, note: $shareNote)
+                }
                 if !(row.isSystem || row.isSelf) {
                     StopControl(
                         verb: "kill",
@@ -364,6 +378,15 @@ private struct PortLine: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.leading, 66)
             }
+            if let shareNote {
+                Text(shareNote)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .padding(.leading, 66)
+            }
+            if let tunnel { tunnelLine(tunnel).padding(.leading, 66) }
             if expanded { details.padding(.leading, 66) }
         }
         .padding(.horizontal, 8)
@@ -387,6 +410,46 @@ private struct PortLine: View {
     }
 
     private var label: String { "\(row.processName) on :\(row.port)" }
+
+    @ViewBuilder
+    private func tunnelLine(_ t: Tunnels.Tunnel) -> some View {
+        switch t.phase {
+        case .starting:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.mini)
+                Text("Opening a public link with \(t.provider)…").font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+        case .failed(let message):
+            Text(message).font(.system(size: 11)).foregroundStyle(.red)
+        case .ready(let url):
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Text(url)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.green)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                    Spacer(minLength: 4)
+                    Pill(title: "copy") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(url, forType: .string)
+                        monitor.flash("Copied \(url)")
+                    }
+                    Pill(title: showQR ? "hide qr" : "qr") { showQR.toggle() }
+                }
+                if showQR, let cg = Tunnels.shared.qr(url) {
+                    Image(decorative: cg, scale: 1)
+                        .interpolation(.none)
+                        .resizable()
+                        .frame(width: 132, height: 132)
+                        .padding(6)
+                        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
+                        .help("Scan with your phone camera")
+                }
+            }
+        }
+    }
 
     private var question: String {
         let folder = row.folder.map(Fmt.path) ?? "no project folder"
@@ -427,6 +490,48 @@ private struct PortLine: View {
             }
             if let hint = row.hint {
                 Text(hint).font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+/// Manfath's tunnel pill: "share" → confirm with plain words → public link.
+private struct ShareControl: View {
+    let row: PortRow
+    @Binding var note: String?
+    @State private var confirming = false
+    @State private var armed = 0
+
+    var body: some View {
+        if let t = Tunnels.shared.active[row.port] {
+            if t.phase == .starting {
+                Pill(title: "sharing…") {}
+            } else {
+                Pill(title: "unshare", style: .danger, help: "Stop sharing :\(row.port)") {
+                    Tunnels.shared.stop(row.port)
+                    note = nil
+                }
+            }
+        } else if confirming {
+            Pill(title: "share", style: .accentFilled) {
+                confirming = false
+                note = Tunnels.shared.start(row)
+            }
+            Pill(title: "cancel") { confirming = false; note = nil }
+        } else {
+            Pill(title: "share", help: "Get a public link for :\(row.port)") {
+                guard Tunnels.tool != nil else {
+                    note = "\(Tunnels.hint.text) \(Tunnels.hint.command)"
+                    return
+                }
+                confirming = true
+                note = "Anyone with the link can open \(row.title) on port \(row.port) until you stop sharing."
+                armed += 1
+                let token = armed
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 8_000_000_000)
+                    if armed == token, confirming { confirming = false; note = nil }
+                }
             }
         }
     }

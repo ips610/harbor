@@ -20,6 +20,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         let atLogin = launchedAtLogin()
+        Tunnels.shared.cleanUpOrphans()
+        stopTunnelsOnSignals()
         Monitor.shared.start()
         if DebugCLI.afterLaunch() { return }
         // Opened from Applications or Spotlight: show the page. At login: stay in the menu bar.
@@ -33,6 +35,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        Tunnels.shared.stopAll()
+    }
+
+    /// `kill` (e.g. from install.sh) skips applicationWillTerminate, so catch
+    /// SIGTERM/SIGINT too: no tunnel may outlive harbor.
+    private var signalSources: [DispatchSourceSignal] = []
+    private func stopTunnelsOnSignals() {
+        for sig in [SIGTERM, SIGINT] {
+            signal(sig, SIG_IGN)
+            let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            src.setEventHandler {
+                MainActor.assumeIsolated { Tunnels.shared.stopAll() }
+                exit(0)
+            }
+            src.resume()
+            signalSources.append(src)
+        }
+    }
 
     private func launchedAtLogin() -> Bool {
         if let event = NSAppleEventManager.shared().currentAppleEvent,

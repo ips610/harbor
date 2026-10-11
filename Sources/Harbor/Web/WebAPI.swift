@@ -10,6 +10,7 @@ enum WebAPI {
     private static var shownBefore = Set<pid_t>()
     private static var mayForce = Set<pid_t>()
     private static var mayAdmin = Set<pid_t>()
+    private static var shownPorts = Set<UInt16>()
 
     // MARK: State
 
@@ -29,10 +30,22 @@ enum WebAPI {
         let now = Date()
         var pids = Set<pid_t>()
 
+        let tunnels = Tunnels.shared.active
+        var portsShown = Set<UInt16>()
         let ports: [[String: Any]] = m.ports.map { r in
             pids.insert(r.pid)
             pids.formUnion(r.workerPids)
+            portsShown.insert(r.port)
+            var tunnel: Any = NSNull()
+            if let t = tunnels[r.port] {
+                switch t.phase {
+                case .starting: tunnel = ["state": "starting", "provider": t.provider]
+                case .ready(let url): tunnel = ["state": "ready", "provider": t.provider, "url": url]
+                case .failed(let msg): tunnel = ["state": "failed", "provider": t.provider, "message": msg]
+                }
+            }
             return [
+                "tunnel": tunnel,
                 "id": r.id,
                 "port": Int(r.port),
                 "pid": Int(r.pid),
@@ -79,12 +92,16 @@ enum WebAPI {
 
         shownBefore = shown
         shown = pids
+        shownPorts = portsShown
+        let hint = Tunnels.hint
+        let tool = Tunnels.tool
 
         return [
             "scannedAgo": m.lastFullScan.map { now.timeIntervalSince($0) } ?? 0,
             "scanMs": m.lastScanDuration * 1000,
             "ports": ports,
             "notices": m.notices.map { ["id": $0.id, "text": $0.text] },
+            "share": ["available": tool != nil, "provider": n(tool?.name), "hint": hint.text, "command": hint.command],
             "loginItem": SMAppService.mainApp.status == .enabled,
             "settings": [
                 "minPort": m.minPort, "maxPort": m.maxPort,
@@ -103,6 +120,15 @@ enum WebAPI {
                 "own": z.ownProcessCount, "perUser": z.maxProcPerUID,
             ],
         ]
+    }
+
+    /// The QR code of a shared port's public link, as rows of 0/1.
+    static func qr(port: Int, _ done: @escaping (Int, [String: Any]) -> Void) {
+        guard let p = UInt16(exactly: port), case .ready(let url)? = Tunnels.shared.active[p]?.phase,
+              let rows = Tunnels.shared.qrRows(url) else {
+            return done(404, ["error": "That port isn't shared."])
+        }
+        done(200, ["url": url, "rows": rows])
     }
 
     // MARK: Actions
@@ -132,6 +158,12 @@ enum WebAPI {
             if let v = obj["showSystem"] as? Bool { m.showSystemPorts = v }
             if let v = obj["onlyServers"] as? Bool { m.onlyServers = v }
             return done(200, ["result": "ok"])
+        case "unshare":
+            guard let port = obj["port"] as? Int, let p = UInt16(exactly: port), Tunnels.shared.active[p] != nil else {
+                return done(400, ["error": "That port isn't shared."])
+            }
+            Tunnels.shared.stop(p)
+            return done(200, ["result": "ok", "message": "Stopped sharing :\(port)."])
         case "dismiss-notice":
             if let id = obj["id"] as? Int { Monitor.shared.dismissNotice(id) }
             return done(200, ["result": "ok"])
@@ -160,6 +192,17 @@ enum WebAPI {
             guard let folder = row?.folder else { return done(400, ["error": "No folder for that process."]) }
             Engine.reveal(folder)
             return done(200, ["result": "ok", "message": "Shown in Finder."])
+        case "share":
+            // Only a port the page showed, served by the pid the page showed.
+            guard let port = obj["port"] as? Int, let p = UInt16(exactly: port), shownPorts.contains(p),
+                  let shareRow = m.ports.first(where: { $0.port == p && $0.pid == pid }) else {
+                return done(400, ["error": "That port isn't on the page any more."])
+            }
+            if shareRow.isSystem || shareRow.isSelf { return done(400, ["error": "harbor doesn't share macOS services or itself."]) }
+            if let problem = Tunnels.shared.start(shareRow) {
+                return done(200, ["result": "unavailable", "message": problem])
+            }
+            return done(200, ["result": "starting", "message": "Opening a public link for :\(port)…"])
         case "copy":
             guard let row else { return done(400, ["error": "Not a port."]) }
             Engine.copyURL(row)

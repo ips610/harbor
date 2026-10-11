@@ -1,4 +1,4 @@
-// The harbor page, served by WebServer at http://127.0.0.1:<port>/#<token>.
+// The harbor page, served by WebServer at http://harbor.localhost:8470/.
 // Every value from the app is rendered with textContent; nothing is parsed as HTML.
 enum Page {
     /// The page with the app's name filled in (see AppInfo).
@@ -162,6 +162,7 @@ enum Page {
   .ptitle .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tag { font: 600 11px/1 var(--f-body); padding: 3px 6px; border-radius: 5px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
   .tag.warn { border-color: transparent; background: var(--warn-soft); color: var(--warn); }
+  .tag.shared { border-color: transparent; background: var(--c-mac); color: var(--bg); }
   .psub { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .pacts { display: flex; gap: 6px; align-items: center; }
   .pl {
@@ -176,6 +177,14 @@ enum Page {
   .pl.admin { background: var(--text); color: var(--bg); }
   .pl.admin:hover { background: var(--text); color: var(--bg); }
   .pline { padding: 0 18px 12px 128px; font-size: 13px; color: var(--danger); }
+  .pline.share { color: var(--warn); }
+  .pline code { font: 12px var(--f-mono); background: var(--panel-2); padding: 2px 6px; border-radius: 5px; color: var(--text-2); }
+  .pl.go { background: var(--c-mac); color: var(--bg); }
+  .pl.go:hover { background: var(--c-mac); color: var(--bg); filter: brightness(1.08); }
+  .ptunnel { padding: 0 18px 12px 128px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); }
+  .ptunnel a { font: 12.5px/1.4 var(--f-mono); color: var(--c-mac); overflow-wrap: anywhere; }
+  .qr { margin: 0 18px 12px 128px; background: #fff; padding: 8px; border-radius: 8px; width: max-content; }
+  .qr canvas { display: block; image-rendering: pixelated; }
   .pline.info { color: var(--text-2); }
   .pdetails { display: grid; grid-template-columns: 6.5em minmax(0, 1fr) auto; gap: 7px 12px; padding: 2px 18px 14px 128px; align-items: baseline; margin: 0; }
   .pdetails dt { color: var(--muted); font: 11px/1.4 var(--f-mono); text-transform: uppercase; letter-spacing: .06em; }
@@ -265,7 +274,8 @@ enum Page {
     .pmain { grid-template-columns: 76px minmax(0, 1fr); }
     .pport { font-size: 19px; }
     .pacts { justify-content: flex-end; }
-    .pline, .pdetails { padding-left: 18px; }
+    .pline, .pdetails, .ptunnel { padding-left: 18px; }
+    .qr { margin-left: 18px; }
     .pdetails { grid-template-columns: 5.5em minmax(0, 1fr) auto; }
     .bars li { grid-template-columns: minmax(0, 7em) minmax(0, 1fr) 4.2em; }
     .bars li .btn { grid-column: 1 / -1; justify-self: start; }
@@ -305,14 +315,14 @@ enum Page {
 
 <div class="alarm" id="alarm" hidden><div class="wrap"><p id="alarm-text"></p><span id="alarm-act"></span></div></div>
 <div id="notices"></div>
-<div class="offline" id="offline" hidden><div class="wrap">__APP__ isn't answering. Open it from the menu bar or Applications, then reload this page.</div></div>
+<div class="offline" id="offline" hidden><div class="wrap" id="offline-text">__APP__ isn't answering. Open it from the menu bar or Applications, then reload this page.</div></div>
 
 <main class="wrap">
   <section id="s-ports" style="--sec: var(--c-ports)">
     <div class="sec-head">
       <div>
         <div class="sec-title"><span class="sec-num">01</span><h2 class="display">Ports</h2></div>
-        <p class="sec-sub" id="ports-sub">Open, copy or kill each one. Click a row for details.</p>
+        <p class="sec-sub" id="ports-sub">Open, copy, share or kill each one. Click a row for details.</p>
       </div>
       <div class="controls">
         <div class="seg" role="group" aria-label="Group ports">
@@ -362,7 +372,6 @@ enum Page {
 
 <script>
 'use strict';
-const token = location.hash.slice(1);
 const $ = (id) => document.getElementById(id);
 const PALETTE = ['#4f8cf7', '#19a77d', '#9a84f4', '#de5a88', '#cf9214', '#16a6c2', '#e8743f', '#6b8f2a'];
 const POLL_MS = 3000;
@@ -371,6 +380,9 @@ const phase = new Map();   // row id -> { kind: confirm|working|force|admin|msg,
 const opened = new Set();  // expanded row ids
 const busy = new Set();
 const sig = {};
+const sharing = new Map();  // row id -> { kind: confirm|hint, text, command }
+const qrShown = new Set();  // ports showing a QR code
+const qrCache = new Map();
 
 function store(key, value) { try { localStorage.setItem(key, value); } catch (e) {} }
 function load(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
@@ -416,9 +428,10 @@ function colour(key) { return PALETTE[hash(key) % PALETTE.length]; }
 function plural(n, one, many) { return n === 1 ? `1 ${one}` : `${n} ${many}`; }
 
 // ---------- API ----------
+// The session cookie (HttpOnly, SameSite=Strict) authenticates; POSTs add X-Harbor.
 async function api(path, body) {
-  const opts = { headers: { 'X-Token': token }, cache: 'no-store' };
-  if (body) { opts.method = 'POST'; opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  const opts = { credentials: 'same-origin', cache: 'no-store', headers: {} };
+  if (body) { opts.method = 'POST'; opts.headers['Content-Type'] = 'application/json'; opts.headers['X-Harbor'] = '1'; opts.body = JSON.stringify(body); }
   const reply = await fetch(path, opts);
   const data = await reply.json().catch(() => ({}));
   if (!reply.ok) throw new Error(data.error || ('HTTP ' + reply.status));
@@ -435,6 +448,13 @@ async function poll() {
     render();
   } catch (e) {
     $('offline').hidden = false;
+    if (e.message === 'session') {
+      // A tab from an earlier run (or opened without the link): stop asking.
+      $('offline-text').textContent = 'This tab belongs to an earlier __APP__ session. Open __APP__ from the menu bar to get a fresh one.';
+      setLive(false, 'Old session');
+      return;
+    }
+    $('offline-text').textContent = "__APP__ isn't answering. Open it from the menu bar or Applications, then reload this page.";
     setLive(false, 'Not answering');
   }
   if (document.visibilityState === 'visible') timer = setTimeout(poll, POLL_MS);
@@ -481,7 +501,7 @@ function render() {
   const all = state.ports.filter((p) => !p.hidden);
   const ports = visiblePorts();
   setLive(true, `Updated ${Math.round(state.scannedAgo)}s ago`);
-  $('st-scan').textContent = `127.0.0.1 only · scanned in ${state.scanMs.toFixed(0)} ms · refreshes every 3 s while open`;
+  $('st-scan').textContent = `${location.host} · this Mac only · scanned in ${state.scanMs.toFixed(0)} ms · refreshes every 3 s while open`;
   renderHero(all);
   renderAlarm();
   renderNotices();
@@ -503,11 +523,13 @@ function renderHero(all) {
   else if (projects) who = projects === 1 ? '1 project is' : `${projects} projects are`;
   else who = apps === 1 ? '1 app is' : `${apps} apps are`;
   const first = all.length === 0 ? 'Nothing is listening right now.' : `${who} serving on this Mac.`;
-  const sigText = first + '|' + exposed;
+  const shared = all.filter((p) => p.tunnel && p.tunnel.state === 'ready').length;
+  const sigText = first + '|' + exposed + '|' + shared;
   if (sig.lede !== sigText) {
     sig.lede = sigText;
     lede.replaceChildren(first);
     if (exposed) lede.append(' ', el('span', { class: 'warn', text: `${plural(exposed, 'port is', 'ports are')} reachable from your network.` }));
+    if (shared) lede.append(' ', el('span', { class: 'warn', text: `${plural(shared, 'port is', 'ports are')} shared to the internet.` }));
   }
 
   // Port map: log scale from 1,000 to 65,535; lit ticks are listening ports.
@@ -575,7 +597,8 @@ function renderPorts(ports, all) {
   else model = [{ key: 'flat', kind: 'section', title: 'All ports', rows: [...ports].sort((a, b) => a.port - b.port) }];
 
   const shape = model.map((g) => [g.key, g.rows.map((p) => [p.id, p.title, p.name, p.framework, p.command, p.address,
-    uptime(p.uptime), bytes(p.memory), p.workers, p.busy, p.system, p.hint, phase.get(p.id), opened.has(p.id)])]);
+    uptime(p.uptime), bytes(p.memory), p.workers, p.busy, p.system, p.hint, phase.get(p.id), opened.has(p.id),
+    p.tunnel, sharing.get(p.id), qrShown.has(p.port), state.share.available])]);
   swap('cards', group + query + JSON.stringify(shape), () => {
     $('cards').className = group === 'project' ? 'cards' : 'stack-list';
     if (!ports.length) {
@@ -607,6 +630,8 @@ function section(g) {
 // One Manfath-style row: ":3000  name [tags]  …  open copy kill", click for details.
 function row(p, showProject) {
   const ph = phase.get(p.id);
+  const sh = sharing.get(p.id);
+  const live = p.tunnel && p.tunnel.state === 'ready' ? p.tunnel : null;
   const title = showProject ? p.title : p.name;
   const facts = [showProject && p.title !== p.name ? p.name : null,
     'pid ' + p.pid + (p.workers ? ` +${p.workers}` : ''),
@@ -619,9 +644,11 @@ function row(p, showProject) {
   else if (ph && ph.kind === 'confirm') acts = [pill('confirm?', 'confirm', () => runStop(p, 'stop')), pill('cancel', '', () => setPhase(p.id, null))];
   else if (ph && ph.kind === 'force') acts = [pill('force kill', 'force', () => runStop(p, 'force')), pill('cancel', '', () => setPhase(p.id, null))];
   else if (ph && ph.kind === 'admin') acts = [pill('admin password…', 'admin', () => runStop(p, 'admin')), pill('cancel', '', () => setPhase(p.id, null))];
+  else if (sh && sh.kind === 'confirm') acts = [pill('share', 'go', () => startShare(p)), pill('cancel', '', () => setShare(p.id, null))];
   else acts = [
     el('a', { class: 'pl', href: safeUrl(p.url), target: '_blank', rel: 'noopener noreferrer', text: 'open', title: 'Open ' + p.url, onclick: stop }),
     pill('copy', '', () => copy(p), { title: 'Copy ' + p.url }),
+    p.system ? null : shareAction(p, pill),
     p.system ? null : pill('kill', 'kill', () => armKill(p), { title: `Kill PID ${p.pid}` }),
   ];
 
@@ -634,10 +661,16 @@ function row(p, showProject) {
         el('div', { class: 'ptext' },
           el('div', { class: 'ptitle' }, el('span', { class: 't', text: title }),
             p.framework && p.framework !== title ? el('span', { class: 'tag', text: p.framework }) : null,
-            p.exposed ? el('span', { class: 'tag warn', text: p.address, title: 'Other devices on your network can reach this port.' }) : null),
+            p.exposed ? el('span', { class: 'tag warn', text: p.address, title: 'Other devices on your network can reach this port.' }) : null,
+            live ? el('span', { class: 'tag shared', text: 'shared', title: 'Public link: ' + live.url }) : null),
           el('div', { class: 'psub', text: facts }))),
       el('div', { class: 'pacts' }, acts)),
     ph && ph.text ? el('p', { class: 'pline' + (ph.kind === 'msg' ? ' info' : '') , text: ph.text }) : null,
+    sh && sh.kind === 'confirm' ? el('p', { class: 'pline share', text: sh.text }) : null,
+    sh && sh.kind === 'hint' ? el('p', { class: 'pline info' }, sh.text + ' ', el('code', { text: sh.command }), ' ',
+      pill('copy command', '', () => copyText(sh.command))) : null,
+    tunnelLine(p, pill),
+    live && qrShown.has(p.port) ? qrBox(p.port) : null,
     isOpen ? details(p) : null);
   return li;
 }
@@ -679,6 +712,62 @@ async function runStop(p, op) {
 }
 
 function safeUrl(url) { return /^http:\/\/(localhost|127\.0\.0\.1|\[[0-9a-f:]+\]|[0-9.]+):\d+$/i.test(url) ? url : '#'; }
+function safePublic(url) { return /^https:\/\/[a-z0-9-]+\.(trycloudflare\.com|ngrok(-free)?\.(app|dev|io))\/?$/i.test(url) ? url : '#'; }
+
+// ---------- share: Manfath's tunnel, always confirmed first ----------
+function shareAction(p, pill) {
+  if (p.tunnel && p.tunnel.state === 'starting') return el('span', { class: 'busy' }, el('i', { class: 'spinner' }), 'sharing');
+  if (p.tunnel) return pill('unshare', 'kill', () => stopShare(p), { title: 'Stop sharing :' + p.port });
+  return pill('share', '', () => askShare(p), { title: 'Get a public link for :' + p.port });
+}
+function tunnelLine(p, pill) {
+  if (!p.tunnel) return null;
+  if (p.tunnel.state === 'starting') return el('p', { class: 'ptunnel', text: `Opening a public link with ${p.tunnel.provider}…` });
+  if (p.tunnel.state !== 'ready') return el('p', { class: 'pline', text: p.tunnel.message || 'Sharing failed.' });
+  const url = p.tunnel.url;
+  return el('div', { class: 'ptunnel' }, 'Public link',
+    el('a', { href: safePublic(url), target: '_blank', rel: 'noopener noreferrer', text: url, onclick: (e) => e.stopPropagation() }),
+    pill('copy', '', () => copyText(url)),
+    pill(qrShown.has(p.port) ? 'hide qr' : 'qr', '', () => { if (qrShown.has(p.port)) qrShown.delete(p.port); else qrShown.add(p.port); render(); }));
+}
+function qrBox(port) {
+  const box = el('div', { class: 'qr', title: 'Scan with your phone camera' });
+  const draw = (rows) => {
+    const scale = 4, size = rows.length;
+    const c = el('canvas', { width: size * scale, height: size * scale, 'aria-label': 'QR code of the public link' });
+    const g = c.getContext('2d');
+    g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.fillStyle = '#000';
+    rows.forEach((r, y) => { for (let x = 0; x < r.length; x++) if (r[x] === '1') g.fillRect(x * scale, y * scale, scale, scale); });
+    box.replaceChildren(c);
+  };
+  if (qrCache.has(port)) draw(qrCache.get(port));
+  else api('/api/qr?port=' + port).then((d) => { qrCache.set(port, d.rows); draw(d.rows); }).catch((e) => toast(e.message));
+  return box;
+}
+function setShare(id, v) { if (v) sharing.set(id, v); else sharing.delete(id); render(); }
+function askShare(p) {
+  if (!state.share.available) return setShare(p.id, { kind: 'hint', text: state.share.hint, command: state.share.command });
+  const entry = { kind: 'confirm', text: `Anyone with the link can open ${p.project || p.app || p.name} on port ${p.port} until you stop sharing.` };
+  setShare(p.id, entry);
+  setTimeout(() => { if (sharing.get(p.id) === entry) setShare(p.id, null); }, 8000);
+}
+async function startShare(p) {
+  setShare(p.id, null);
+  const r = await act('share', p.pid, { port: p.port });
+  if (r && r.result === 'unavailable') setShare(p.id, { kind: 'hint', text: r.message, command: state.share.command });
+  poll();
+}
+async function stopShare(p) {
+  const r = await act('unshare', p.pid, { port: p.port });
+  if (r) toast(r.message);
+  qrShown.delete(p.port);
+  qrCache.delete(p.port);
+  poll();
+}
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); toast('Copied ' + text); }
+  catch (e) { toast('Copy failed; select the text instead.'); }
+}
 
 function renderMac() {
   const m = state.memory, v = state.verdict, apps = state.apps;
@@ -783,8 +872,7 @@ $('login-item').addEventListener('change', async (e) => {
 });
 window.addEventListener('resize', () => { if (state) renderHero(state.ports.filter((p) => !p.hidden)); });
 
-if (!token) { $('offline').hidden = false; setLive(false, 'No token'); }
-else poll();
+poll();
 </script>
 </body>
 </html>
