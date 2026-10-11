@@ -63,6 +63,10 @@ open /Applications/harbor.app
 time; opening it again just brings up the page. Open at login is in the gear menu and the page's
 settings, and off by default. To rename the app, change `app.conf` and build again.
 
+`build.sh` signs with my own certificate ("IPS Local Apps") when that's in the keychain, so
+macOS remembers what you allowed harbor to do after a rebuild. Without it, the app gets a
+throwaway signature. Set `SIGN_ID` to use a different certificate.
+
 ### Typing the address
 
 The first time harbor runs it adds a small LaunchAgent, `~/Library/LaunchAgents/local.harbor.plist`.

@@ -61,7 +61,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "==> Signing (ad-hoc)"
-codesign --force --sign - "$APP"
+# The same certificate every build keeps macOS's permissions for the app; ad-hoc changes with
+# every build. SIGN_ID picks another one (a Developer ID later); no certificate → ad-hoc.
+SIGN_ID="${SIGN_ID:-IPS Local Apps}"
+echo "==> Signing ($SIGN_ID)"
+codesign --force --sign "$SIGN_ID" "$APP" 2>/dev/null || { echo "    not found, signing ad-hoc"; codesign --force --sign - "$APP"; }
 codesign --verify --strict "$APP"
 echo "Built: $APP"
