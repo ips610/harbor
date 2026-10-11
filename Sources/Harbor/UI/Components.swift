@@ -94,9 +94,46 @@ struct ToastView: View {
     }
 }
 
-/// Manfath-style lowercase text action ("open", "kill", "confirm?").
+/// Opaque light/dark pairs, checked for at least 4.5:1 text contrast.
+enum Tone {
+    static func dynamic(_ light: String, _ dark: String) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            NSColor(hex: appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light)
+        })
+    }
+
+    static let neutralBg = dynamic("#e3e3e5", "#3d3d40")
+    static let neutralHover = dynamic("#d6d6d9", "#4a4a4e")
+    static let neutralInk = dynamic("#2c2c2e", "#e8e8ea")
+    static let openBg = dynamic("#dbe7fb", "#1f3352")
+    static let openInk = dynamic("#0a4fb0", "#a9c8ff")
+    static let shareBg = dynamic("#d4f0e4", "#173b2e")
+    static let shareInk = dynamic("#0b6b4b", "#86e3bb")
+    static let killBg = dynamic("#f9dedb", "#4a201c")
+    static let killInk = dynamic("#b3261e", "#ff9a90")
+    static let red = Color(nsColor: NSColor(hex: "#c5221f"))
+    static let admin = Color(nsColor: NSColor(hex: "#0a5bd3"))
+    /// The "shared" green, the same as the page's.
+    static let shared = dynamic("#0f7f5f", "#46d39a")
+    static let sharedInk = dynamic("#ffffff", "#0e0e10")
+}
+
+extension NSColor {
+    convenience init(hex: String) {
+        let v = UInt32(hex.trimmingCharacters(in: CharacterSet(charactersIn: "#")), radix: 16) ?? 0
+        self.init(srgbRed: CGFloat(v >> 16 & 0xff) / 255, green: CGFloat(v >> 8 & 0xff) / 255,
+                  blue: CGFloat(v & 0xff) / 255, alpha: 1)
+    }
+}
+
+extension Color {
+    init(hex: String) { self.init(nsColor: NSColor(hex: hex)) }
+}
+
+/// Manfath-style lowercase text action. Colour means something: open is
+/// accent, share is green, kill is neutral until hovered and red only then.
 struct Pill: View {
-    enum Style { case plain, danger, dangerFilled, accentFilled }
+    enum Style { case plain, open, share, danger, dangerFilled, go, accentFilled }
     let title: String
     var style: Style = .plain
     var help: String? = nil
@@ -110,7 +147,7 @@ struct Pill: View {
                 .padding(.horizontal, 7)
                 .padding(.vertical, 2.5)
                 .foregroundStyle(foreground)
-                .background(Capsule().fill(background))
+                .background(Capsule().fill(background).brightness(hovering && tinted ? -0.04 : 0))
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -118,20 +155,28 @@ struct Pill: View {
         .help(help ?? "")
     }
 
+    private var tinted: Bool { [.open, .share, .dangerFilled, .go, .accentFilled].contains(style) }
+
     private var foreground: Color {
         switch style {
-        case .plain: return hovering ? .primary : .secondary
-        case .danger: return hovering ? .red : .secondary
+        case .plain: return Tone.neutralInk
+        case .open: return Tone.openInk
+        case .share: return Tone.shareInk
+        case .danger: return hovering ? Tone.killInk : Tone.neutralInk
         case .dangerFilled, .accentFilled: return .white
+        case .go: return Tone.sharedInk
         }
     }
 
     private var background: Color {
         switch style {
-        case .plain: return Color.primary.opacity(hovering ? 0.12 : 0.07)
-        case .danger: return hovering ? Color.red.opacity(0.14) : Color.primary.opacity(0.07)
-        case .dangerFilled: return Color.red.opacity(hovering ? 1 : 0.88)
-        case .accentFilled: return Color.accentColor.opacity(hovering ? 1 : 0.88)
+        case .plain: return hovering ? Tone.neutralHover : Tone.neutralBg
+        case .open: return Tone.openBg
+        case .share: return Tone.shareBg
+        case .danger: return hovering ? Tone.killBg : Tone.neutralBg
+        case .dangerFilled: return Tone.red
+        case .go: return Tone.shared
+        case .accentFilled: return Tone.admin
         }
     }
 }

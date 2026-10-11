@@ -73,7 +73,10 @@ struct MenuContent: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(sections(rows), id: \.title) { section in
-                            if grouping != .flat { SectionTitle(title: section.title, count: section.rows.count) }
+                            if grouping != .flat {
+                                SectionTitle(title: section.title, count: section.rows.count,
+                                             color: grouping == .project ? section.rows.first.map { Color(hex: $0.colorHex) } : nil)
+                            }
                             ForEach(section.rows) { row in
                                 PortLine(row: row, showTitle: grouping != .project)
                             }
@@ -293,9 +296,11 @@ struct MenuContent: View {
 private struct SectionTitle: View {
     let title: String
     let count: Int
+    var color: Color? = nil
 
     var body: some View {
         HStack(spacing: 6) {
+            if let color { Circle().fill(color).frame(width: 6, height: 6) }
             Text(title.uppercased())
                 .font(.system(size: 10, weight: .semibold))
                 .tracking(0.6)
@@ -324,6 +329,10 @@ private struct PortLine: View {
         let tunnel = Tunnels.shared.active[row.port]
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
+                // The project's colour, the same as on the page. Text stays in normal colours.
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(Color(hex: row.colorHex))
+                    .frame(width: 3, height: 26)
                 Text(verbatim: ":\(row.port)")
                     .font(.system(size: 13, weight: .semibold, design: .monospaced))
                     .frame(width: 58, alignment: .leading)
@@ -340,8 +349,8 @@ private struct PortLine: View {
                                 .font(.system(size: 10, weight: .semibold))
                                 .padding(.horizontal, 5)
                                 .padding(.vertical, 1)
-                                .foregroundStyle(.white)
-                                .background(RoundedRectangle(cornerRadius: 4).fill(Color.green))
+                                .foregroundStyle(Tone.sharedInk)
+                                .background(RoundedRectangle(cornerRadius: 4).fill(Tone.shared))
                         }
                         if row.scope == .all {
                             Image(systemName: "dot.radiowaves.up.forward")
@@ -356,7 +365,7 @@ private struct PortLine: View {
                         .lineLimit(1)
                 }
                 Spacer(minLength: 4)
-                Pill(title: "open", help: "Open \(row.url.absoluteString)") { Engine.open(row) }
+                Pill(title: "open", style: .open, help: "Open \(row.url.absoluteString)") { Engine.open(row) }
                 if !(row.isSystem || row.isSelf) {
                     ShareControl(row: row, note: $shareNote)
                 }
@@ -376,7 +385,7 @@ private struct PortLine: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.leading, 66)
+                    .padding(.leading, 77)
             }
             if let shareNote {
                 Text(shareNote)
@@ -384,10 +393,10 @@ private struct PortLine: View {
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
-                    .padding(.leading, 66)
+                    .padding(.leading, 77)
             }
-            if let tunnel { tunnelLine(tunnel).padding(.leading, 66) }
-            if expanded { details.padding(.leading, 66) }
+            if let tunnel { tunnelLine(tunnel).padding(.leading, 77) }
+            if expanded { details.padding(.leading, 77) }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
@@ -426,7 +435,7 @@ private struct PortLine: View {
                 HStack(spacing: 6) {
                     Text(url)
                         .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.green)
+                        .foregroundStyle(Tone.shareInk)
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .textSelection(.enabled)
@@ -513,13 +522,13 @@ private struct ShareControl: View {
                 }
             }
         } else if confirming {
-            Pill(title: "share", style: .accentFilled) {
+            Pill(title: "share", style: .go) {
                 confirming = false
                 note = Tunnels.shared.start(row)
             }
             Pill(title: "cancel") { confirming = false; note = nil }
         } else {
-            Pill(title: "share", help: "Get a public link for :\(row.port)") {
+            Pill(title: "share", style: .share, help: "Get a public link for :\(row.port)") {
                 guard Tunnels.tool != nil else {
                     note = "\(Tunnels.hint.text) \(Tunnels.hint.command)"
                     return

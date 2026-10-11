@@ -14,6 +14,7 @@ import SwiftUI
 ///   --serve                start the page server, print its URL, open nothing
 ///   --no-open              normal launch, but log the page URL instead of opening it
 ///   --demo-menu            launch with the menu content in a plain panel
+///       --appearance light|dark   force the look for snapshots
 ///   --snapshot PATH        with --demo-menu: save the panel as PNG
 ///       --snapshot-delay S, --snapshot-layer (render via CALayer instead)
 ///
@@ -171,6 +172,9 @@ enum DebugCLI {
                 out("STATUS ITEMS \(bars.count)")
             }
             return true
+        }
+        if let look = value(after: "--appearance") {
+            NSApp.appearance = NSAppearance(named: look == "dark" ? .darkAqua : .aqua)
         }
         if args.contains("--demo-menu") {
             let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 500),

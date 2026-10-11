@@ -62,6 +62,25 @@ struct PortRow: Identifiable, Hashable {
         return path.hasPrefix(home + "/") || path.hasPrefix("/private/tmp/") || path.hasPrefix("/tmp/") || path.hasPrefix("/Volumes/")
     }
 
+    /// The card a row belongs to: its project folder, else its app.
+    var groupKey: String { projectFolder.map { "p:" + Fmt.path($0) } ?? "a:" + (appName ?? processName) }
+
+    /// Project colours, in the page's fixed order.
+    static let palette = ["#4f8cf7", "#19a77d", "#9a84f4", "#de5a88", "#cf9214", "#16a6c2", "#e8743f", "#6b8f2a"]
+
+    /// The one place a project gets its colour; the menu and the page both use
+    /// it. Same hash the page always used (31·h + UTF-16 unit, 32-bit), so
+    /// colours people already know don't move.
+    var colorHex: String { Self.colorHex(for: groupKey) }
+
+    static func colorHex(for key: String) -> String {
+        var h: Int32 = 0
+        for scalar in key.unicodeScalars {
+            h = h &* 31 &+ Int32(String(scalar).utf16.first ?? 0)
+        }
+        return palette[Int(h.magnitude % UInt32(palette.count))]
+    }
+
     /// What to call this server in one word: its project, else its app.
     var title: String { projectFolder.map(Fmt.lastComponent) ?? appName ?? processName }
 

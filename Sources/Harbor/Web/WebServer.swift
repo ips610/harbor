@@ -106,11 +106,14 @@ final class WebServer: @unchecked Sendable {
     }
 
     /// Plain BSD sockets: Network.framework can't set IPV6_V6ONLY, and without
-    /// it ::1 and 127.0.0.1 can't share a port. No SO_REUSE*: nobody else may
-    /// bind next to us.
+    /// it ::1 and 127.0.0.1 can't share a port. SO_REUSEADDR only lets a restart
+    /// rebind 8470 while old connections sit in TIME_WAIT; without SO_REUSEPORT
+    /// no other socket can listen on the same address and port.
     private static func bindLoopback(_ port: UInt16) -> ([Int32], UInt16)? {
+        var one: Int32 = 1
         let fd4 = socket(AF_INET, SOCK_STREAM, 0)
         guard fd4 >= 0 else { return nil }
+        setsockopt(fd4, SOL_SOCKET, SO_REUSEADDR, &one, socklen_t(MemoryLayout<Int32>.size))
         var a4 = sockaddr_in()
         a4.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         a4.sin_family = sa_family_t(AF_INET)
@@ -127,7 +130,7 @@ final class WebServer: @unchecked Sendable {
         }
         let fd6 = socket(AF_INET6, SOCK_STREAM, 0)
         guard fd6 >= 0 else { close(fd4); return nil }
-        var one: Int32 = 1
+        setsockopt(fd6, SOL_SOCKET, SO_REUSEADDR, &one, socklen_t(MemoryLayout<Int32>.size))
         setsockopt(fd6, IPPROTO_IPV6, IPV6_V6ONLY, &one, socklen_t(MemoryLayout<Int32>.size))
         var a6 = sockaddr_in6()
         a6.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)

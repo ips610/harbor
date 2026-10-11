@@ -38,6 +38,12 @@ enum Page {
     --focus: #4a63f5;
     --c-ports: #6c7cff;
     --c-mac: #18a47c;
+    --shared: #0f7f5f;
+    --shared-ink: #ffffff;
+    --open-bg: #dbe7fb;
+    --open-ink: #0a4fb0;
+    --share-bg: #d4f0e4;
+    --share-ink: #0b6b4b;
     --f-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif;
     --f-body: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
     --f-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
@@ -60,6 +66,12 @@ enum Page {
       --focus: #a7b4ff;
       --c-ports: #a7b4ff;
       --c-mac: #46d39a;
+      --shared: #46d39a;
+      --shared-ink: #0e0e10;
+      --open-bg: #1f3352;
+      --open-ink: #a9c8ff;
+      --share-bg: #173b2e;
+      --share-ink: #86e3bb;
     }
   }
   *, *::before, *::after { box-sizing: border-box; }
@@ -162,7 +174,7 @@ enum Page {
   .ptitle .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tag { font: 600 11px/1 var(--f-body); padding: 3px 6px; border-radius: 5px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
   .tag.warn { border-color: transparent; background: var(--warn-soft); color: var(--warn); }
-  .tag.shared { border-color: transparent; background: var(--c-mac); color: var(--bg); }
+  .tag.shared { border-color: transparent; background: var(--shared); color: var(--shared-ink); }
   .psub { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .pacts { display: flex; gap: 6px; align-items: center; }
   .pl {
@@ -172,6 +184,9 @@ enum Page {
   .card .pl, .group .pl { background: var(--bg); }
   .pl:hover { background: var(--line); color: var(--text); }
   .pl.kill:hover { background: var(--danger-soft); color: var(--danger); }
+  .card .pl.open, .group .pl.open, .pl.open { background: var(--open-bg); color: var(--open-ink); }
+  .card .pl.share, .group .pl.share, .pl.share { background: var(--share-bg); color: var(--share-ink); }
+  .pl.open:hover, .pl.share:hover { filter: brightness(.96); }
   .pl.confirm, .pl.force { background: var(--danger); color: #fff; }
   .pl.confirm:hover, .pl.force:hover { background: var(--danger); color: #fff; filter: brightness(1.08); }
   .pl.admin { background: var(--text); color: var(--bg); }
@@ -179,8 +194,8 @@ enum Page {
   .pline { padding: 0 18px 12px 128px; font-size: 13px; color: var(--danger); }
   .pline.share { color: var(--warn); }
   .pline code { font: 12px var(--f-mono); background: var(--panel-2); padding: 2px 6px; border-radius: 5px; color: var(--text-2); }
-  .pl.go { background: var(--c-mac); color: var(--bg); }
-  .pl.go:hover { background: var(--c-mac); color: var(--bg); filter: brightness(1.08); }
+  .pl.go { background: var(--shared); color: var(--shared-ink); }
+  .pl.go:hover { background: var(--shared); color: var(--shared-ink); filter: brightness(1.08); }
   .ptunnel { padding: 0 18px 12px 128px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); }
   .ptunnel a { font: 12.5px/1.4 var(--f-mono); color: var(--c-mac); overflow-wrap: anywhere; }
   .qr { margin: 0 18px 12px 128px; background: #fff; padding: 8px; border-radius: 8px; width: max-content; }
@@ -542,7 +557,7 @@ function renderHero(all) {
     const out = [];
     for (let i = 0; i < n; i++) {
       const ps = lit.get(i);
-      out.push(ps ? el('i', { class: 'on', title: ps.map((p) => `:${p.port} ${p.title}`).join('\n'), style: { 'background-color': colour(groupKey(ps[0])) } }) : el('i'));
+      out.push(ps ? el('i', { class: 'on', title: ps.map((p) => `:${p.port} ${p.title}`).join('\n'), style: { 'background-color': ps[0].color } }) : el('i'));
     }
     return out;
   });
@@ -551,7 +566,7 @@ function renderHero(all) {
     el('span', { text: v >= 1000 ? (v / 1000) + 'k' : String(v), style: { left: ((Math.log(v) - lo) / (hi - lo) * 100).toFixed(2) + '%' } })));
   const gs2 = groups(all).slice(0, window.innerWidth < 640 ? 4 : 6);
   swap('legend', JSON.stringify(gs2.map((g) => [g.key, g.rows.length])), () => gs2.map((g) =>
-    el('li', {}, el('i', { class: 'sw', style: { background: colour(g.key) } }), el('b', { text: g.title }), ' ' + g.rows.map((p) => ':' + p.port).join(' '))));
+    el('li', {}, el('i', { class: 'sw', style: { background: g.rows[0].color } }), el('b', { text: g.title }), ' ' + g.rows.map((p) => ':' + p.port).join(' '))));
 }
 
 function renderAlarm() {
@@ -617,7 +632,7 @@ function card(g) {
       el('p', { class: 'card-path mono', text: g.path || 'App or service' }),
       frameworks.length ? el('div', { class: 'chips' }, frameworks.map((f) => el('span', { class: 'chip', text: f }))) : null),
     g.folder ? el('button', { class: 'btn quiet', text: 'Reveal', title: 'Show this folder in Finder', onclick: () => act('reveal', g.rows[0].pid) }) : null);
-  return el('article', { class: 'card', style: { '--pc': colour(g.key) } },
+  return el('article', { class: 'card', style: { '--pc': g.rows[0].color } },
     head, el('ul', { class: 'rows' }, g.rows.map((p) => row(p, false))));
 }
 
@@ -646,7 +661,7 @@ function row(p, showProject) {
   else if (ph && ph.kind === 'admin') acts = [pill('admin password…', 'admin', () => runStop(p, 'admin')), pill('cancel', '', () => setPhase(p.id, null))];
   else if (sh && sh.kind === 'confirm') acts = [pill('share', 'go', () => startShare(p)), pill('cancel', '', () => setShare(p.id, null))];
   else acts = [
-    el('a', { class: 'pl', href: safeUrl(p.url), target: '_blank', rel: 'noopener noreferrer', text: 'open', title: 'Open ' + p.url, onclick: stop }),
+    el('a', { class: 'pl open', href: safeUrl(p.url), target: '_blank', rel: 'noopener noreferrer', text: 'open', title: 'Open ' + p.url, onclick: stop }),
     pill('copy', '', () => copy(p), { title: 'Copy ' + p.url }),
     p.system ? null : shareAction(p, pill),
     p.system ? null : pill('kill', 'kill', () => armKill(p), { title: `Kill PID ${p.pid}` }),
@@ -718,7 +733,7 @@ function safePublic(url) { return /^https:\/\/[a-z0-9-]+\.(trycloudflare\.com|ng
 function shareAction(p, pill) {
   if (p.tunnel && p.tunnel.state === 'starting') return el('span', { class: 'busy' }, el('i', { class: 'spinner' }), 'sharing');
   if (p.tunnel) return pill('unshare', 'kill', () => stopShare(p), { title: 'Stop sharing :' + p.port });
-  return pill('share', '', () => askShare(p), { title: 'Get a public link for :' + p.port });
+  return pill('share', 'share', () => askShare(p), { title: 'Get a public link for :' + p.port });
 }
 function tunnelLine(p, pill) {
   if (!p.tunnel) return null;

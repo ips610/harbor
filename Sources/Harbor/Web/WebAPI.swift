@@ -54,6 +54,7 @@ enum WebAPI {
                 "app": n(r.appName),
                 "framework": n(r.framework),
                 "category": r.category.rawValue,
+                "color": r.colorHex,
                 "categoryTitle": r.category.title,
                 "project": n(r.projectFolder.map(Fmt.lastComponent)),
                 "projectPath": n(r.projectFolder.map(Fmt.path)),
