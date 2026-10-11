@@ -242,7 +242,7 @@ final class Monitor {
         queue.async { [weak self, scanner] in
             let z = scanner.zombiePass()
             let m = SystemMemory.read()
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.setMemory(m)
@@ -340,7 +340,7 @@ final class Monitor {
         queue.async { [weak self, scanner] in
             let scan = scanner.fullScan(sampleCPU: sampleCPU)
             let m = SystemMemory.read()
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.scanInFlight = false
