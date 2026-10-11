@@ -136,7 +136,7 @@ If you move the app somewhere else instead, harbor fixes its helper's path the n
 
 ## Building it yourself
 
-You need Xcode.
+You need Xcode 16 or newer.
 
 ```sh
 ./build.sh

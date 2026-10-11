@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       # actions/checkout v7.0.1, pinned to its commit.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
