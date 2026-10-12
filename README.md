@@ -98,7 +98,8 @@ a server that only listens on `127.0.0.1` too, because harbor passes the request
 
 - harbor suggests a password when I turn it on. I can keep it, type my own (8 characters or
   more; `12345678`, `password`, the project's name and the like are refused), or share without
-  one, and then it asks first: "Anyone on this Wi-Fi can open storefront." The password is kept
+  one, and then it asks first: "Anyone on this Wi-Fi can open storefront." (With two of its
+  servers on the network it says so: "storefront's 2 servers".) The password is kept
   in a file only my account can read, like the sign-in session. (The Keychain would ask for my
   login password after every update, because harbor isn't signed with an Apple Developer ID.)
   In the details I can show it, change it, get a new random one or remove it.
@@ -114,12 +115,20 @@ a server that only listens on `127.0.0.1` too, because harbor passes the request
   server takes the project off the network first. While something is on the network harbor
   keeps scanning, with the menu and the page closed too.
 - The password is the project's: one for all its servers, and a visitor signs in once. A page
-  on `storefront.local` can then call `storefront-8000.local`, because harbor knows the visitor's
-  device by its address for that project. It has to call it by that name: a phone can't reach
-  `localhost`. (The front end's own dev proxy is the simple way round that.) Devices behind one
-  address, like a hotspot's, count as one device here.
+  on `storefront.local` can then call `storefront-8000.local`: harbor lets the project's own
+  pages through from the device that signed in, which it knows by its address, while that
+  device keeps using the name it signed in to (up to 15 minutes after its last request there).
+  Another site's page open on the same device gets the sign-in page, and so does typing the
+  back end's name into the address bar; I can sign in there too. The page has to call the back
+  end by that name: a phone can't reach `localhost`. (The front end's own dev proxy is the
+  simple way round that.) A page that sends no referrer (`Referrer-Policy: no-referrer`) can
+  still fetch from the project's other server, but images and scripts loaded from it need the
+  referrer. Devices behind one address, like a hotspot's, count as one device here.
+- A sign-in is for the address it was made from. If my phone gets a new address it sees the
+  sign-in page again and signs in again.
 - The name on the network starts as the `.localhost` name. **Rename on Network…** (the same
-  right-click menu, or **rename** beside the link) changes only that one. If another device
+  right-click menu, or **rename** beside the link) changes only that one, and it stays with
+  that server when I make another one the main server. If another device
   already has the name, harbor takes the next free one, like `storefront-2.local`, and says so.
 - It stops by itself when that server stops, when harbor quits, and when the Mac joins another
   network. Turning it off, changing the password or renaming it also cuts whatever visitors
@@ -141,8 +150,8 @@ System Settings → Privacy & Security → Local Network, and Network → Firewa
 It's plain http on my network, so this is what a password does and doesn't do:
 
 - It keeps out people browsing the Wi-Fi.
-- Someone who captures the Wi-Fi's traffic can read the pages and reuse a signed-in visitor's
-  session.
+- Someone who captures the Wi-Fi's traffic can read the pages. A signed-in visitor's session
+  they can reuse only if they also take over that device's address.
 - Someone who can change the traffic can show a fake sign-in page and learn the password.
 - While a password is set, anyone on the Wi-Fi can get in the way of sign-ins. They can't get in.
 

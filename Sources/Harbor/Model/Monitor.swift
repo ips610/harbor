@@ -389,6 +389,7 @@ final class Monitor {
         if ports != scan.ports { ports = scan.ports }
         let table = Names.assign(scan.ports, saved: savedNames, previous: names, mains: savedMains)
         if table != names { names = table }
+        moveOldNetworkNames()
         // A share is for one server: that process, on that port. When it is gone the project
         // comes off the network, whatever else of it still runs or has started since. And when
         // another program listens on that port too (on one address, say, in front of a server
@@ -520,8 +521,9 @@ final class Monitor {
     static func otherListener(on port: UInt16, than pid: pid_t, in rows: [PortRow]) -> PortRow? {
         rows.first { $0.port == port && $0.pid != pid && $0.ppid != pid }
     }
-    /// Names on the network, saved by project folder for its main server, and by folder and
-    /// port (`nameKey`) for another of its servers.
+    /// Names on the network, saved for one server each: by its project's folder and its port
+    /// (`nameKey`), so a name stays with the server it was given to when another becomes the
+    /// project's main one.
     @ObservationIgnored private var savedLanNames = (DebugCLI.defaults.dictionary(forKey: "lanNames") as? [String: String]) ?? [:]
     @ObservationIgnored private var lanNetwork: LAN.Network?
 
@@ -537,7 +539,38 @@ final class Monitor {
         return ports.contains { $0.id != row.id && Names.key($0) == key && names.byRow[$0.id] != nil }
     }
 
-    private func nameKey(_ row: PortRow) -> String { isMain(row) ? Names.key(row) : "\(Names.key(row))\t\(row.port)" }
+    private func nameKey(_ row: PortRow) -> String { "\(Names.key(row))\t\(row.port)" }
+
+    /// Up to 1.4.x a main server's network name was saved by folder alone, so it went with
+    /// whichever server was main. Each of those is handed, once, to the server that is main
+    /// when its project is first seen running (`mains`: that port, by folder), and is that
+    /// server's from then on. A name the server already has of its own wins.
+    nonisolated static func handedOver(_ saved: [String: String], mains: [String: UInt16]) -> [String: String] {
+        var names = saved
+        for (project, name) in saved where !project.contains("\t") {
+            guard let port = mains[project] else { continue }
+            names[project] = nil
+            if names["\(project)\t\(port)"] == nil { names["\(project)\t\(port)"] = name }
+        }
+        return names
+    }
+
+    private func moveOldNetworkNames() {
+        guard savedLanNames.keys.contains(where: { !$0.contains("\t") }) else { return }
+        let moved = Self.handedOver(savedLanNames, mains: Dictionary(ports.filter(isMain).map { (Names.key($0), $0.port) }, uniquingKeysWith: { first, _ in first }))
+        guard moved != savedLanNames else { return }
+        savedLanNames = moved
+        DebugCLI.defaults.set(moved, forKey: "lanNames")
+    }
+
+    /// What going without a password means for this server's project, for the question asked
+    /// first. There is one password per project: with more of its servers on the network (this
+    /// one counted, on already or about to be) it is all of them, and that is what is said.
+    func anyoneCanOpen(_ row: PortRow) -> String {
+        let project = Names.key(row)
+        let others = lanShares.filter { $0.key != row.id && $0.value.project == project }.count
+        return Lan.anyoneCanOpen(name: networkName(row) ?? row.title, project: names.base[project] ?? row.title, servers: others + 1)
+    }
 
     /// What a server is called on the network while it is on it, or would be: the name saved
     /// for it there, else its `.localhost` name (`storefront`, `storefront-8000`). Debug runs

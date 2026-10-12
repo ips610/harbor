@@ -53,7 +53,9 @@ enum WebAPI {
                 "main": m.isMain(r), "several": m.hasSiblings(r),
                 "note": n(share?.hasPassword == true
                     ? Lan.passwordNote(project: m.names.base[project] ?? r.title, several: m.hasSiblings(r), devices: m.devices(r)) : nil),
-                "help": n(share != nil && m.lanShares.contains { $0.key != r.id && $0.value.project == project } ? Lan.callByName : nil)]
+                "help": n(share != nil && m.lanShares.contains { $0.key != r.id && $0.value.project == project } ? Lan.callByName : nil),
+                // What the page asks before the project goes without a password.
+                "anyone": m.anyoneCanOpen(r)]
     }
 
     /// SMAppService.status is a blocking XPC call to the system: read it at most

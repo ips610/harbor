@@ -50,19 +50,38 @@ final class OnNetworkTests: XCTestCase {
 
     func testSessions() {
         var visitors = Visitors()
-        let token = visitors.signIn(to: "storefront", now: t0)
-        XCTAssertTrue(visitors.isSignedIn(token, to: "storefront", now: t0.addingTimeInterval(11 * 3600)))
-        XCTAssertFalse(visitors.isSignedIn(token, to: "storefront", now: t0.addingTimeInterval(12 * 3600 + 1)))   // twelve hours
-        XCTAssertFalse(visitors.isSignedIn(token, to: "notes", now: t0))                                           // for that name only
-        XCTAssertFalse(visitors.isSignedIn(nil, to: "storefront", now: t0))
-        XCTAssertFalse(visitors.isSignedIn("", to: "storefront", now: t0))
-        XCTAssertFalse(visitors.isSignedIn(token + "x", to: "storefront", now: t0))
-        XCTAssertFalse(visitors.isSignedIn(String(token.dropLast()), to: "storefront", now: t0))
+        let phone = "192.168.1.30"
+        let token = visitors.signIn(to: "storefront", from: phone, now: t0)
+        XCTAssertTrue(visitors.isSignedIn(token, to: "storefront", from: phone, now: t0.addingTimeInterval(11 * 3600)))
+        XCTAssertFalse(visitors.isSignedIn(token, to: "storefront", from: phone, now: t0.addingTimeInterval(12 * 3600 + 1)))   // twelve hours
+        XCTAssertFalse(visitors.isSignedIn(token, to: "notes", from: phone, now: t0))                                           // for that name only
+        XCTAssertFalse(visitors.isSignedIn(nil, to: "storefront", from: phone, now: t0))
+        XCTAssertFalse(visitors.isSignedIn("", to: "storefront", from: phone, now: t0))
+        XCTAssertFalse(visitors.isSignedIn(token + "x", to: "storefront", from: phone, now: t0))
+        XCTAssertFalse(visitors.isSignedIn(String(token.dropLast()), to: "storefront", from: phone, now: t0))
+        // And for the address it was signed in from only: from any other the cookie is no session at all.
+        for elsewhere in ["192.168.1.31", "192.168.1.3", "192.168.1.300", "10.168.1.30", "127.0.0.1", "::1", ""] {
+            XCTAssertFalse(visitors.isSignedIn(token, to: "storefront", from: elsewhere, now: t0), elsewhere)
+            XCTAssertFalse(visitors.inUse(token, on: "storefront", from: elsewhere, now: t0), elsewhere)
+        }
+        XCTAssertTrue(visitors.isSignedIn(token, to: "storefront", from: phone, now: t0))                    // asking from elsewhere spoiled nothing
+        let nowhere = visitors.signIn(to: "storefront", from: "", now: t0)
+        XCTAssertFalse(visitors.isSignedIn(nowhere, to: "storefront", from: "", now: t0))                    // no address: nobody's
+        // The browser signs in again (it has a new address): the session it had is over, and only that one.
+        let other = visitors.signIn(to: "storefront", from: "192.168.1.40", now: t0)
+        XCTAssertFalse(visitors.end(token, on: "notes"))                                                     // a cookie for another name ends nothing
+        XCTAssertFalse(visitors.end("0000", on: "storefront"))
+        XCTAssertFalse(visitors.end(nil, on: "storefront"))
+        XCTAssertTrue(visitors.isSignedIn(token, to: "storefront", from: phone, now: t0))
+        XCTAssertTrue(visitors.end(token, on: "storefront"))
+        XCTAssertFalse(visitors.isSignedIn(token, to: "storefront", from: phone, now: t0))
+        XCTAssertFalse(visitors.end(token, on: "storefront"))
+        XCTAssertTrue(visitors.isSignedIn(other, to: "storefront", from: "192.168.1.40", now: t0))
         // Sharing stops, or the password changes: everyone signs in again.
         visitors.forget("storefront")
-        XCTAssertFalse(visitors.isSignedIn(token, to: "storefront", now: t0))
+        XCTAssertFalse(visitors.isSignedIn(other, to: "storefront", from: "192.168.1.40", now: t0))
         XCTAssertEqual(token.count, 48)
-        XCTAssertNotEqual(token, visitors.signIn(to: "storefront", now: t0))
+        XCTAssertNotEqual(token, visitors.signIn(to: "storefront", from: phone, now: t0))
     }
 
     // MARK: The challenge
@@ -83,7 +102,8 @@ final class OnNetworkTests: XCTestCase {
         // The right password: a session.
         var nonce = visitors.challenge(for: "storefront", now: t0)
         guard case .signedIn(let token) = enter(right(nonce), nonce) else { return XCTFail("the right answer signs in") }
-        XCTAssertTrue(visitors.isSignedIn(token, to: "storefront", now: t0))
+        XCTAssertTrue(visitors.isSignedIn(token, to: "storefront", from: "192.168.1.30", now: t0))
+        XCTAssertFalse(visitors.isSignedIn(token, to: "storefront", from: "192.168.1.66", now: t0))          // the session is for the address that answered
         // The same answer again, by whoever overheard it: the challenge has let someone in already.
         XCTAssertEqual(enter(right(nonce), nonce, from: "192.168.1.66"), .again)
         // A wrong password is a wrong try. The challenge is still good for the right one.
@@ -279,7 +299,7 @@ final class OnNetworkTests: XCTestCase {
         var visitors = Visitors()
         for i in 0..<5000 {
             _ = visitors.challenge(for: "storefront", now: t0)
-            _ = visitors.signIn(to: "storefront", now: t0)
+            _ = visitors.signIn(to: "storefront", from: "10.\(i / 65536).\(i / 256 % 256).\(i % 256)", now: t0)
             _ = visitors.wrong(address: "10.\(i / 65536).\(i / 256 % 256).\(i % 256)", name: "name-\(i % 3)", now: t0.addingTimeInterval(Double(i) / 100))
         }
         let counts = visitors.counts
@@ -324,6 +344,27 @@ final class OnNetworkTests: XCTestCase {
         XCTAssertFalse(sent.contains("secret-token") || sent.contains("second"))
         XCTAssertTrue(sent.contains("\r\nHost: storefront.local\r\n"))
         XCTAssertTrue(sent.contains("\r\nX-Forwarded-For: 192.168.1.30\r\n"))
+    }
+
+    /// On the network an address is who a visitor is. One that can't be read is never made
+    /// up: it is empty, the listener closes such a connection, and nothing is said for it.
+    func testAnAddressThatCantBeReadIsNobodys() throws {
+        XCTAssertEqual(Sock.peer(-1), "")
+        XCTAssertEqual(Sock.local(-1), "")
+        // A socket that was never connected has no other end.
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        defer { close(fd) }
+        XCTAssertEqual(Sock.peer(fd), "")
+        // It is not the announced address, so the listener wouldn't answer it; and no session, try or place hangs on it.
+        XCTAssertFalse(Lan.accepts(local: "", announced: "192.168.1.24"))
+        XCTAssertFalse(Lan.accepts(local: "", announced: nil))
+        var visitors = Visitors()
+        let token = visitors.signIn(to: "storefront", project: "/code/storefront", from: "", now: t0)
+        XCTAssertNil(visitors.sibling(of: "storefront-8000", project: "/code/storefront", address: "", now: t0, open: [token]))
+        // The project isn't told an address nobody read (on the .localhost side, where this is all an address is for).
+        let request = try XCTUnwrap(ProxyHead(Data("GET / HTTP/1.1\r\nHost: storefront.localhost\r\nX-Forwarded-For: 6.6.6.6\r\n\r\n".utf8)))
+        XCTAssertFalse(String(decoding: request.forwarded(client: ""), as: UTF8.self).lowercased().contains("x-forwarded-for"))
+        XCTAssertTrue(String(decoding: request.forwarded(client: "127.0.0.1"), as: UTF8.self).contains("\r\nX-Forwarded-For: 127.0.0.1\r\n"))
     }
 
     // MARK: What the listener answers to
@@ -395,11 +436,12 @@ final class OnNetworkTests: XCTestCase {
         XCTAssertEqual(shared?["on"] as? Bool, true)
         XCTAssertEqual(shared?["link"] as? String, "http://\(m.lanShares.values.first?.name ?? "").local/")
         XCTAssertEqual(shared?["password"] as? Bool, true)
-        XCTAssertEqual(Set((shared ?? [:]).keys), ["name", "on", "link", "password", "trouble", "main", "several", "note", "help"])
+        XCTAssertEqual(Set((shared ?? [:]).keys), ["name", "on", "link", "password", "trouble", "main", "several", "note", "help", "anyone"])
         XCTAssertTrue(shared?["trouble"] is NSNull)                                       // announced: nothing to say
         XCTAssertEqual(shared?["main"] as? Bool, true)
         XCTAssertEqual(shared?["several"] as? Bool, true)                                // the storefront has a second server
-        XCTAssertEqual(shared?["note"] as? String, "One password for all of storefront's servers on the network: a visitor signs in once.")
+        XCTAssertEqual(shared?["note"] as? String, Lan.passwordNote(project: "storefront", several: true, devices: 0))
+        XCTAssertEqual((shared?["note"] as? String)?.hasSuffix("Devices behind one address count as one."), true)
         XCTAssertTrue(shared?["help"] is NSNull)                                         // only one of them is on the network
         // The project's other server has a switch of its own, and its own name there.
         let second = rows.first { ($0["port"] as? Int) == 3001 }?["local"] as? [String: Any]
@@ -730,9 +772,71 @@ final class OnNetworkTests: XCTestCase {
         XCTAssertEqual(m.networkName(back)?.hasPrefix("storefront-3001"), true)
         // What the header says, by what is on the network.
         XCTAssertEqual(Lan.passwordNote(project: "storefront", several: false, devices: 0), nil)
-        XCTAssertEqual(Lan.passwordNote(project: "storefront", several: true, devices: 0), "One password for all of storefront's servers on the network: a visitor signs in once.")
+        XCTAssertEqual(Lan.passwordNote(project: "storefront", several: true, devices: 0), "One password for all of storefront's servers on the network, and one sign-in: after a device signs in to one of them, storefront's own pages can call the others from that device, while it keeps using the one it signed in to (up to 15 minutes after its last request there). Devices behind one address count as one.")
         XCTAssertEqual(Lan.passwordNote(project: "storefront", several: false, devices: 1), "1 device signed in. A new password signs it out.")
-        XCTAssertEqual(Lan.passwordNote(project: "storefront", several: true, devices: 2)?.hasSuffix("2 devices signed in. A new password signs them out."), true)
+        XCTAssertEqual(Lan.passwordNote(project: "storefront", several: true, devices: 2)?.hasSuffix("Devices behind one address count as one. 2 devices signed in. A new password signs them out."), true)
+    }
+
+    /// There is one password per project. Taking it away, or sharing without one, opens every
+    /// server of the project that is on the network: the question asked first says so.
+    @MainActor
+    func testGoingWithoutAPasswordNamesEveryServerItOpens() {
+        XCTAssertEqual(Lan.anyoneCanOpen(name: "storefront", project: "storefront", servers: 1), "Anyone on this Wi-Fi can open storefront.")
+        XCTAssertEqual(Lan.anyoneCanOpen(name: "api", project: "storefront", servers: 2), "Anyone on this Wi-Fi can open storefront's 2 servers on the network.")
+        XCTAssertEqual(Lan.anyoneCanOpen(name: "api", project: "storefront", servers: 3), "Anyone on this Wi-Fi can open storefront's 3 servers on the network.")
+        func told(_ port: Int) -> String? {
+            var state: [String: Any] = [:]
+            WebAPI.state { state = ((try? JSONSerialization.jsonObject(with: $0)) as? [String: Any]) ?? [:] }
+            return (((state["ports"] as? [[String: Any]]) ?? []).first { ($0["port"] as? Int) == port }?["local"] as? [String: Any])?["anyone"] as? String
+        }
+        // Only the front end is on. Removing its password opens that one; turning the back end on without one makes it two.
+        let (m, name, rows) = sharedFixture()
+        let front = rows.first { $0.port == 3000 }!, back = rows.first { $0.port == 3001 }!, other = rows.first { $0.port == 8000 }!
+        XCTAssertEqual(m.anyoneCanOpen(front), "Anyone on this Wi-Fi can open \(name).")
+        XCTAssertEqual(m.anyoneCanOpen(back), "Anyone on this Wi-Fi can open storefront's 2 servers on the network.")
+        XCTAssertEqual(m.anyoneCanOpen(other), "Anyone on this Wi-Fi can open \(m.networkName(other) ?? "").")        // another project: its own count
+        XCTAssertEqual(told(3000), m.anyoneCanOpen(front))                                                            // the page asks with the same words
+        XCTAssertEqual(told(3001), m.anyoneCanOpen(back))
+        // Both are on: taking the password away on either one is said for both.
+        m.useFixture(rows, shared: Names.key(front), every: true)
+        XCTAssertEqual(m.lanShares.count, 2)
+        XCTAssertEqual(m.anyoneCanOpen(front), "Anyone on this Wi-Fi can open storefront's 2 servers on the network.")
+        XCTAssertEqual(m.anyoneCanOpen(back), "Anyone on this Wi-Fi can open storefront's 2 servers on the network.")
+        XCTAssertEqual(told(3001), "Anyone on this Wi-Fi can open storefront's 2 servers on the network.")
+        m.stopAllSharing()
+    }
+
+    /// A name given to a server on the network is that server's: it doesn't go with the "main" role to another one.
+    @MainActor
+    func testANameOnTheNetworkStaysWithItsServer() {
+        let (m, _, rows) = sharedFixture()
+        let front = rows.first { $0.port == 3000 }!, back = rows.first { $0.port == 3001 }!
+        m.stopAllSharing()
+        _ = m.makeMain(front)
+        defer { _ = m.renameOnNetwork(front, to: ""); _ = m.makeMain(front) }
+        XCTAssertNil(m.renameOnNetwork(front, to: "rvfront"))
+        XCTAssertEqual(m.networkName(front), "rvfront" + DebugCLI.lanSuffix)
+        // The back end becomes the main server: it gets the name a main server has by itself, not the front end's.
+        XCTAssertNil(m.makeMain(back))
+        XCTAssertTrue(m.isMain(back))
+        XCTAssertEqual(m.networkName(back), "storefront" + DebugCLI.lanSuffix)
+        XCTAssertEqual(m.networkName(front), "rvfront" + DebugCLI.lanSuffix)
+        // And a name of its own it keeps when it stops being the main one.
+        XCTAssertNil(m.renameOnNetwork(back, to: "rvapi"))
+        XCTAssertNil(m.makeMain(front))
+        XCTAssertEqual(m.networkName(back), "rvapi" + DebugCLI.lanSuffix)
+        XCTAssertEqual(m.networkName(front), "rvfront" + DebugCLI.lanSuffix)
+        XCTAssertNil(m.renameOnNetwork(back, to: ""))
+        XCTAssertEqual(m.networkName(back), "storefront-3001" + DebugCLI.lanSuffix)
+
+        // What 1.4 saved by folder alone is handed to the server that is main now, once; and stays there.
+        let old = ["/code/shop": "rvfront", "/code/notes": "pad", "/code/blog\t4000": "posts", "/code/idle": "later"]
+        let moved = Monitor.handedOver(old, mains: ["/code/shop": 5173, "/code/notes": 8000, "/code/blog": 4000])
+        XCTAssertEqual(moved, ["/code/shop\t5173": "rvfront", "/code/notes\t8000": "pad", "/code/blog\t4000": "posts", "/code/idle": "later"])   // not running: waits
+        XCTAssertEqual(Monitor.handedOver(moved, mains: ["/code/shop": 3001, "/code/notes": 8000, "/code/idle": 9000])["/code/shop\t5173"], "rvfront")
+        XCTAssertNil(Monitor.handedOver(moved, mains: ["/code/shop": 3001])["/code/shop\t3001"])                     // another main later gets nothing of it
+        // A name the main server already has of its own wins; the old entry is gone either way.
+        XCTAssertEqual(Monitor.handedOver(["/code/shop": "old", "/code/shop\t5173": "mine"], mains: ["/code/shop": 5173]), ["/code/shop\t5173": "mine"])
     }
 
     func testOneSignInForAProjectsServers() {
@@ -742,21 +846,22 @@ final class OnNetworkTests: XCTestCase {
         XCTAssertNil(visitors.sibling(of: "storefront-8000", project: project, address: phone, now: t0))
         let token = visitors.signIn(to: "storefront", project: project, from: phone, now: t0)
         // The phone signed in on the front end: from its address the project's other names open without a cookie…
-        XCTAssertEqual(visitors.sibling(of: "storefront-8000", project: project, address: phone, now: t0), "storefront")
-        XCTAssertEqual(visitors.sibling(of: "api", project: project, address: phone, now: t0), "storefront")
-        // …the name it signed in on still wants its cookie…
+        XCTAssertEqual(visitors.sibling(of: "storefront-8000", project: project, address: phone, now: t0)?.name, "storefront")
+        XCTAssertEqual(visitors.sibling(of: "storefront-8000", project: project, address: phone, now: t0)?.session, token)
+        XCTAssertEqual(visitors.sibling(of: "api", project: project, address: phone, now: t0)?.name, "storefront")
+        // …the name it signed in on opens with its cookie only (nothing on another name stands behind it)…
         XCTAssertNil(visitors.sibling(of: "storefront", project: project, address: phone, now: t0))
-        XCTAssertTrue(visitors.isSignedIn(token, to: "storefront", now: t0))
-        XCTAssertFalse(visitors.isSignedIn(token, to: "storefront-8000", now: t0))        // and the cookie is for that name only
+        XCTAssertTrue(visitors.isSignedIn(token, to: "storefront", from: phone, now: t0))
+        XCTAssertFalse(visitors.isSignedIn(token, to: "storefront-8000", from: phone, now: t0))        // and the cookie is for that name only
         // …another device gets nothing from it, and neither does another project, at the same address or not.
         XCTAssertNil(visitors.sibling(of: "storefront-8000", project: project, address: "192.168.1.31", now: t0))
         XCTAssertNil(visitors.sibling(of: "notes-api", project: "/Users/sam/code/notes-api", address: phone, now: t0))
         XCTAssertNil(visitors.sibling(of: "storefront-8000", project: "/Users/sam/code/storefront-2", address: phone, now: t0))
         XCTAssertNil(visitors.sibling(of: "storefront-8000", project: "", address: phone, now: t0))
         XCTAssertNil(visitors.sibling(of: "storefront-8000", project: project, address: "", now: t0))
-        // It lasts as long as the session, and not a second longer.
-        XCTAssertNotNil(visitors.sibling(of: "storefront-8000", project: project, address: phone, now: t0.addingTimeInterval(12 * 3600 - 1)))
-        XCTAssertNil(visitors.sibling(of: "storefront-8000", project: project, address: phone, now: t0.addingTimeInterval(12 * 3600)))
+        // It never lasts longer than the session, however much that is in use.
+        XCTAssertNotNil(visitors.sibling(of: "storefront-8000", project: project, address: phone, now: t0.addingTimeInterval(12 * 3600 - 1), open: [token]))
+        XCTAssertNil(visitors.sibling(of: "storefront-8000", project: project, address: phone, now: t0.addingTimeInterval(12 * 3600), open: [token]))
         // How many devices are in: by address, however often each signed in.
         _ = visitors.signIn(to: "storefront-8000", project: project, from: phone, now: t0)
         _ = visitors.signIn(to: "storefront", project: project, from: "192.168.1.31", now: t0)
@@ -765,7 +870,7 @@ final class OnNetworkTests: XCTestCase {
         XCTAssertEqual(visitors.devices(project: project, now: t0.addingTimeInterval(12 * 3600)), 0)
         // The session ends (sharing of that name stopped, or the password changed): what rested on it is gone with it.
         visitors.forget("storefront-8000")
-        XCTAssertEqual(visitors.sibling(of: "storefront-8000", project: project, address: phone, now: t0), "storefront")   // the other session still stands
+        XCTAssertEqual(visitors.sibling(of: "storefront-8000", project: project, address: phone, now: t0)?.name, "storefront")   // the other session still stands
         visitors.forget("storefront")
         XCTAssertNil(visitors.sibling(of: "storefront-8000", project: project, address: phone, now: t0))
         XCTAssertNil(visitors.sibling(of: "storefront-8000", project: project, address: "192.168.1.31", now: t0))
@@ -773,6 +878,109 @@ final class OnNetworkTests: XCTestCase {
         // Nothing here grows without bound: it is the sessions, and those are counted.
         for i in 0..<3000 { _ = visitors.signIn(to: "storefront", project: project, from: "10.0.\(i / 256).\(i % 256)", now: t0) }
         XCTAssertLessThanOrEqual(visitors.counts.sessions, Visitors.maxSessions)
+    }
+
+    /// An address keeps a project's other names only while the session it signed in with is
+    /// in use from it: a visitor who has left hands nothing on to whoever gets the address next.
+    func testTheWayInLastsOnlyWhileTheSessionIsInUse() {
+        var visitors = Visitors()
+        let phone = "192.168.1.30", project = "/Users/sam/code/storefront"
+        let token = visitors.signIn(to: "storefront", project: project, from: phone, now: t0)
+        func open(at seconds: TimeInterval, held: Set<String> = [], from address: String = "192.168.1.30") -> Bool {
+            visitors.sibling(of: "storefront-8000", project: project, address: address, now: t0.addingTimeInterval(seconds), open: held) != nil
+        }
+        XCTAssertEqual(Visitors.grantLife, 900)
+        // Signing in is the first use: fifteen minutes from there, and not a second more.
+        XCTAssertTrue(open(at: 0))
+        XCTAssertTrue(open(at: 899))
+        XCTAssertFalse(open(at: 900))
+        XCTAssertFalse(open(at: 3600))
+        // The session itself is as good as ever: on its own name the cookie still opens.
+        XCTAssertTrue(visitors.isSignedIn(token, to: "storefront", from: phone, now: t0.addingTimeInterval(3600)))
+        // Asking (a request let in this way, or turned away) is not use: nothing is kept alive by it.
+        for minute in stride(from: 0.0, through: 14, by: 2) { XCTAssertTrue(open(at: minute * 60)) }
+        XCTAssertFalse(open(at: 900))
+        // The cookie comes from that address again: in use, for fifteen minutes from then.
+        XCTAssertTrue(visitors.inUse(token, on: "storefront", from: phone, now: t0.addingTimeInterval(3600)))
+        XCTAssertTrue(open(at: 3600))
+        XCTAssertTrue(open(at: 3600 + 899))
+        XCTAssertFalse(open(at: 3600 + 900))
+        // Not by the cookie from another address (and that address gets nothing either), a cookie that isn't one,
+        // none at all, or the cookie on a name it isn't for.
+        let later = t0.addingTimeInterval(7200)
+        XCTAssertFalse(visitors.inUse(token, on: "storefront", from: "192.168.1.31", now: later))
+        XCTAssertFalse(visitors.inUse("0000", on: "storefront", from: phone, now: later))
+        XCTAssertFalse(visitors.inUse(nil, on: "storefront", from: phone, now: later))
+        XCTAssertFalse(visitors.inUse(token, on: "storefront-8000", from: phone, now: later))
+        XCTAssertFalse(open(at: 7200))
+        XCTAssertFalse(open(at: 7200, from: "192.168.1.31"))
+        // A connection that came with the cookie and is still open (a hot-reload socket) keeps it alive for as long
+        // as it is open: that session's, nobody else's, and never past the session's own end.
+        XCTAssertTrue(open(at: 7200, held: [token]))
+        XCTAssertTrue(open(at: 11 * 3600, held: [token]))
+        XCTAssertFalse(open(at: 7200, held: ["another-session"]))
+        XCTAssertFalse(open(at: 7200, held: [token], from: "192.168.1.31"))
+        XCTAssertFalse(open(at: 12 * 3600, held: [token]))
+        XCTAssertFalse(visitors.inUse(token, on: "storefront", from: phone, now: t0.addingTimeInterval(12 * 3600)))
+        // The phone gets a new address. Its cookie is no session from there, and opens nothing there; it signs in again
+        // (the old session ends with that), and from then on the way in is the new address's alone.
+        var visitors2 = Visitors()
+        let old = visitors2.signIn(to: "storefront", project: project, from: phone, now: t0), moved = "192.168.1.77"
+        XCTAssertFalse(visitors2.inUse(old, on: "storefront", from: moved, now: t0))
+        XCTAssertNil(visitors2.sibling(of: "storefront-8000", project: project, address: moved, now: t0))
+        XCTAssertNotNil(visitors2.sibling(of: "storefront-8000", project: project, address: phone, now: t0))       // not yet replaced: the old address still has its fifteen minutes
+        let new = visitors2.signIn(to: "storefront", project: project, from: moved, now: t0)
+        XCTAssertTrue(visitors2.end(old, on: "storefront"))
+        XCTAssertEqual(visitors2.sibling(of: "storefront-8000", project: project, address: moved, now: t0)?.session, new)
+        XCTAssertNil(visitors2.sibling(of: "storefront-8000", project: project, address: phone, now: t0, open: [old, new]))
+        XCTAssertFalse(visitors2.isSignedIn(new, to: "storefront", from: phone, now: t0))
+        XCTAssertEqual(visitors2.devices(project: project, now: t0), 1)                                           // one device, counted once
+        // A session signed in from no readable address is nobody's way in.
+        let nowhere = visitors.signIn(to: "storefront", project: project, from: "", now: t0)
+        XCTAssertFalse(visitors.inUse(nowhere, on: "storefront", from: "", now: t0))
+        XCTAssertNil(visitors.sibling(of: "storefront-8000", project: project, address: "", now: t0, open: [nowhere]))
+    }
+
+    /// Which of a project's pages a request says it comes from. Read strictly: this is what
+    /// keeps another site's page, open on a signed-in device, away from the project's servers.
+    func testWhereARequestSaysItComesFrom() throws {
+        let names = ["storefront", "storefront-8000"]
+        func page(_ headers: String, port: UInt16 = 80) throws -> String? {
+            Lan.page(of: try XCTUnwrap(ProxyHead(Data("GET /api/items HTTP/1.1\r\nHost: storefront-8000.local\r\n\(headers)\r\n".utf8))), port: port, names: names)
+        }
+        // A page's fetch, its preflight, a WebSocket, an EventSource: Origin, exactly the name's.
+        XCTAssertEqual(try page("Origin: http://storefront.local\r\n"), "storefront")
+        XCTAssertEqual(try page("Origin: http://storefront-8000.local\r\n"), "storefront-8000")
+        XCTAssertEqual(try page("Origin: http://storefront.local:8491\r\n", port: 8491), "storefront")
+        // An image, a script, a link that was followed: no Origin, and the Referer starts with it.
+        XCTAssertEqual(try page("Referer: http://storefront.local/\r\n"), "storefront")
+        XCTAssertEqual(try page("Referer: http://storefront.local/cart?step=2\r\n"), "storefront")
+        XCTAssertEqual(try page("Referer: http://storefront.local:8491/cart\r\n", port: 8491), "storefront")
+        // Nobody's: null, another site, a name that isn't one of these, and everything that only looks like one.
+        for origin in ["null", "http://attacker.test", "http://attacker.test:8080", "http://notes.local", "https://storefront.local", "http://storefront.local/",
+                       "http://storefront.local:8491", "http://storefront.local:80", "http://storefront.local.attacker.test", "http://storefront.localx",
+                       "http://xstorefront.local", "http://Storefront.local", "http://storefront.local@attacker.test", "storefront.local", "http://storefront", "",
+                       "http://storefront.local http://attacker.test", "http://attacker.test, http://storefront.local"] {
+            XCTAssertNil(try page("Origin: \(origin)\r\n"), origin)
+        }
+        XCTAssertNil(try page("Origin: http://storefront.local\r\n", port: 8491))                                  // the port is part of it
+        XCTAssertNil(try page("Origin: http://storefront.local:8491\r\n"))
+        for referer in ["http://attacker.test/", "http://attacker.test/http://storefront.local/", "http://storefront.local", "http://storefront.local.attacker.test/",
+                        "http://storefront.local:8491/", "http://storefront.local@attacker.test/", "https://storefront.local/", "http://notes.local/", "//storefront.local/", ""] {
+            XCTAssertNil(try page("Referer: \(referer)\r\n"), referer)
+        }
+        // An Origin that is somebody else's is not mended by a Referer; and two of either header are nobody's.
+        XCTAssertNil(try page("Origin: http://attacker.test\r\nReferer: http://storefront.local/\r\n"))
+        XCTAssertNil(try page("Origin: null\r\nReferer: http://storefront.local/\r\n"))
+        XCTAssertNil(try page("Origin: http://storefront.local\r\nOrigin: http://attacker.test\r\n"))
+        XCTAssertNil(try page("Origin: http://storefront.local\r\nOrigin: http://storefront.local\r\n"))
+        XCTAssertNil(try page("Referer: http://storefront.local/\r\nReferer: http://attacker.test/\r\n"))
+        // Neither header: typed into the address bar, or sent by something that isn't a page.
+        XCTAssertNil(try page(""))
+        XCTAssertNil(try page("X-Origin: http://storefront.local\r\nX-Forwarded-Host: storefront.local\r\n"))
+        // Only among the names it is asked about: the same project's.
+        XCTAssertNil(Lan.page(of: try XCTUnwrap(ProxyHead(Data("GET / HTTP/1.1\r\nHost: a.local\r\nOrigin: http://storefront.local\r\n\r\n".utf8))), port: 80, names: ["notes"]))
+        XCTAssertNil(Lan.page(of: try XCTUnwrap(ProxyHead(Data("GET / HTTP/1.1\r\nHost: a.local\r\nOrigin: http://storefront.local\r\n\r\n".utf8))), port: 80, names: []))
     }
 
     /// A folder of its own for one test's password file.
@@ -850,6 +1058,22 @@ final class OnNetworkTests: XCTestCase {
         try Data("garbage".utf8).write(to: file)
         XCTAssertTrue(Passwords.store(key, "a-new-one-9", in: file))
         XCTAssertEqual(Passwords.read(key, in: file), .password("a-new-one-9"))
+        // What couldn't be read isn't thrown away: it is beside the new file, as it was, in case it can be mended.
+        let aside = URL(fileURLWithPath: file.path + ".unreadable")
+        XCTAssertEqual(try String(contentsOf: aside, encoding: .utf8), "garbage")
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: folder.path)).intersection(["network-passwords", "network-passwords.unreadable", "network-passwords.new"]),
+                       ["network-passwords", "network-passwords.unreadable"])
+        // A file that reads fine is never put aside: the next password goes into it, and the one set aside before stays as it is.
+        XCTAssertTrue(Passwords.store("/Users/sam/code/notes", "another-one", in: file))
+        XCTAssertEqual(Passwords.load(file), [key: "a-new-one-9", "/Users/sam/code/notes": "another-one"])
+        XCTAssertEqual(try String(contentsOf: aside, encoding: .utf8), "garbage")
+        // Something that isn't a file at all in its place (a folder) is put aside the same way, and a password can be set again.
+        try FileManager.default.removeItem(at: file)
+        try FileManager.default.removeItem(at: aside)
+        try FileManager.default.createDirectory(at: file, withIntermediateDirectories: false)
+        XCTAssertTrue(Passwords.store(key, "a-new-one-9", in: file))
+        XCTAssertEqual(Passwords.read(key, in: file), .password("a-new-one-9"))
+        XCTAssertEqual(mode(file), 0o600)
 
         // The app itself, with a file that can't be read: the project isn't put on the network, its panel says it
         // has no saved password (so it offers a new one), and "show" has nothing to show.
@@ -1237,42 +1461,205 @@ final class OnNetworkTests: XCTestCase {
         // A session from another address is nobody's here, whatever a header says about where the request comes from.
         _ = net.withVisitors { $0.signIn(to: "storefront", project: "/code/storefront", from: "10.0.0.5", now: Date()) }
         XCTAssertEqual(net.devices(project: "/code/storefront"), 1)
-        for forged in ["X-Forwarded-For: 10.0.0.5\r\n", "Forwarded: for=10.0.0.5\r\n", "X-Real-IP: 10.0.0.5\r\n", "X-Forwarded-For: 10.0.0.5\r\nX-Real-IP: 10.0.0.5\r\n"] {
-            XCTAssertTrue(try request("GET", "storefront-8000", "/api/items", forged).hasPrefix("HTTP/1.1 401 "), forged)
+        for forged in ["", "X-Forwarded-For: 10.0.0.5\r\n", "Forwarded: for=10.0.0.5\r\n", "X-Real-IP: 10.0.0.5\r\n", "X-Forwarded-For: 10.0.0.5\r\nX-Real-IP: 10.0.0.5\r\n"] {
+            XCTAssertTrue(try request("GET", "storefront-8000", "/api/items", "Origin: http://storefront.local:\(port)\r\n" + forged).hasPrefix("HTTP/1.1 401 "), forged)
         }
         XCTAssertTrue(project.seen.isEmpty)
         // The visitor signs in, once, on the front end's name.
         let own = "Origin: http://storefront.local:\(port)\r\nContent-Type: application/json\r\n"
         let c = json(try ask(here, port, "POST /__harbor/challenge HTTP/1.1\r\nHost: storefront.local:\(port)\r\n\(own)Content-Length: 2\r\n\r\n{}"))
         let nonce = try XCTUnwrap(c["nonce"] as? String), body = "{\"nonce\":\"\(nonce)\",\"proof\":\"\(answer(password, salt: try XCTUnwrap(c["salt"] as? String), name: "storefront", nonce: nonce))\"}"
-        XCTAssertTrue((try ask(here, port, "POST /__harbor/enter HTTP/1.1\r\nHost: storefront.local:\(port)\r\n\(own)Content-Length: \(body.utf8.count)\r\n\r\n\(body)") ?? "").hasPrefix("HTTP/1.1 200 "))
+        let entered = try ask(here, port, "POST /__harbor/enter HTTP/1.1\r\nHost: storefront.local:\(port)\r\n\(own)Content-Length: \(body.utf8.count)\r\n\r\n\(body)") ?? ""
+        XCTAssertTrue(entered.hasPrefix("HTTP/1.1 200 "))
+        let cookie = "Cookie: " + (try XCTUnwrap(entered.components(separatedBy: "\r\n").first { $0.hasPrefix("Set-Cookie: ") }?.dropFirst(12).prefix { $0 != ";" })) + "\r\n"
         XCTAssertEqual(net.devices(project: "/code/storefront"), 2)
-        // Now its address is known for the project: the back end answers the question and the call, with no cookie.
+        // Now its address is known for the project, for the project's own pages: the back end answers the browser's
+        // question and the call, with no cookie. So does an image or a script the page loads from it (no Origin, the
+        // page's Referer), a WebSocket (Origin), and a page of the back end itself that got in this way.
+        let front = "Origin: http://storefront.local:\(port)\r\n"
         XCTAssertTrue(try request("OPTIONS", "storefront-8000", "/api/items", preflight).hasSuffix("\r\n\r\nok"))
-        XCTAssertTrue(try request("POST", "storefront-8000", "/api/items", "Origin: http://storefront.local:\(port)\r\nContent-Type: application/json\r\nContent-Length: 0\r\n").hasSuffix("\r\n\r\nok"))
-        XCTAssertEqual(project.seen.count, 2)
-        // The name it signed in on still wants its cookie, and another project stays shut, same address or not.
-        XCTAssertTrue(try request("GET", "storefront", "/").hasPrefix("HTTP/1.1 401 "))
-        XCTAssertTrue(try request("GET", "notes", "/").hasPrefix("HTTP/1.1 401 "))
-        XCTAssertEqual(project.seen.count, 2)
+        XCTAssertTrue(try request("POST", "storefront-8000", "/api/items", front + "Content-Type: application/json\r\nContent-Length: 0\r\n").hasSuffix("\r\n\r\nok"))
+        XCTAssertTrue(try request("GET", "storefront-8000", "/logo.png", "Referer: http://storefront.local:\(port)/cart\r\n").hasSuffix("\r\n\r\nok"))
+        XCTAssertTrue(try request("GET", "storefront-8000", "/app.js", "Origin: http://storefront-8000.local:\(port)\r\n").hasSuffix("\r\n\r\nok"))
+        XCTAssertEqual(project.seen.count, 4)
+        // Any other page open on that device comes from the same address, and gets nothing: another site (its call, and
+        // the browser's question before it), another project's page, a page with no origin, a link followed from
+        // elsewhere, and a request that says nothing about where it comes from (the name typed into the address bar).
+        for foreign in ["Origin: http://attacker.test:8080\r\n", "Origin: http://attacker.test:8080\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: content-type\r\n",
+                        "Origin: http://notes.local:\(port)\r\n", "Origin: null\r\n", "Origin: null\r\nReferer: http://storefront.local:\(port)/\r\n",
+                        "Origin: http://storefront.local\r\n", "Origin: http://storefront.local:\(port).attacker.test\r\n", "Origin: https://storefront.local:\(port)\r\n",
+                        "Referer: http://attacker.test:8080/\r\n", "Referer: http://attacker.test/http://storefront.local:\(port)/\r\n",
+                        "Origin: http://attacker.test\r\nReferer: http://storefront.local:\(port)/\r\n", front + "Origin: http://attacker.test\r\n", ""] {
+            for method in ["GET", "OPTIONS", "POST"] {
+                XCTAssertTrue(try request(method, "storefront-8000", "/api/items", foreign + (method == "POST" ? "Content-Length: 0\r\n" : "")).hasPrefix("HTTP/1.1 401 "), "\(method) \(foreign)")
+            }
+        }
+        XCTAssertEqual(project.seen.count, 4)
+        // The front end has no session on another name behind it, so it opens with its cookie only; and another
+        // project stays shut, whatever the request says and wherever it comes from.
+        XCTAssertTrue(try request("GET", "storefront", "/", front).hasPrefix("HTTP/1.1 401 "))
+        XCTAssertTrue(try request("GET", "notes", "/", front).hasPrefix("HTTP/1.1 401 "))
+        XCTAssertTrue(try request("GET", "notes", "/", "Origin: http://notes.local:\(port)\r\n").hasPrefix("HTTP/1.1 401 "))
+        XCTAssertEqual(project.seen.count, 4)
+
+        // In use. The visitor leaves; twenty minutes on, whoever has that address gets nothing from it, however the
+        // request is dressed. Requests that got in this way in between kept nothing alive.
+        let start = Date()
+        var minutes = 10.0
+        net.clock = { start.addingTimeInterval(minutes * 60) }
+        XCTAssertTrue(try request("GET", "storefront-8000", "/api/items", front).hasSuffix("\r\n\r\nok"))
+        minutes = 14.9
+        XCTAssertTrue(try request("GET", "storefront-8000", "/api/items", front).hasSuffix("\r\n\r\nok"))
+        minutes = 20
+        XCTAssertTrue(try request("GET", "storefront-8000", "/api/items", front).hasPrefix("HTTP/1.1 401 "))
+        XCTAssertTrue(try request("OPTIONS", "storefront-8000", "/api/items", preflight).hasPrefix("HTTP/1.1 401 "))
+        // The session is as good as ever. Its cookie comes from that address again (the page is reloaded): in use again,
+        // for fifteen minutes from then. The cookie never reaches the project, here or there.
+        XCTAssertTrue(try request("GET", "storefront", "/", cookie).hasSuffix("\r\n\r\nok"))
+        XCTAssertTrue(try request("GET", "storefront-8000", "/api/items", front).hasSuffix("\r\n\r\nok"))
+        XCTAssertFalse(project.seen.contains { $0.contains(Lan.cookie) })
+        minutes = 34.9
+        XCTAssertTrue(try request("GET", "storefront-8000", "/api/items", front).hasSuffix("\r\n\r\nok"))
+        minutes = 35.1
+        XCTAssertTrue(try request("GET", "storefront-8000", "/api/items", front).hasPrefix("HTTP/1.1 401 "))
+        // The cookie on the back end's name is no session there (it is the front end's), and revives nothing.
+        XCTAssertTrue(try request("GET", "storefront-8000", "/api/items", cookie).hasPrefix("HTTP/1.1 401 "))
+        XCTAssertTrue(try request("GET", "storefront-8000", "/api/items", front + cookie).hasPrefix("HTTP/1.1 401 "))
+        // A connection that came with the cookie and stays open (the page's hot-reload socket) keeps it in use for as
+        // long as it is open, hours if need be; a socket that got in through the back end's name keeps nothing.
+        let reload = try begin(here, port, "GET /hmr HTTP/1.1\r\nHost: storefront.local:\(port)\r\n\(cookie)Connection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+        XCTAssertTrue(reload.head.hasPrefix("HTTP/1.1 101 "), reload.head)
+        let stream = try begin(here, port, "GET /live HTTP/1.1\r\nHost: storefront-8000.local:\(port)\r\n\(front)Connection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+        defer { close(stream.fd) }
+        XCTAssertTrue(stream.head.hasPrefix("HTTP/1.1 101 "), stream.head)
+        minutes = 200
+        XCTAssertTrue(try request("GET", "storefront-8000", "/api/items", front).hasSuffix("\r\n\r\nok"))
+        close(reload.fd)
+        var shut = false
+        for _ in 0..<40 where !shut {
+            shut = try request("GET", "storefront-8000", "/api/items", front).hasPrefix("HTTP/1.1 401 ")
+            if !shut { Thread.sleep(forTimeInterval: 0.05) }
+        }
+        XCTAssertTrue(shut, "with its socket closed the session is no longer in use, and the back end's own socket doesn't stand in for it")
+        XCTAssertFalse(Self.ended(stream.fd, within: 0.2))                               // what is open stays open; nothing new gets in
+
         // Something is open to the back end that way (a stream, a socket). The owner changes the password: every name of
         // the project gets it (Monitor does that), the sessions are gone, and what they let in is cut on the other name too.
-        let socket = try begin(here, port, "GET /live HTTP/1.1\r\nHost: storefront-8000.local:\(port)\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+        XCTAssertTrue(try request("GET", "storefront", "/", cookie).hasSuffix("\r\n\r\nok"))
+        let socket = try begin(here, port, "GET /live HTTP/1.1\r\nHost: storefront-8000.local:\(port)\r\n\(front)Connection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
         defer { close(socket.fd) }
         XCTAssertTrue(socket.head.hasPrefix("HTTP/1.1 101 "), socket.head)
         net.setPassword("another-one", for: "storefront")
         XCTAssertTrue(Self.ended(socket.fd, within: 1), "what the front end's session let in on the back end is cut with it")
-        XCTAssertTrue(try request("GET", "storefront-8000", "/api/items").hasPrefix("HTTP/1.1 401 "))
+        XCTAssertTrue(Self.ended(stream.fd, within: 1))
+        XCTAssertTrue(try request("GET", "storefront-8000", "/api/items", front).hasPrefix("HTTP/1.1 401 "))
+        XCTAssertTrue(try request("GET", "storefront", "/", cookie).hasPrefix("HTTP/1.1 401 "))
         XCTAssertEqual(net.devices(project: "/code/storefront"), 0)
         // Signed in again; then the front end goes off the network: its session goes, and the back end is shut again.
-        _ = net.withVisitors { $0.signIn(to: "storefront", project: "/code/storefront", from: here, now: Date()) }
-        XCTAssertTrue(try request("GET", "storefront-8000", "/api/items").hasSuffix("\r\n\r\nok"))
+        _ = net.withVisitors { $0.signIn(to: "storefront", project: "/code/storefront", from: here, now: net.clock()) }
+        XCTAssertTrue(try request("GET", "storefront-8000", "/api/items", front).hasSuffix("\r\n\r\nok"))
         net.stop("storefront")
-        XCTAssertTrue(try request("GET", "storefront-8000", "/api/items").hasPrefix("HTTP/1.1 401 "))
+        XCTAssertTrue(try request("GET", "storefront-8000", "/api/items", front).hasPrefix("HTTP/1.1 401 "))
+        // A name that is no longer shared is nobody's page either, with a session or without.
+        _ = net.withVisitors { $0.signIn(to: "storefront", project: "/code/storefront", from: here, now: net.clock()) }
+        XCTAssertTrue(try request("GET", "storefront-8000", "/api/items", front).hasPrefix("HTTP/1.1 401 "))
         // With no password there is no gate and nothing to remember: every shared server is open, as before.
         net.setPassword(nil, for: "storefront-8000")
         XCTAssertTrue(try request("GET", "storefront-8000", "/api/items").hasSuffix("\r\n\r\nok"))
         XCTAssertTrue(try request("GET", "notes", "/").hasPrefix("HTTP/1.1 401 "))
+    }
+
+    /// A visitor's cookie is a session only from the address it was signed in from. From any
+    /// other address the visitor gets the sign-in page, like anyone without a cookie, and
+    /// signs in again; a cookie read off the network is no use from the reader's own address.
+    func testACookieIsGoodOnlyFromItsOwnAddress() throws {
+        let project = try XCTUnwrap(Project())
+        defer { project.stop() }
+        let net = OnNetwork(announces: false)
+        defer { net.stopAll() }
+        let here = "127.0.0.1", loopback = LAN.Network(interface: "lo0", address: here, router: nil), password = "k7mqx2hw", folder = "/code/storefront"
+        let port = try XCTUnwrap(net.start(name: "storefront", project: folder, server: project.server, password: password, on: loopback, port: 0))
+        XCTAssertEqual(net.start(name: "storefront-8000", project: folder, server: project.server, password: password, on: loopback, port: port), port)
+        func request(_ name: String, _ path: String, _ extra: String = "") throws -> String {
+            try ask(here, port, "GET \(path) HTTP/1.1\r\nHost: \(name).local:\(port)\r\n\(extra)\r\n") ?? ""
+        }
+        func socket(_ name: String, _ extra: String) throws -> (fd: Int32, head: String) {
+            try begin(here, port, "GET /live HTTP/1.1\r\nHost: \(name).local:\(port)\r\n\(extra)Connection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+        }
+        /// Signs in on the front end's name over the wire, as its sign-in page does, with whatever cookie the browser holds. The new cookie, as a header.
+        func signIn(holding cookie: String = "") throws -> String {
+            let own = "Origin: http://storefront.local:\(port)\r\nContent-Type: application/json\r\n" + cookie
+            let c = json(try ask(here, port, "POST /__harbor/challenge HTTP/1.1\r\nHost: storefront.local:\(port)\r\n\(own)Content-Length: 2\r\n\r\n{}"))
+            let nonce = try XCTUnwrap(c["nonce"] as? String), body = "{\"nonce\":\"\(nonce)\",\"proof\":\"\(answer(password, salt: try XCTUnwrap(c["salt"] as? String), name: "storefront", nonce: nonce))\"}"
+            let entered = try ask(here, port, "POST /__harbor/enter HTTP/1.1\r\nHost: storefront.local:\(port)\r\n\(own)Content-Length: \(body.utf8.count)\r\n\r\n\(body)") ?? ""
+            XCTAssertTrue(entered.hasPrefix("HTTP/1.1 200 "), entered)
+            return "Cookie: " + (try XCTUnwrap(entered.components(separatedBy: "\r\n").first { $0.hasPrefix("Set-Cookie: ") }?.dropFirst(12).prefix { $0 != ";" })) + "\r\n"
+        }
+        /// A page without what changes on every load (its nonces).
+        func plain(_ page: String) -> String { page.replacingOccurrences(of: "[0-9a-f]{32}", with: "#", options: .regularExpression) }
+        let front = "Origin: http://storefront.local:\(port)\r\n"
+
+        // A session that was signed in from another address (the visitor's device, before its address changed; or the
+        // device somebody read the cookie from). Its cookie arrives from here.
+        let token = net.withVisitors { $0.signIn(to: "storefront", project: folder, from: "10.0.0.5", now: Date()) }
+        let away = "Cookie: \(Lan.cookie)=\(token)\r\n"
+        XCTAssertTrue(net.withVisitors { $0.isSignedIn(token, to: "storefront", from: "10.0.0.5", now: Date()) })
+        // The sign-in page, the very one a visitor with no cookie gets: no error on it, and nothing reaches the project.
+        let page = try request("storefront", "/", away)
+        XCTAssertTrue(page.hasPrefix("HTTP/1.1 401 "))
+        XCTAssertEqual(plain(page), plain(try request("storefront", "/")))
+        XCTAssertTrue(page.contains("id=\"password\""))
+        XCTAssertTrue(try socket("storefront", away).head.hasPrefix("HTTP/1.1 401 "))                       // a WebSocket is a request like any other
+        XCTAssertTrue(try request("storefront-8000", "/api/items", front).hasPrefix("HTTP/1.1 401 "))       // and it opens no other name from here
+        XCTAssertTrue(try request("storefront-8000", "/api/items", front + away).hasPrefix("HTTP/1.1 401 "))
+        // It is not a wrong try, however often it comes: nothing is counted, nobody waits.
+        for _ in 0..<(Visitors.triesPerAddress + 3) { XCTAssertTrue(try request("storefront", "/", away).hasPrefix("HTTP/1.1 401 ")) }
+        XCTAssertEqual(net.withVisitors { $0.counts.addresses }, 0)
+        XCTAssertNil(net.withVisitors { $0.wait(address: here, name: "storefront", now: Date()) })
+        XCTAssertTrue(project.seen.isEmpty)
+        XCTAssertEqual(net.devices(project: folder), 1)
+
+        // The visitor signs in again from the new address, the old cookie still in the browser. A new session, for
+        // this address; the old one is over, so the device is counted once and the old cookie is good nowhere.
+        let cookie = try signIn(holding: away)
+        XCTAssertNotEqual(cookie, away)
+        XCTAssertEqual(net.devices(project: folder), 1)
+        XCTAssertFalse(net.withVisitors { $0.isSignedIn(token, to: "storefront", from: "10.0.0.5", now: Date()) })
+        XCTAssertTrue(try request("storefront", "/", away).hasPrefix("HTTP/1.1 401 "))
+        // Its cookie from its own address passes, and is not shown to the project.
+        XCTAssertTrue(try request("storefront", "/", cookie).hasSuffix("\r\n\r\nok"))
+        XCTAssertFalse(project.seen.contains { $0.contains(Lan.cookie) })
+        // The way into the project's other names is the new session's address's, and nobody else's.
+        XCTAssertTrue(try request("storefront-8000", "/api/items", front).hasSuffix("\r\n\r\nok"))
+        XCTAssertNil(net.withVisitors { $0.sibling(of: "storefront-8000", project: folder, address: "10.0.0.5", now: Date()) })
+        XCTAssertNotNil(net.withVisitors { $0.sibling(of: "storefront-8000", project: folder, address: here, now: Date()) })
+
+        // What a session let in ends with it, and only that. This browser has a socket open on the front end (its
+        // cookie) and one on the back end (through its session). Another browser on the same device signs in too
+        // (no cookie to replace) and has a socket of its own.
+        let mine = try socket("storefront", cookie), api = try socket("storefront-8000", front)
+        defer { close(mine.fd); close(api.fd) }
+        XCTAssertTrue(mine.head.hasPrefix("HTTP/1.1 101 ") && api.head.hasPrefix("HTTP/1.1 101 "))
+        let second = try signIn()
+        let theirs = try socket("storefront", second)
+        defer { close(theirs.fd) }
+        XCTAssertTrue(theirs.head.hasPrefix("HTTP/1.1 101 "))
+        XCTAssertFalse(Self.ended(mine.fd, within: 0.2) || Self.ended(api.fd, within: 0.1))                   // a sign-in that replaces nothing cuts nothing
+        // The first browser signs in once more, holding its cookie: that session is replaced, and both its sockets are cut.
+        let again = try signIn(holding: cookie)
+        XCTAssertTrue(Self.ended(mine.fd, within: 1), "the replaced session's own socket")
+        XCTAssertTrue(Self.ended(api.fd, within: 1), "and what it let in on the back end")
+        XCTAssertFalse(Self.ended(theirs.fd, within: 0.3), "the other browser's session is its own")
+        XCTAssertTrue(try request("storefront", "/", cookie).hasPrefix("HTTP/1.1 401 "))
+        XCTAssertTrue(try request("storefront", "/", again).hasSuffix("\r\n\r\nok"))
+        XCTAssertTrue(try request("storefront", "/", second).hasSuffix("\r\n\r\nok"))
+        XCTAssertEqual(net.devices(project: folder), 1)
+        // And a session that ends the usual way (the password changes) still takes what it let in with it.
+        let later = try socket("storefront-8000", front)
+        defer { close(later.fd) }
+        XCTAssertTrue(later.head.hasPrefix("HTTP/1.1 101 "))
+        net.setPassword("another-one", for: "storefront")
+        XCTAssertTrue(Self.ended(theirs.fd, within: 1) && Self.ended(later.fd, within: 1))
     }
 
     func testAFewSilentConnectionsKeepNobodyOut() throws {

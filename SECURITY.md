@@ -52,18 +52,33 @@ Only the latest release is supported. If you're on an older one, update first.
   challenge that was only asked for, so asking for many is in nobody's way. The
   two sign-in calls are taken only from the sign-in page itself (its exact
   Origin, as JSON), so another website can't spend a visitor's tries.
-- One password per project, and one sign-in: a session remembers the project
-  and the address it was signed in from, and from that address the project's
-  other shared names open without a cookie (a page calling its own back end is
-  another site to the browser, which sends no cookie and asks first without
-  one). Only the connection's own address counts, never a header; only within
-  one project; and only while that session lasts. The name that was signed in
-  on still wants its cookie. Devices that reach harbor from one address (behind
-  a hotspot, or a router doing NAT) count as one device for this. Someone who
-  can forge addresses on the Wi-Fi can already capture its traffic, which is
-  the plain-http limit below.
+- One password per project, and one sign-in. A page calling its own back end
+  is another site to the browser, which sends no cookie and asks first without
+  one. So a session remembers its project and the address it was signed in
+  from, and a request to another shared name of that project gets in without a
+  cookie when all of this holds:
+  - it comes from that address (the connection's own, never a header);
+  - it says it comes from one of the project's own pages on the network: its
+    `Origin`, or with no `Origin` the start of its `Referer`, is exactly a
+    shared name of the same project. `null`, another site, another project's
+    name, or neither header: the sign-in page. So another website open on a
+    signed-in device can't read or call the project's other servers;
+  - the session is in use from that address: its cookie came from there in the
+    last 15 minutes, or a connection it came with is still open. Requests let
+    in this way don't count as use.
+
+  A name opens with its own cookie, or this way through a session on another
+  name of the project; a device signed in on one name only still needs that
+  name's cookie there. Devices that reach harbor from one address (behind a
+  hotspot, or a router doing NAT) count as one device, and a program on such a
+  device that isn't a browser can write any `Origin` it likes. A device that
+  takes over a signed-in device's address within 15 minutes of its last use
+  gets the project's other servers.
 - A visitor's session is an HttpOnly cookie harbor keeps in memory for 12
-  hours, and the project never sees it. Turning sharing off, changing or
+  hours, and the project never sees it. It is a session only from the address
+  it was signed in from: from any other address the visitor gets the sign-in
+  page (no try is counted) and signs in again, which ends the session that
+  browser had and cuts what it had open. Turning sharing off, changing or
   removing the password, renaming, or joining another network ends the
   sessions and cuts every connection that was open for the name. A WebSocket with
   nothing passing for 10 minutes is closed. The cookie belongs to the name,
@@ -80,12 +95,15 @@ Only the latest release is supported. If you're on an older one, update first.
   like the sign-in session, never in settings or logs. The Keychain would ask
   for your login password after every update, because harbor isn't signed with
   an Apple Developer ID. A password that can't be read is never treated as no
-  password: the project stays off the network until you set a new one. One you
-  type needs 8 characters and can't be one of the obvious ones.
+  password: the project stays off the network until you set a new one, and
+  the file that couldn't be read is kept beside the new one as
+  `network-passwords.unreadable`. One you type needs 8 characters and can't be
+  one of the obvious ones.
 - On network is plain http. The password keeps out people browsing the
-  network. Someone capturing its traffic can read the pages, reuse a signed-in
-  visitor's session, and try passwords against a captured sign-in at their own
-  pace. Someone who can change traffic can show a fake sign-in page and learn
+  network. Someone capturing its traffic can read the pages and try passwords
+  against a captured sign-in at their own pace. A signed-in visitor's session
+  they can reuse only if they also take over that device's address. Someone
+  who can change traffic can show a fake sign-in page and learn
   the password. While a password is set, anyone on the network can get in the
   way of sign-ins; they can't get in. For anything private, use share.
 - harbor only stops or shares a process it just showed you, and it re-checks the

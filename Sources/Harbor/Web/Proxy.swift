@@ -315,7 +315,8 @@ struct ProxyHead {
             }
             out += "\(name): \(value)\r\n"
         }
-        out += "X-Forwarded-Host: \(forwardHost)\r\nX-Forwarded-Proto: http\r\nX-Forwarded-For: \(client)\r\n"
+        out += "X-Forwarded-Host: \(forwardHost)\r\nX-Forwarded-Proto: http\r\n"
+        if !client.isEmpty { out += "X-Forwarded-For: \(client)\r\n" }      // an address that couldn't be read is left out, not made up
         out += "Connection: \(isWebSocket ? "Upgrade" : "close")\r\n\r\n"
         return out.data(using: .isoLatin1) ?? Data()
     }
@@ -546,7 +547,8 @@ enum Sock {
         return nil
     }
 
-    /// The other end's address ("127.0.0.1", "::1"), for X-Forwarded-For.
+    /// The other end's address ("127.0.0.1", "192.168.1.30", "::1"): for X-Forwarded-For, and
+    /// on the network it is who a visitor is. Empty when it can't be read; never a guess.
     static func peer(_ fd: Int32) -> String { address(fd, getpeername) }
 
     /// The address on this Mac a connection arrived on.
@@ -563,7 +565,7 @@ enum Sock {
             }
             return p.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { inet_ntop(AF_INET, &$0.pointee.sin_addr, &text, socklen_t(text.count)) != nil }
         }
-        return ok ? text.withUnsafeBufferPointer { String(cString: $0.baseAddress!) } : "127.0.0.1"
+        return ok ? text.withUnsafeBufferPointer { String(cString: $0.baseAddress!) } : ""
     }
 
     /// Is this address one of this Mac's own right now? Loopback always is. Any other has to

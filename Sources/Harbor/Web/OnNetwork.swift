@@ -13,8 +13,9 @@ import dnssd
 /// (pure, tested without a socket), the password gate, the Bonjour record and the listener.
 ///
 /// It is plain http on a local network. The password keeps out people browsing the Wi-Fi.
-/// Someone capturing traffic can read the pages and reuse a signed-in visitor's session, and
-/// someone who can change traffic can show a fake sign-in page and learn the password.
+/// Someone capturing traffic can read the pages (a visitor's session they can reuse only from
+/// that visitor's own address), and someone who can change traffic can show a fake sign-in
+/// page and learn the password.
 enum Lan {
     static let suffix = ".local"
     /// Harbor's cookie on a shared name, and its own paths there. Neither ever reaches the project.
@@ -106,6 +107,23 @@ enum Lan {
             && type.count == 1 && type[0].prefix { $0 != ";" }.trimmingCharacters(in: .whitespaces).lowercased() == "application/json"
     }
 
+    /// The shared name a request says its page is on, among `names`: by its Origin, or, when
+    /// it sends none (an image, a script, a link that was followed), by the start of its
+    /// Referer. The header has to be exactly that name's origin as a browser writes it:
+    /// scheme, name and port, nothing before, and after it only a path. "null", an Origin
+    /// that is somebody else's (whatever the Referer says), two of either header, or neither
+    /// header at all: nobody's. A browser fills both in itself and a page can't change them,
+    /// which is all this is for; a program that isn't a browser writes what it likes.
+    static func page(of request: ProxyHead, port: UInt16, names: [String]) -> String? {
+        let origins = request.values("origin")
+        if !origins.isEmpty {
+            return origins.count == 1 ? names.first { origins[0] == origin($0, port: port) } : nil
+        }
+        let referers = request.values("referer")
+        guard referers.count == 1 else { return nil }
+        return names.first { referers[0].hasPrefix(origin($0, port: port) + "/") }
+    }
+
     /// Another device on the network already has `name`: the next one that is free here.
     static func nextName(after name: String, taken: (String) -> Bool) -> String {
         var n = 2
@@ -174,13 +192,19 @@ enum Lan {
             .map { String(format: "%02x", $0) }.joined()
     }
 
-    /// Under a password in the panel: whose it is when the project has several servers, and
-    /// how many devices are signed in. nil when there is nothing to say.
+    /// Under a password in the panel: whose it is when the project has several servers, what
+    /// one sign-in then covers, and how many devices are signed in. nil when there is nothing to say.
     static func passwordNote(project: String, several: Bool, devices: Int) -> String? {
-        let whose = several ? "One password for all of \(project)'s servers on the network: a visitor signs in once." : nil
+        let whose = several ? "One password for all of \(project)'s servers on the network, and one sign-in: after a device signs in to one of them, \(project)'s own pages can call the others from that device, while it keeps using the one it signed in to (up to \(Int(Visitors.grantLife / 60)) minutes after its last request there). Devices behind one address count as one." : nil
         let who = devices > 0 ? "\(devices) device\(devices == 1 ? "" : "s") signed in. A new password signs \(devices == 1 ? "it" : "them") out." : nil
         let both = [whose, who].compactMap { $0 }
         return both.isEmpty ? nil : both.joined(separator: " ")
+    }
+
+    /// Asked before a project goes without a password: there is one password per project, so
+    /// with more of its servers on the network (`servers`, this one counted) it is all of them.
+    static func anyoneCanOpen(name: String, project: String, servers: Int) -> String {
+        servers > 1 ? "Anyone on this Wi-Fi can open \(project)'s \(servers) servers on the network." : "Anyone on this Wi-Fi can open \(name)."
     }
 
     /// When a second server of a project is on the network: how a page reaches it.
@@ -251,6 +275,9 @@ enum Gate {
 struct Visitors {
     static let nonceLife: TimeInterval = 120
     static let sessionLife: TimeInterval = 12 * 3600
+    /// How long after a session was last used from its address that address still has the
+    /// project's other names (see `sibling`).
+    static let grantLife: TimeInterval = 15 * 60
     static let maxUsed = 1024, maxSessions = 1024, maxAddresses = 512
     /// Per address: this many wrong tries lock it, for 5 minutes, then 10, 20, 40, an hour.
     static let triesPerAddress = 5
@@ -263,10 +290,12 @@ struct Visitors {
     /// Made when harbor starts and never stored: what it marks its challenges with.
     private let key = SymmetricKey(size: .bits256)
     private var used: [String: Date] = [:]            // challenges that let someone in, until they'd end anyway
-    /// A session is for one name, and remembers the project that name belongs to and the
-    /// address it was signed in from: from that address the project's other names open too
-    /// (see `sibling`). There is no second table to fall out of step with this one.
-    private var sessions: [String: (name: String, project: String, address: String, until: Date)] = [:]
+    /// A session is for one name and for the address it was signed in from: its cookie is
+    /// a session from that address only (`isSignedIn`). It remembers the project the name
+    /// belongs to and when it was last used: while it is in use, the project's other names
+    /// open from that address too (see `sibling`). There is no second table to fall out of
+    /// step with this one.
+    private var sessions: [String: (name: String, project: String, address: String, until: Date, seen: Date)] = [:]
     private struct Tries {
         var wrong = 0
         var locks = 0
@@ -316,28 +345,57 @@ struct Visitors {
 
     // Sessions: twelve hours, for one name.
 
-    mutating func signIn(to name: String, project: String = "", from address: String = "", now: Date) -> String {
+    mutating func signIn(to name: String, project: String = "", from address: String, now: Date) -> String {
         sessions = sessions.filter { $0.value.until > now }
         if sessions.count >= Self.maxSessions, let oldest = sessions.min(by: { $0.value.until < $1.value.until }) { sessions[oldest.key] = nil }
         let token = Lan.token()
-        sessions[token] = (name, project, address, now.addingTimeInterval(Self.sessionLife))
+        sessions[token] = (name, project, address, now.addingTimeInterval(Self.sessionLife), now)
         return token
+    }
+
+    /// A request for `name` came with this cookie from `address`: is that a session
+    /// (`isSignedIn`)? Then it is in use, which is noted: only that keeps the address's way
+    /// into the project's other names open. A request let in through `sibling` notes nothing.
+    mutating func inUse(_ token: String?, on name: String, from address: String, now: Date) -> Bool {
+        guard let token, isSignedIn(token, to: name, from: address, now: now) else { return false }
+        sessions[token]?.seen = now
+        return true
+    }
+
+    /// The browser that held this cookie has just signed in to `name` again: the session it
+    /// had there is over (whatever address it was for). True when there was one.
+    mutating func end(_ token: String?, on name: String) -> Bool {
+        guard let token, sessions[token]?.name == name else { return false }
+        sessions[token] = nil
+        return true
     }
 
     /// A page on one of a project's names calls another of its servers by that server's
     /// name. To the browser that is another site: it sends no cookie, and the question it
     /// asks first (the preflight) never carries one. So a device that has signed in to a
-    /// project is known by its address for that project's other names, for as long as its
-    /// session lasts. This is that session's name, when `address` has one on another name of
-    /// `project`; nil otherwise.
+    /// project is known by its address for that project's other names, while it is using the
+    /// session it signed in with. This is that session (its name, and its cookie's token),
+    /// when `address` has one in use on another name of `project`; nil otherwise.
     ///
     /// - `address` is the connection's own other end, never a header.
-    /// - Only within one project. The name that was signed in on still wants its cookie.
+    /// - Only within one project, and only through a session on another name: a name opens
+    ///   with its own cookie, or through a session the address has on a different name.
+    /// - In use: the session's cookie came from that address in the last `grantLife`, or a
+    ///   connection it came with is still open (`open` holds those sessions' tokens). After
+    ///   that the address has nothing until the cookie comes from it again; the session
+    ///   itself lasts its twelve hours. What gets in this way keeps nothing alive.
     /// - It ends with the session it rests on, every way a session ends.
     /// - Devices behind one address (a hotspot, a router doing NAT) count as one here.
-    func sibling(of name: String, project: String, address: String, now: Date) -> String? {
+    ///
+    /// The listener asks this only for a request that says it comes from one of the
+    /// project's own pages (`Lan.page(of:)`): an address alone would let every page open on
+    /// that device in.
+    func sibling(of name: String, project: String, address: String, now: Date, open: Set<String> = []) -> (name: String, session: String)? {
         guard !project.isEmpty, !address.isEmpty else { return nil }
-        return sessions.values.first { $0.project == project && $0.address == address && $0.name != name && now < $0.until }?.name
+        return sessions.first { token, session in
+            session.project == project && session.address == address && session.name != name && now < session.until
+                && (now.timeIntervalSince(session.seen) < Self.grantLife || open.contains(token))
+        }.map { ($0.value.name, $0.key) }
     }
 
     /// How many devices (addresses) are signed in to a project right now.
@@ -345,9 +403,13 @@ struct Visitors {
         Set(sessions.values.filter { $0.project == project && now < $0.until }.map(\.address)).count
     }
 
-    func isSignedIn(_ token: String?, to name: String, now: Date) -> Bool {
+    /// Is this cookie a session for `name`, coming from the address it was signed in from?
+    /// From any other address it is no session at all, and the visitor gets the sign-in page
+    /// like anyone without a cookie (no try is counted): a device whose address changed signs
+    /// in again, and a cookie read off the network is no use from the reader's own address.
+    func isSignedIn(_ token: String?, to name: String, from address: String, now: Date) -> Bool {
         guard let token, let found = sessions[token] else { return false }
-        return found.name == name && now < found.until
+        return found.name == name && now < found.until && found.address == address && !address.isEmpty
     }
 
     /// Sharing stopped, or the password changed: everyone signs in again.
@@ -475,9 +537,12 @@ enum Passwords {
     }
 
     /// One project's password into the file (nil: out of it). A file that can't be read is
-    /// not carried over: whoever is writing is setting a password anew.
+    /// not carried over: whoever is writing is setting a password anew. It is put aside as
+    /// `network-passwords.unreadable` rather than written over, in case it can be mended.
     static func store(_ key: String, _ password: String?, in file: URL) -> Bool {
-        var all = load(file) ?? [:]
+        let held = load(file)
+        if held == nil { rename(file.path, file.path + ".unreadable") }
+        var all = held ?? [:]
         all[key] = password
         guard let data = try? JSONSerialization.data(withJSONObject: all, options: [.sortedKeys]) else { return false }
         try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -687,8 +752,10 @@ final class OnNetwork: @unchecked Sendable {
     private var boundPort: UInt16 = 0
     private var held6 = false
     // Per name, what is being passed on right now: the visitor's socket, the server's, and
-    // the name whose session let it in when it came without a cookie of its own (`sibling`).
-    private var live: [String: [Int32: (server: Int32, via: String?)]] = [:]
+    // the session that let it in (its cookie's token; nil when the name has no password).
+    // `via` is that session's name when it is one on another name of the project (`sibling`),
+    // and nil when the connection came with its own cookie.
+    private var live: [String: [Int32: (server: Int32, via: String?, session: String?)]] = [:]
     // On `queue`.
     private var source: DispatchSourceRead?
     private var source6: DispatchSourceRead?
@@ -706,6 +773,9 @@ final class OnNetwork: @unchecked Sendable {
         self.announces = announces
         self.quietSocket = quietSocket
     }
+
+    /// The time, for the sessions and the wrong tries. A test sets it to let hours pass.
+    var clock: () -> Date = { Date() }
 
     /// The visitors' book, under the lock. For tests, which have only one address to come from.
     func withVisitors<T>(_ body: (inout Visitors) -> T) -> T { locked { body(&visitors) } }
@@ -735,7 +805,7 @@ final class OnNetwork: @unchecked Sendable {
     }
 
     /// Devices signed in to a project right now, for its owner's panel.
-    func devices(project: String) -> Int { locked { visitors.devices(project: project, now: Date()) } }
+    func devices(project: String) -> Int { locked { visitors.devices(project: project, now: clock()) } }
 
     /// Starts serving `name` from `server` on `network`, opening the listener if this is the
     /// first one; later names use the listener that is there. One at a time: two started at
@@ -825,7 +895,7 @@ final class OnNetwork: @unchecked Sendable {
             locked {
                 shares.keys.forEach { visitors.forget($0) }
                 shares = [:]
-                live.keys.forEach(cut)
+                live.keys.forEach { cut($0) }
             }
             closeAll()
         }
@@ -859,6 +929,17 @@ final class OnNetwork: @unchecked Sendable {
         }
     }
 
+    /// Ends what one session let in: with its cookie on its own name, and through it on the
+    /// project's other names. Nobody else's connections. Under `lock`, beside `visitors.end`.
+    private func cut(session token: String) {
+        for open in live.values {
+            for (visitor, end) in open where end.session == token {
+                shutdown(visitor, SHUT_RDWR)
+                shutdown(end.server, SHUT_RDWR)
+            }
+        }
+    }
+
     /// The same network gave this Mac another address: answer there, and announce the names
     /// again. What was open came in on the old address and is cut.
     // ponytail: a debug run on a high port stays bound to the old address (port 80 hears
@@ -869,7 +950,7 @@ final class OnNetwork: @unchecked Sendable {
                 announced = network
                 // Everyone signs in again: a device is known by its address here, and addresses have just been dealt anew.
                 shares.keys.forEach { visitors.forget($0) }
-                live.keys.forEach(cut)
+                live.keys.forEach { cut($0) }
                 return Array(shares.keys)
             }
             guard announces else { return }
@@ -1003,7 +1084,9 @@ final class OnNetwork: @unchecked Sendable {
             // Only what arrived on the announced address: everything else (loopback, a VPN,
             // another interface) is closed without a word. And only so many at once, from
             // everyone and from any one address, so a few silent connections keep nobody out.
-            guard Lan.accepts(local: Sock.local(fd), announced: locked { announced?.address }),
+            // An address is who a visitor is here (tries, places, the way into a project's
+            // other names): a connection whose address can't be read is nobody's, and is closed.
+            guard !from.isEmpty, Lan.accepts(local: Sock.local(fd), announced: locked { announced?.address }),
                   open < Self.maxOpen, openFrom[from, default: 0] < Self.maxPerAddress else {
                 close(fd)
                 continue
@@ -1025,18 +1108,28 @@ final class OnNetwork: @unchecked Sendable {
     private func serve(_ fd: Int32, from address: String) {
         guard case .ok(let head, let rest) = Sock.readHead(fd, max: Proxy.maxHead, within: Self.headWithin) else { return }
         guard let request = ProxyHead(head) else { return Sock.reply(fd, Lan.bare(400)) }
-        let now = Date()
+        let now = clock()
         // By Host, and only for a name that is shared right now. No hint of what else exists.
-        let found = locked { () -> (name: String, share: Share, session: Bool, via: String?, port: UInt16)? in
+        let found = locked { () -> (name: String, share: Share, session: String?, via: String?, port: UInt16)? in
             guard let name = Lan.name(forHost: request.host, port: boundPort, isShared: { shares[$0] != nil }), let share = shares[name] else { return nil }
-            // Its own cookie; or, without one, a session this address has on another name of the same project.
-            let own = visitors.isSignedIn(Lan.visitor(in: request.values("cookie")), to: name, now: now)
-            let via = own || share.secret == nil ? nil : visitors.sibling(of: name, project: share.project, address: address, now: now)
-            return (name, share, own || via != nil, via, boundPort)
+            // Its own cookie, from the address it was signed in from: a session, and now in use. The same cookie
+            // from anywhere else is none (the sign-in page, like anyone without one).
+            let token = Lan.visitor(in: request.values("cookie"))
+            if visitors.inUse(token, on: name, from: address, now: now) { return (name, share, token, nil, boundPort) }
+            // Or, without one: a session this address has in use on another name of the same project, and only for
+            // a request that says it comes from one of that project's own pages on the network. Any other page
+            // open on the device (another site's) comes from the same address, and gets the sign-in page.
+            guard share.secret != nil, Lan.page(of: request, port: boundPort, names: shares.filter({ $0.value.project == share.project }).map(\.key)) != nil,
+                  // In use: by time, or by a connection that came with its own cookie and is still open.
+                  let other = visitors.sibling(of: name, project: share.project, address: address, now: now,
+                                               open: Set(live.values.flatMap { $0.values.filter { $0.via == nil }.compactMap(\.session) })) else {
+                return (name, share, nil, nil, boundPort)
+            }
+            return (name, share, other.session, other.name, boundPort)
         }
         guard let found else { return Sock.reply(fd, Lan.bare(404)) }
         let name = found.name
-        let step = Gate.step(method: request.method, target: request.target, protected: found.share.secret != nil, session: found.session)
+        let step = Gate.step(method: request.method, target: request.target, protected: found.share.secret != nil, session: found.session != nil)
         // The sign-in's two calls are for harbor's own page only. From anywhere else they are
         // refused, and no try is counted: another site can't use up a visitor's tries.
         if step == .challenge || step == .enter, !Lan.isOwnPage(request, name: name, port: found.port) { return Sock.reply(fd, Lan.bare(403)) }
@@ -1065,7 +1158,7 @@ final class OnNetwork: @unchecked Sendable {
             // If that has just happened, nothing is passed on at all.
             let current = locked { () -> Bool in
                 guard shares[name]?.salt == found.share.salt else { return false }
-                live[name, default: [:]][fd] = (up, found.via)
+                live[name, default: [:]][fd] = (up, found.via, found.session)
                 return true
             }
             defer {
@@ -1123,9 +1216,9 @@ final class OnNetwork: @unchecked Sendable {
         let sent = (try? JSONSerialization.jsonObject(with: Data(body))) as? [String: Any]
         let nonce = (sent?["nonce"] as? String) ?? ""
         // Someone may be guessing at this name: every answer takes a little longer for a while.
-        let hold = locked { visitors.delay(for: name, now: Date()) }
+        let hold = locked { visitors.delay(for: name, now: clock()) }
         if hold > 0 { Thread.sleep(forTimeInterval: hold) }
-        let now = Date()
+        let now = clock()
         let (answer, wrong, many) = locked { () -> (Data, Bool, Bool) in
             guard let share = shares[name], let secret = share.secret else { return (Lan.bare(404), false, false) }
             switch Self.check(proof: sent?["proof"] as? String, nonce: nonce, name: name, project: share.project, secret: secret, address: address, visitors: &visitors, now: now) {
@@ -1134,6 +1227,9 @@ final class OnNetwork: @unchecked Sendable {
             case .again:
                 return (Lan.json(409, ["again": true]), false, false)
             case .signedIn(let token):
+                // The browser had a cookie for this name already and signed in all the same (its address changed, so
+                // the cookie was no session any more): that session is over, with what it let in. One browser, one session.
+                if let old = Lan.visitor(in: request.values("cookie")), visitors.end(old, on: name) { cut(session: old) }
                 return (Lan.json(200, ["ok": true], cookie: "\(Lan.cookie)=\(token); Path=/; Max-Age=\(Int(Visitors.sessionLife)); HttpOnly; SameSite=Lax"), false, false)
             case .wrong(let wait, let many):
                 var reply: [String: Any] = ["error": "wrong"]

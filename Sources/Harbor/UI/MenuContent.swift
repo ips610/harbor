@@ -676,7 +676,7 @@ private struct PortLine: View {
                                    value: Lan.randomPassword(), yes: "Share", other: "No Password…") {
             if !choice.other {
                 problem = monitor.shareOnNetwork(row, password: choice.answer)
-            } else if confirm("Share without a password?", "Anyone on this Wi-Fi can open \(name).", yes: "Share") {
+            } else if confirm("Share without a password?", monitor.anyoneCanOpen(row), yes: "Share") {
                 problem = monitor.shareOnNetwork(row, open: true)
             } else {
                 return
@@ -699,7 +699,7 @@ private struct PortLine: View {
         guard let name = monitor.networkName(row),
               let choice = ask("Password for \(name)\(Lan.suffix)", "At least \(Lan.minPassword) characters. Everyone who is signed in signs in again.",
                                value: Lan.randomPassword(), yes: "Change", other: "No Password…") else { return }
-        if choice.other, !confirm("Remove the password?", "Anyone on this Wi-Fi can open \(name).", yes: "Remove") { return }
+        if choice.other, !confirm("Remove the password?", monitor.anyoneCanOpen(row), yes: "Remove") { return }
         if let problem = monitor.setNetworkPassword(row, choice.other ? nil : choice.answer) { monitor.flash(problem) }
     }
 

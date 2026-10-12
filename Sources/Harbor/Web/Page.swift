@@ -1163,7 +1163,7 @@ function networkOffer(p, pill) {
       if (typed != null) lanTurnOn(p, { password: typed });
     }),
     pill('no password', '', async () => {
-      if (await ask('Share without a password?', `Anyone on this Wi-Fi can open ${p.local.name}.`, 'Share')) lanTurnOn(p, { open: true });
+      if (await ask('Share without a password?', p.local.anyone, 'Share')) lanTurnOn(p, { open: true });
     }),
     pill('cancel', '', () => setLanAsk(p.id, null)));
   return el('div', { class: 'ptunnel' }, 'On network as', el('code', { text: p.local.name + '.local' }),
@@ -1187,7 +1187,7 @@ function networkBox(p, pill) {
         pill('change', '', () => lanChange(p)),
         pill('new random one', '', () => lanPassword(p, { random: true })),
         pill('remove', '', async () => {
-          if (await ask('Remove the password?', `Anyone on this Wi-Fi can open ${p.local.name}.`, 'Remove')) lanPassword(p, { off: true });
+          if (await ask('Remove the password?', p.local.anyone, 'Remove')) lanPassword(p, { off: true });
         })]
       : ['none: anyone on this Wi-Fi can open it', pill('set one', '', () => lanPassword(p, { random: true }))]),
     p.local.note ? el('p', { class: 'pline info', text: p.local.note }) : null,
