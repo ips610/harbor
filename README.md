@@ -18,6 +18,8 @@ kernel, so it idles at about 0% CPU.
 - Open, copy, QR code, share and kill on every row. Kill asks first.
 - Shows what a web server answers beside its row: `200 · Storefront`, `301 → /login`, `500`.
 - Shows Docker's published ports as their containers, grouped by compose project.
+- A bell on any server: one notification when that server stops.
+- Servers that stopped stay in a "Stopped" list for a day, with **Start again**.
 - A port range, "servers only", hidden process names, and macOS's own services on request.
 
 **Names**
@@ -38,6 +40,9 @@ kernel, so it idles at about 0% CPU.
 
 **Command line**
 - `harbor ls`, `harbor kill <port>` and `harbor open <port|name>` in Terminal.
+
+**Updates**
+- When a new version is out, **Update now** replaces the app where it is.
 
 ## Getting started
 
@@ -135,6 +140,54 @@ when I open a row's details, and shows the answer there under "Serves".
 It is one plain `GET /`, sent the way a browser coming through the `.localhost` name would send
 it, with no cookie. It doesn't follow redirects. It never asks databases, apps' own helper
 ports, macOS's services, or harbor itself.
+
+### When a server stops
+
+Open a row's details and click the bell (**tell me**). When that server stops I get one
+notification: "storefront (:3000) stopped." It is for that one server, not for all of them. The
+first time, macOS asks whether harbor may show notifications.
+
+The bell follows that process on that port. If I stop the server through harbor's own kill,
+nothing is said, because I already know. (`harbor kill` in Terminal is another process, so that
+one still notifies.) The bell ends with the server, and harbor forgets every bell when it quits.
+While a bell is on, harbor scans at least every 15 seconds, the same as while something is on
+the network. With no bell and nothing shared it is as idle as before.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/stopped-dark.png">
+  <img alt="The Stopped list on harbor's page: two servers that stopped, each with its folder, its command and a start again button" src="docs/screenshots/stopped-light.png">
+</picture>
+
+A server that stops goes into a **Stopped** list under the ports, in the menu and on the page,
+with its name, its port and the command it ran. **Start again** runs it the way it was started:
+the same program with the same arguments, in the same folder, with the same environment. harbor
+asks first. It shows the program by where it really is, every argument, and the folder. It
+never shows the environment, but it says the environment comes back, and it names any variable
+in it that makes a program load code (`NODE_OPTIONS`, `PYTHONPATH` and the like). If the program
+was rebuilt since it stopped, it says that too.
+
+What to know about it:
+
+- It starts the process that held the port, not what was above it. If I ran `npm run dev`, what
+  comes back is the `node` process that npm started, not npm. If that isn't enough for a
+  project, start it in Terminal as before.
+- A server started this way has no Terminal, and its input is empty. A tool that quits when
+  its input ends stops at once. Its output goes to `~/Library/Logs/harbor/<name>-<port>.log`,
+  which only my account can read, and **show log** opens it. The file starts empty each time.
+  While harbor is running it empties the file when it passes 5 MB.
+- It runs under harbor, not under my shell. macOS may show its questions about files and
+  folders with harbor's name on them, and it gets the system's default limits (open files and
+  so on), not the ones my shell sets.
+- How a server was started is kept in harbor's memory only, never in a file or in its settings.
+  The environment is never shown anywhere. The list holds the last 20 servers for a day, and is
+  gone when harbor quits.
+- Only my own servers are remembered: not macOS's services, another user's, Docker or its
+  containers, harbor itself, or apps. A server that was started inside a sandbox (a coding
+  agent's, say) is not offered either: harbor would start it outside that sandbox.
+- If the program or the folder isn't where it was, if another account on the Mac could have
+  swapped either of them, or if something already listens on that port, nothing is started and
+  harbor says why. Asking twice starts it once. A row leaves the list when something listens on
+  its port again, however it was started.
 
 ### Docker
 
@@ -304,11 +357,26 @@ opening the app starts it again.
 When the menu or the page opens, harbor asks GitHub whether there's a newer version, at most
 once a day. If there is, the menu and the page say so with a **Get it** button. **Check for
 Updates…** in the gear menu and **Check for updates** in the page's settings ask right away.
-That check and a public link are the only times harbor talks to the internet.
+That check, an update I click, and a public link are the only times harbor talks to the
+internet.
 
-To update, quit harbor (gear menu → Quit harbor), download the new zip, unzip it and drag harbor
-into Applications. Click **Replace** when Finder asks. A new download may need Open Anyway once
-more. Opening the new one replaces the old one's helpers, even if the old one was still running.
+**Update now** is there beside **Get it** when harbor can replace itself: the copy is in
+Applications, I can write to that folder, and it is signed with a certificate (a release is; a
+build of your own with a throwaway signature is not). It runs only when I click it, never in
+the background. harbor downloads the release from GitHub, checks that it is signed with the
+same key as the copy that is running, puts it in that one's place and starts again. The old app
+goes to the Trash; if the Trash won't take it, the new harbor says where it was left. If a check
+fails, the installed app stays exactly as it was and harbor says why. Anything on the network
+and any public link ends with the update, and harbor says so before it starts.
+
+Some networks block GitHub's download server. My campus one does: it lets github.com through
+and cuts off the download itself. Then Update now says the download did not arrive and nothing
+changes. Downloading the zip in a browser fails there the same way, so try on another network.
+
+By hand it still works as before: quit harbor (gear menu → Quit harbor), download the new zip,
+unzip it and drag harbor into Applications. Click **Replace** when Finder asks. A new download
+may need Open Anyway once more. Opening the new one replaces the old one's helpers, even if the
+old one was still running.
 
 ## Uninstalling
 
@@ -344,16 +412,21 @@ The short version. [SECURITY.md](SECURITY.md) has the detail.
   process, macOS asks for my password in its own dialog and harbor never sees it.
 - The status line is one request with no cookie to a server on this Mac, and its title is only
   ever shown as text.
-- harbor never installs anything, and never sends anything about my Mac anywhere.
+- **Start again** runs only what harbor itself saw running. The page sends which row, never a
+  command, and nothing goes through a shell.
+- **Update now** installs a download only if it is signed with the same key as the harbor that
+  is running. Apart from its own update, and only on that click, harbor never installs anything.
+- harbor never sends anything about my Mac anywhere.
 
 ## Why it's light
 
 It never runs `lsof`, `ps` or `netstat`. It asks the kernel directly (libproc, sysctl,
 `host_statistics64`), so a full scan takes about 6–10 ms. With the menu and the page closed it
 only does a tiny check once a minute, about 0.3 ms, for memory and stuck processes. Ports get
-scanned only while you're looking at them, or at your refresh interval if the badge is on or
-something is on the network. A public link is the one thing that starts another program
-(`cloudflared`), and only when you click it.
+scanned only while you're looking at them, or at your refresh interval if the badge is on, or
+at least every 15 seconds while something is on the network or a bell is on. Another program is
+started only when you click: a public link starts `cloudflared`, **Start again** starts that
+server, and **Update now** unpacks the download with macOS's `ditto`.
 
 On my Mac (16 GB, lots of swap in use):
 
@@ -377,6 +450,13 @@ On my Mac (16 GB, lots of swap in use):
   every 15 seconds. If another container takes its port, the name can open that one until the
   next scan.
 - The status line reads the first 64 KB of the page. A title that comes later isn't shown.
+- A bell needs harbor running. Quitting harbor ends every bell without a word.
+- **Start again** brings back one process with no Terminal and no input. A server that needs
+  what started it (a watcher, a script that sets things up first), or that reads from its
+  input, has to be started in Terminal.
+- The 5 MB limit on a started server's log holds only while harbor runs.
+- **Update now** needs the copy in Applications to be signed with a certificate. A copy with a
+  throwaway signature updates by hand.
 - `harbor ls` shows the names the running app has given. With the app quit it works them out
   itself, and the `.localhost` names don't open until the app runs.
 

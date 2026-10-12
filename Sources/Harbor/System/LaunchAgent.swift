@@ -131,7 +131,12 @@ enum LaunchAgent {
     /// last, or take the door away from the installed copy. headroom's launcher has the same rule.
     static func isInstalled(_ executable: String, home: String = NSHomeDirectory()) -> Bool {
         let real = ((executable as NSString).resolvingSymlinksInPath as NSString).standardizingPath
-        return (real.hasPrefix("/Applications/") || real.hasPrefix(home + "/Applications/")) && !real.contains("/AppTranslocation/")
+        // <folder>/<name>.app/Contents/MacOS/<binary>, and the folder is Applications itself: nothing further in counts
+        // (an old copy an update set aside in a folder beside the app, a translocated one).
+        let parts = (real as NSString).pathComponents
+        guard parts.count >= 5, parts[parts.count - 2] == "MacOS", parts[parts.count - 3] == "Contents", parts[parts.count - 4].hasSuffix(".app") else { return false }
+        let folder = NSString.path(withComponents: Array(parts.dropLast(4)))
+        return folder == "/Applications" || folder == home + "/Applications"
     }
 
     /// This copy may manage the agents: an app in Applications, and not a debug run.

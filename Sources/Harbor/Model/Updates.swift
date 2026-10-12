@@ -22,9 +22,17 @@ final class Updates {
     var newer: Bool { latest.map { Self.isNewer($0, than: current) } ?? false }
     var url: URL { newer ? Self.releases.appending(path: "tag/v\(latest!)") : Self.releases }
 
-    /// `then` runs when a check that actually asked GitHub has finished.
+    /// A made-up newer release, for snapshots: "Update now" is shown there, and does nothing.
+    private(set) var madeUp = false
+    func useMadeUp(latest: String?) {
+        self.latest = latest
+        madeUp = latest != nil
+    }
+
+    /// `then` runs when a check that actually asked GitHub has finished. A test run, and a
+    /// snapshot with a made-up release, ask GitHub nothing.
     func check(force: Bool = false, then: (@MainActor () -> Void)? = nil) {
-        guard !checking else { return }
+        guard !checking, !madeUp, NSClassFromString("XCTestCase") == nil else { return }
         if !force, let checked, Date().timeIntervalSince(checked) < 86_400 { return }
         checking = true
         failed = false
@@ -44,6 +52,44 @@ final class Updates {
     }
 
     func download() { NSWorkspace.shared.open(url) }
+
+    // MARK: Update now (see Updater)
+
+    /// Is "Update now" there beside the link? Only with a newer release, and only for a copy
+    /// that can hold a download to its own signing key and may replace itself where it is.
+    var canUpdateNow: Bool { newer && (Updater.offered || madeUp) }
+    private(set) var updating = false
+    /// Why the last try didn't go through, in plain words. The app is as it was.
+    private(set) var updateProblem: String?
+
+    /// What is asked before anything is downloaded. `sharing`: something is on the network or has a public link.
+    nonisolated static func updateQuestion(version: String, sharing: Bool) -> String {
+        "\(AppInfo.name) downloads \(version) from GitHub, checks that it is signed with the same key as this copy, puts it in this one's place and starts again. The old one goes to the Trash."
+            + (sharing ? " What is on your network, and any public link, ends with the update." : "")
+    }
+
+    /// Only ever on the owner's click. Returns nil when the update is under way, or why nothing was started.
+    func updateNow() -> String? {
+        guard canUpdateNow, let latest else { return "This copy can't update itself. Use the link." }
+        if updating { return "The update is already under way." }
+        // Not in the middle of something the owner asked for: a stop that is still waiting on its process would be cut short.
+        guard Monitor.shared.busy.isEmpty else { return "\(AppInfo.name) is still stopping something. Try again when that is done." }
+        if madeUp { return "This release is made up, so nothing is downloaded." }
+        guard let requirement = Updater.ownRequirement(), let id = Bundle.main.bundleIdentifier else { return "\(AppInfo.name) couldn't read its own signature, so it can't update itself." }
+        updating = true
+        updateProblem = nil
+        let installed = Bundle.main.bundleURL
+        let world = Updater.World(requirement: requirement, bundleID: id, running: current,
+                                  handOver: { new in DispatchQueue.main.sync { MainActor.assumeIsolated { Updater.handOver(new) } } })
+        Task {
+            // Every step in there has an end of its own (the download and the unpacking are both timed), so this always comes back.
+            let problem = await Updater.update(to: latest, installed: installed, world: world)
+            updating = false
+            // Without a problem the new one was started and this process is gone. Still here: it is in place, but couldn't be started from here.
+            updateProblem = problem?.text ?? "The new \(AppInfo.name) is in place. Quit this one and open \(AppInfo.name) again."
+        }
+        return nil
+    }
 
     /// What to say after Check for Updates.
     var summary: String {

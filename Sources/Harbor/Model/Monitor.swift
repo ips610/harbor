@@ -147,11 +147,16 @@ final class Monitor {
         return badge && refresh > 0 ? refresh : nil
     }
 
+    /// Something on the network, or a server that is being watched: both need a scan to see that it has gone.
+    private var keepsLooking: Bool { !lanShares.isEmpty || !watched.isEmpty }
+    /// How often harbor scans by itself as things are now, or nil for not at all.
+    var scansEvery: Double? { Self.scanEvery(refresh: refreshInterval, sharing: keepsLooking, badge: badgeMode != "hidden") }
+
     private func updateBadgeTimer() {
         badgeTimer?.invalidate()
         badgeTimer = nil
-        let sharing = !lanShares.isEmpty
-        guard started, let every = Self.scanEvery(refresh: refreshInterval, sharing: sharing, badge: badgeMode != "hidden") else { return }
+        let sharing = keepsLooking
+        guard started, let every = scansEvery else { return }
         let t = Timer(timeInterval: every, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 // For the badge alone, the open menu or the page's polls already scan. For a share that isn't enough:
@@ -406,6 +411,8 @@ final class Monitor {
         let table = Names.assign(scan.ports, saved: savedNames, previous: names, mains: savedMains)
         if table != names { names = table }
         moveOldNetworkNames()
+        tellWhatStopped(in: scan.ports)
+        if fixture == nil { remember(scan.ports) }
         if served.keys.contains(where: { id in !scan.ports.contains { $0.id == id } }) {
             served = served.filter { answer in scan.ports.contains { $0.id == answer.key } }
         }
@@ -447,6 +454,177 @@ final class Monitor {
         pendingFresh = []
         waiting.forEach { $0() }
     }
+
+    // MARK: Tell me when it stops (one server's bell)
+
+    /// A watched server: that process, started then, on that port; and the name harbor had for it.
+    struct Watch: Equatable {
+        let pid: pid_t
+        let port: UInt16
+        let started: Date?
+        let name: String
+    }
+
+    /// The servers the owner asked to be told about, by row. Only in memory: a watch ends
+    /// with its server, and none outlives harbor. While there is one, harbor scans as it
+    /// does for a share (`scanEvery`); with none, nothing changes.
+    private(set) var watched: [String: Watch] = [:] {
+        didSet { if oldValue.isEmpty != watched.isEmpty { updateBadgeTimer() } }
+    }
+
+    func isWatched(_ row: PortRow) -> Bool { watched[row.id] != nil }
+
+    func setWatch(_ row: PortRow, _ on: Bool) {
+        guard on else { return watched[row.id] = nil }
+        guard !row.isSystem, !row.isSelf, ports.contains(where: { $0.id == row.id }) else { return }
+        watched[row.id] = Watch(pid: row.pid, port: row.port, started: row.started, name: names.byRow[row.id] ?? Docker.clean(row.title, max: 60))
+        Notifier.ask()
+    }
+
+    /// The owner stopped this process through harbor: there is nothing to tell them.
+    func unwatch(pid: pid_t) {
+        if watched.values.contains(where: { $0.pid == pid }) { watched = watched.filter { $0.value.pid != pid } }
+    }
+
+    /// What is said: harbor's own name for the server and its port, and nothing else.
+    nonisolated static func stoppedText(name: String, port: UInt16) -> String { "\(name) (:\(port)) stopped." }
+
+    /// Which watches are over after a scan. A server is gone when that process, started
+    /// then, no longer holds that port. `tell` are the ones to say so about; `quiet` are the
+    /// ones harbor is itself stopping on the owner's click right now (`stopping`).
+    nonisolated static func over(_ watched: [String: Watch], in rows: [PortRow], stopping: Set<pid_t>) -> (tell: [String], quiet: [String]) {
+        let gone = watched.filter { id, watch in !rows.contains { $0.id == id && $0.started == watch.started } }
+        return (gone.filter { !stopping.contains($0.value.pid) }.keys.sorted(), gone.filter { stopping.contains($0.value.pid) }.keys.sorted())
+    }
+
+    private func tellWhatStopped(in rows: [PortRow]) {
+        guard !watched.isEmpty else { return }
+        let over = Self.over(watched, in: rows, stopping: busy)
+        for id in over.quiet { watched[id] = nil }
+        for id in over.tell {
+            guard let watch = watched.removeValue(forKey: id) else { continue }
+            let text = Self.stoppedText(name: watch.name, port: watch.port)
+            notify(text)
+            Notifier.post(text)
+        }
+    }
+
+    // MARK: Start again (see Restart)
+
+    /// How each listed server was started, kept while it runs, by row. Memory only.
+    /// By row and by when its process started: a pid and port that come round again are another server.
+    @ObservationIgnored private var running: [String: (launch: Restart.Launch, name: String, port: UInt16, pid: pid_t)] = [:]
+    private static func lifeKey(_ row: PortRow) -> String { "\(row.id) \(row.started?.timeIntervalSince1970 ?? 0)" }
+    @ObservationIgnored private var unreadable = Set<String>()
+    /// The servers harbor saw stop: the last twenty, for a day, gone when harbor quits.
+    private(set) var stopped: [Restart.Stopped] = [] {
+        didSet { if oldValue.map(\.at) != stopped.map(\.at) { armForgetting() } }
+    }
+    @ObservationIgnored private var forgetTimer: Timer?
+
+    /// The day is up for the oldest entry whether or not anything scans: one timer, set for that moment.
+    private func armForgetting() {
+        forgetTimer?.invalidate()
+        forgetTimer = nil
+        guard let oldest = stopped.map(\.at).min() else { return }
+        let timer = Timer(fire: oldest.addingTimeInterval(Restart.life), interval: 0, repeats: false) { _ in MainActor.assumeIsolated { Monitor.shared.forgetOld() } }
+        timer.tolerance = 60
+        RunLoop.main.add(timer, forMode: .common)
+        forgetTimer = timer
+    }
+
+    func forgetOld(now: Date = Date()) {
+        let list = Restart.list(stopped, adding: [], listening: [], now: now)
+        if list != stopped { stopped = list } else { armForgetting() }
+    }
+    /// When the oldest entry is forgotten, if nothing scans before then.
+    var forgetsAt: Date? { forgetTimer?.fireDate }
+    /// Where the output of what harbor started goes, by pid, and what keeps each log small.
+    @ObservationIgnored private var startedLogs: [pid_t: URL] = [:]
+    @ObservationIgnored private var logKeepers: [pid_t: DispatchSourceFileSystemObject] = [:]
+
+    /// After a scan: what is gone joins the list, and what is new is read once. (`may` and
+    /// `capture` are the real rules; a test passes its own.)
+    func remember(_ rows: [PortRow], may given: ((PortRow) -> Bool)? = nil, capture: (PortRow) -> Restart.Launch? = Restart.capture) {
+        let may = given ?? { Restart.mayRemember($0, tunnel: Tunnels.shared.isTunnelPid($0.pid)) }
+        let keys = Set(rows.map(Self.lifeKey))
+        var gone: [Restart.Stopped] = []
+        for (key, was) in running where !keys.contains(key) {
+            // One that harbor had started itself keeps its log: what it said before it stopped is the first thing to look at.
+            gone.append(Restart.Stopped(id: Lan.token(8), name: was.name, port: was.port, launch: was.launch, at: Date(), log: startedLogs.removeValue(forKey: was.pid)))
+            running[key] = nil
+        }
+        unreadable.formIntersection(keys)
+        for row in rows where !unreadable.contains(Self.lifeKey(row)) {
+            let key = Self.lifeKey(row), name = names.byRow[row.id] ?? Docker.clean(row.title, max: 60)
+            if running[key] != nil {
+                running[key]?.name = name
+            } else if may(row), let launch = capture(row) {
+                running[key] = (launch, name, row.port, row.pid)
+            } else {
+                unreadable.insert(key)
+            }
+        }
+        let list = Restart.list(stopped, adding: gone, listening: Set(rows.map(\.port)), now: Date())
+        if list != stopped { stopped = list }
+    }
+
+    /// A made-up list, for snapshots and tests.
+    func useStopped(_ list: [Restart.Stopped]) { stopped = list }
+
+    /// Starts a remembered server again. The request names the entry and nothing else; what
+    /// is run comes from harbor's own memory. Returns whether it started and what to say.
+    func startAgain(_ id: String, logs: URL = Restart.logs, portAnswers: (UInt16) -> Bool = Monitor.answers, madeUp: Bool? = nil) -> (started: Bool, message: String) {
+        guard let index = stopped.firstIndex(where: { $0.id == id }), Date().timeIntervalSince(stopped[index].at) < Restart.life else {
+            return (false, "That server isn't in the list any more.")
+        }
+        let entry = stopped[index]
+        // One at a time: a second click (or a second request) while the first one's process is still coming up starts nothing.
+        if let pid = entry.pid, kill(pid, 0) == 0 { return (false, "\(entry.name) was just started (pid \(pid)). Give it a moment to listen.") }
+        guard !ports.contains(where: { $0.port == entry.port }), !portAnswers(entry.port) else {
+            return (false, "Something is already listening on :\(entry.port), so nothing was started.")
+        }
+        guard !(madeUp ?? isMadeUp) else { return (false, "These ports are made up, so nothing was started.") }
+        let log = Restart.logURL(name: entry.name, port: entry.port, in: logs)
+        let done = Restart.start(entry.launch, log: log)
+        guard let process = done.process else {
+            stopped[index].note = done.problem
+            return (false, done.problem ?? "It couldn't be started.")
+        }
+        let pid = process.processIdentifier
+        stopped[index].log = log
+        stopped[index].note = nil
+        stopped[index].pid = pid
+        startedLogs[pid] = log
+        logKeepers[pid] = done.keeper
+        process.terminationHandler = { ended in
+            let status = ended.terminationStatus
+            DispatchQueue.main.async { MainActor.assumeIsolated { Monitor.shared.ended(pid, status: status, entry: id) } }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { MainActor.assumeIsolated { Monitor.shared.requestFullScan() } }
+        return (true, "Started \(entry.name) again. Its output goes to \(Fmt.path(log.path)).")
+    }
+
+    private func ended(_ pid: pid_t, status: Int32, entry id: String) {
+        logKeepers.removeValue(forKey: pid)?.cancel()
+        // Still in the list: it never got as far as listening. (One that did keeps its log for when its row goes: see `remember`.)
+        if let index = stopped.firstIndex(where: { $0.id == id }) {
+            startedLogs[pid] = nil
+            stopped[index].pid = nil
+            stopped[index].note = "It stopped again at once (exit \(status)). Its log has what it said."
+        }
+        requestFullScan()
+    }
+
+    /// Is something answering on that port on this Mac (also something harbor can't list, like another user's server)?
+    nonisolated static func answers(_ port: UInt16) -> Bool {
+        guard let fd = Sock.connect(["127.0.0.1", "::1"], port: port, within: 0.2) else { return false }
+        close(fd)
+        return true
+    }
+
+    /// The log of a server harbor started, while it runs; and of a stopped entry that was tried.
+    func log(for row: PortRow) -> URL? { startedLogs[row.pid] }
 
     // MARK: What a row serves (see Probe)
 

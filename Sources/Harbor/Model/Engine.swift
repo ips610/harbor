@@ -128,6 +128,7 @@ enum Engine {
         }
         Monitor.shared.requestFullScan()
         if gone {
+            Monitor.shared.unwatch(pid: pid)       // the owner stopped it here: nothing to be told about
             watchRestart(name: name, snapshot: snapshot)
             return ActionReport(result: .stopped, message: "Stopped \(label).")
         }
@@ -136,11 +137,16 @@ enum Engine {
     }
 
     /// SIGKILL (or Force Quit for a GUI app), for when stop didn't work.
+    /// (`wait` is the wait for it to go; a test passes its own.)
     static func force(pid: pid_t, workers: [pid_t] = [], name: String, path: String?, label: String,
-                      expect: String? = nil, workerExpect: [pid_t: String] = [:]) async -> ActionReport {
+                      expect: String? = nil, workerExpect: [pid_t: String] = [:],
+                      wait: (pid_t, Double) async -> Bool = ProcessControl.waitForExit) async -> ActionReport {
         if let no = refusal(pid: pid, path: path, name: name) { return no }
         guard identityMatches(pid, expect) else { return changed(label) }
         let snapshot = restartSnapshot(pid: pid, path: path)
+        // From here on harbor is ending it on the owner's click: a bell on it stays quiet, whichever scan sees it go.
+        Monitor.shared.setBusy(pid, true)
+        defer { Monitor.shared.setBusy(pid, false) }
         for w in workers where ProcessControl.isAlive(w) && identityMatches(w, workerExpect[w]) { _ = ProcessControl.send(SIGKILL, to: w) }
         if let app = NSRunningApplication(processIdentifier: pid), app.bundleURL != nil {
             app.forceTerminate()
@@ -148,9 +154,10 @@ enum Engine {
             return ActionReport(result: .notPermitted,
                                 message: "\(name) runs as another user, so macOS needs an administrator password to stop it.")
         }
-        let gone = await ProcessControl.waitForExit(pid, timeout: 3)
+        let gone = await wait(pid, 3)
         Monitor.shared.requestFullScan()
         if gone {
+            Monitor.shared.unwatch(pid: pid)       // the owner stopped it here: nothing to be told about
             watchRestart(name: name, snapshot: snapshot)
             return ActionReport(result: .stopped, message: "Force-stopped \(label).")
         }
@@ -174,6 +181,7 @@ enum Engine {
         let gone = await ProcessControl.waitForExit(appPid, timeout: 6)
         Monitor.shared.requestFullScan()
         if gone {
+            Monitor.shared.unwatch(pid: pid)       // the owner stopped it here: nothing to be told about
             watchRestart(name: name, snapshot: snapshot)
             return ActionReport(result: .stopped, message: "Quit \(name).")
         }
@@ -187,6 +195,8 @@ enum Engine {
         if let no = refusal(pid: pid, path: path, name: name) { return no }
         guard identityMatches(pid, expect) else { return changed(name) }
         let snapshot = restartSnapshot(pid: pid, path: path)
+        Monitor.shared.setBusy(pid, true)      // as in `force`: the owner is ending it here
+        defer { Monitor.shared.setBusy(pid, false) }
         NSApp.activate(ignoringOtherApps: true)
         // Re-check right before the privileged kill: a pid freed since the page
         // was shown must not be killed as root.
@@ -202,6 +212,7 @@ enum Engine {
         let gone = await ProcessControl.waitForExit(pid, timeout: 3)
         Monitor.shared.requestFullScan()
         if gone {
+            Monitor.shared.unwatch(pid: pid)       // the owner stopped it here: nothing to be told about
             watchRestart(name: name, snapshot: snapshot)
             return ActionReport(result: .stopped, message: "Stopped \(name).")
         }

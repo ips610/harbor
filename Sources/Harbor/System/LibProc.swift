@@ -47,6 +47,9 @@ enum LibProc {
         return kp
     }
 
+    /// The user a process runs as.
+    static func owner(_ pid: pid_t) -> uid_t? { kinfo(pid)?.kp_eproc.e_ucred.cr_uid }
+
     /// (uid, parent) if `pid` is a zombie that proc_pidinfo can't see.
     static func zombieViaSysctl(_ pid: pid_t) -> (uid: uid_t, ppid: pid_t)? {
         guard let kp = kinfo(pid), Int32(kp.kp_proc.p_stat) == SZOMB else { return nil }
@@ -120,6 +123,40 @@ enum LibProc {
             i += 1
         }
         return args
+    }
+
+    /// How a process was started, from the same sysctl: the path that was exec'd, its argv,
+    /// and the environment it was given ("NAME=value" strings). Own processes only.
+    static func launch(_ pid: pid_t) -> (exec: String, arguments: [String], environment: [String])? {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 0 else { return nil }
+        var buf = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, 3, &buf, &size, nil, 0) == 0, size > 4 else { return nil }
+        return launch(in: Array(buf[..<size]))
+    }
+
+    /// The same, from the bytes the kernel hands out: argc, the exec path, padding, argc
+    /// strings of argv, then the environment's strings up to the first empty one.
+    static func launch(in buf: [UInt8]) -> (exec: String, arguments: [String], environment: [String])? {
+        guard buf.count > 4 else { return nil }
+        let argc = buf.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
+        guard argc >= 0 else { return nil }
+        var i = 4
+        func next() -> String? {
+            guard i < buf.count else { return nil }
+            let start = i
+            while i < buf.count && buf[i] != 0 { i += 1 }
+            defer { i += 1 }
+            return String(decoding: buf[start..<i], as: UTF8.self)
+        }
+        guard let exec = next(), !exec.isEmpty else { return nil }
+        while i < buf.count && buf[i] == 0 { i += 1 }   // padding
+        var arguments: [String] = [], environment: [String] = []
+        while arguments.count < Int(argc), let argument = next() { arguments.append(argument) }
+        guard arguments.count == Int(argc) else { return nil }
+        while let entry = next(), !entry.isEmpty { environment.append(entry) }
+        return (exec, arguments, environment)
     }
 
     static func cString<T>(_ tuple: T) -> String {

@@ -339,6 +339,14 @@ function qrSvg(rows, label) {
   /* What the server answered when harbor last asked it: its status, and its page's title. */
   .pserved { margin-top: -6px; color: var(--text-2); }
   .left { color: var(--text-2); font-variant-numeric: tabular-nums; }
+  /* Servers that stopped, with a way to start each again. */
+  #stopped { margin-top: 18px; }
+  #stopped:empty { display: none; }
+  .card.was { --pc: var(--muted); }
+  .card.was .prow, .card.was .prow:hover { cursor: default; background: none; }
+  .card.was .pcmd { grid-column: 1 / -1; margin-top: -5px; padding-left: 110px; font: 12.5px/1.5 var(--f-mono); color: var(--muted); overflow-wrap: anywhere; }
+  .bell { display: inline-flex; align-items: center; gap: 6px; }
+  .bell svg { width: 12px; height: 12px; }
   .pname a:hover { text-decoration: underline; text-underline-offset: 3px; }
   .card-acts { display: flex; flex: none; }
   .pacts { display: flex; gap: 6px; align-items: center; }
@@ -487,7 +495,7 @@ function qrSvg(rows, label) {
   }
   dialog::backdrop { background: #0000004d; }
   dialog h3 { font: 650 17px/1.3 var(--f-body); }
-  dialog p { color: var(--text-2); font-size: 14px; margin-top: 8px; overflow-wrap: anywhere; }
+  dialog p { color: var(--text-2); font-size: 14px; margin-top: 8px; overflow-wrap: anywhere; white-space: pre-line; }
   dialog input { width: 100%; margin-top: 14px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); font: 14px var(--f-mono); }
   .dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
   .dlg-actions .btn { min-height: 34px; padding: 0 16px; font-size: 13.5px; }
@@ -503,6 +511,7 @@ function qrSvg(rows, label) {
     .pmain { grid-template-columns: 76px minmax(0, 1fr); }
     .pname { padding-left: 90px; margin-top: 0; }
     .pport { font-size: 19px; }
+    .card.was .pcmd { padding-left: 90px; }
     .pacts { justify-content: flex-end; }
     .pline, .pdetails, .ptunnel, .qrs { padding-left: 18px; }
     .qr { margin-left: 18px; }
@@ -558,7 +567,7 @@ function qrSvg(rows, label) {
 
 <div class="alarm" id="alarm" hidden><div class="wrap"><p id="alarm-text"></p><span id="alarm-act"></span></div></div>
 <div id="notices"></div>
-<div class="notice update" id="update-notice" hidden><div class="wrap"><p id="update-text"></p><a class="btn" id="update-get" target="_blank" rel="noopener">Get it</a></div></div>
+<div class="notice update" id="update-notice" hidden><div class="wrap"><p id="update-text"></p><a class="btn" id="update-get" target="_blank" rel="noopener">Get it</a><button class="btn" id="update-now" type="button" hidden>Update now</button></div></div>
 <div class="offline" id="offline" hidden><div class="wrap" id="offline-text">__APP__ isn't answering. Open it from the menu bar or Applications, then reload this page.</div></div>
 
 <main class="wrap">
@@ -582,6 +591,7 @@ function qrSvg(rows, label) {
       </div>
     </div>
     <div class="cards" id="cards"></div>
+    <div class="cards" id="stopped"></div>
     <p class="hidden-note" id="hidden-note"></p>
   </section>
 
@@ -889,8 +899,13 @@ function renderAlarm() {
 function renderUpdate() {
   const u = state.update;
   $('update-notice').hidden = !u.newer;
-  $('update-text').textContent = u.newer ? `__app__ ${u.latest} is out. Download it, unzip it and drag it into Applications over this one.` : '';
+  // With "Update now" there, the link beside it is the release's page; without it, the link is how to get it.
+  $('update-text').textContent = !u.newer ? '' : u.problem ? `__app__ ${u.latest} is out. ${u.problem}`
+    : u.canUpdate ? `__app__ ${u.latest} is out.` : `__app__ ${u.latest} is out. Download it, unzip it and drag it into Applications over this one.`;
   $('update-get').href = u.url;
+  $('update-now').hidden = !u.canUpdate;
+  $('update-now').disabled = !!u.updating;
+  $('update-now').textContent = u.updating ? 'Updating…' : 'Update now';
   const note = u.checking ? 'Checking GitHub…' : u.failed ? "GitHub didn't answer. Try again later."
     : u.newer ? `${u.latest} is out` : u.latest ? 'up to date' : '';
   swap('update-row', JSON.stringify([u.current, note, u.checking]), () => [
@@ -933,7 +948,7 @@ function renderPorts(ports, all) {
     p.tunnel, sharing.get(p.id), qrShown.has(p.port), state.share.available, lanShown.has(p.id), p.lan, p.lanBonjour, p.net,
     p.lanReachable, p.loopbackOnly, p.macos, state.network, p.host, p.local, lanAsk.get(p.id), lanSeen.get(p.id),
     // What a container is, what the row last answered, and how long a share is being asked to last or has left.
-    p.container, p.nokill, p.served, lanFor.has(p.id) ? String(lanFor.get(p.id)) : '', state.lasts])]);
+    p.container, p.nokill, p.served, lanFor.has(p.id) ? String(lanFor.get(p.id)) : '', state.lasts, p.watched, p.log])]);
   swap('cards', group + query + JSON.stringify(shape), () => {
     $('cards').className = group === 'project' ? 'cards' : 'stack-list';
     if (!ports.length) {
@@ -942,6 +957,47 @@ function renderPorts(ports, all) {
     }
     return model.map((g) => g.kind === 'card' ? card(g) : section(g));
   });
+  swap('stopped', JSON.stringify([state.stopped.map((s) => [s.id, s.name, s.port, s.folder, s.command, uptime(s.ago), s.note, s.log]), [...busyStart]]),
+    () => state.stopped.length ? stoppedCard(state.stopped) : []);
+}
+
+// Servers harbor saw stop. Each can be started again: the request names the entry and nothing else.
+const busyStart = new Set();
+function stoppedCard(list) {
+  const pill = (text, cls, onclick, extra) => el('button', { class: 'pl ' + (cls || ''), text, onclick, ...(extra || {}) });
+  return el('article', { class: 'card was' },
+    el('div', { class: 'card-head' }, el('div', { class: 'card-title' }, el('h3', { text: 'Stopped' }),
+      el('p', { class: 'card-path mono', text: 'Servers that were running here. Started again, a server has no Terminal: its output goes to a log.' }))),
+    el('ul', { class: 'rows' }, list.map((s) => el('li', {},
+      el('div', { class: 'prow' },
+        el('div', { class: 'pmain' }, el('span', { class: 'pport', text: ':' + s.port }),
+          el('div', { class: 'ptext' }, el('div', { class: 'ptitle' }, el('span', { class: 't', text: s.name })),
+            el('div', { class: 'psub', text: s.folder + ' · stopped ' + uptime(s.ago) + ' ago' }))),
+        el('div', { class: 'pacts' },
+          busyStart.has(s.id) ? el('span', { class: 'busy' }, el('i', { class: 'spinner' }), 'starting')
+            : pill('start again', 'open', () => startAgain(s), { title: 'Run it again, as it was started' }),
+          s.log ? pill('show log', '', async () => { const r = await api('/api/action', { op: 'show-log', id: s.id }).catch((e) => toast(e.message)); if (r) toast(r.message); }) : null),
+        el('div', { class: 'pcmd', text: s.command })),
+      s.note ? el('p', { class: 'pline', text: s.note }) : null))));
+}
+async function startAgain(s) {
+  if (!await ask(`Start ${s.name} again?`, s.question, 'Start', false)) return;
+  busyStart.add(s.id); render();
+  try { const r = await api('/api/action', { op: 'start-again', id: s.id }); toast(r.message); }
+  catch (e) { toast(e.message); }
+  busyStart.delete(s.id);
+  poll();
+}
+// A small bell: tell me when this one server stops.
+function bell(on) {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 16 16'); svg.setAttribute('aria-hidden', 'true');
+  const path = document.createElementNS(NS, 'path');
+  path.setAttribute('d', 'M8 1.5a4.5 4.5 0 0 0-4.5 4.5c0 3-1.5 4-1.5 5.5h12c0-1.5-1.5-2.5-1.5-5.5A4.5 4.5 0 0 0 8 1.5zM6.5 13a1.5 1.5 0 0 0 3 0');
+  path.setAttribute('fill', on ? 'currentColor' : 'none'); path.setAttribute('stroke', 'currentColor'); path.setAttribute('stroke-width', '1.3'); path.setAttribute('stroke-linejoin', 'round');
+  svg.append(path);
+  return svg;
 }
 
 function card(g) {
@@ -1044,6 +1100,11 @@ function details(p) {
   add('Address', p.address);
   add('URL', p.url, el('button', { class: 'pl', text: 'copy', onclick: () => copyText(p.url) }));
   if (p.memory != null) add('Memory', bytes(p.memory));
+  if (!p.system) add('When it stops', p.watched ? 'you get a notification' : 'nothing is said',
+    el('button', { class: 'pl bell' + (p.watched ? ' open' : ''), 'aria-pressed': String(!!p.watched), title: p.watched ? 'Stop watching this server' : 'Tell me when this server stops',
+      onclick: async () => { const r = await act('watch', p.pid, { port: p.port, on: !p.watched }); if (r) toast(r.message); poll(); } }, bell(p.watched), p.watched ? 'watching' : 'tell me'));
+  if (p.log) add('Output', 'in a log file: __app__ started it, so it has no Terminal',
+    el('button', { class: 'pl', text: 'show log', onclick: async () => { const r = await act('show-log', p.pid); if (r) toast(r.message); } }));
   if (p.hint) add('Note', p.hint);
   return el('dl', { class: 'pdetails' }, items);
 }
@@ -1490,6 +1551,14 @@ $('login-item').addEventListener('change', async (e) => {
 });
 window.addEventListener('resize', () => { if (state) renderHero(state.ports.filter((p) => !p.hidden)); });
 $('refresh').addEventListener('click', () => poll());
+// Update now: asked first, and only ever from this click.
+$('update-now').addEventListener('click', async () => {
+  const u = state && state.update;
+  if (!u || !u.canUpdate || u.updating) return;
+  if (!await ask(`Update __app__ to ${u.latest}?`, u.question || '', 'Update', false)) return;
+  try { const r = await api('/api/action', { op: 'update-now' }); toast(r.message); } catch (e) { toast(e.message); }
+  poll();
+});
 
 redeem().then(poll);
 </script>

@@ -113,7 +113,8 @@ Only the latest release is supported. If you're on an older one, update first.
   fresh each time; harbor never sees the password. macOS's own processes are
   never touched.
 - Sharing a port runs `cloudflared` (or `ngrok`) from a fixed path, only when
-  you ask, and the tunnel stops when harbor does. harbor never installs anything.
+  you ask, and the tunnel stops when harbor does. harbor never installs
+  anything but its own update (see Update now below).
 - A public link, and a server on the network, can be given 30 minutes or an
   hour. The deadline is a time on the clock, so a Mac that slept through it
   stops the share when it wakes. Only your own "+30 min" moves it, and a
@@ -164,6 +165,103 @@ Only the latest release is supported. If you're on an older one, update first.
   `/usr/local/bin`, or in `~/.local/bin` when that one can't be written to.
   No administrator password. A file or link called `harbor` that isn't
   harbor's own is never replaced or removed.
+- The bell ("tell me when it stops") is per server and off until you click
+  it. It is pinned to the process, its start time and the port, like a share.
+  The notification's text is harbor's own name for the server and the port,
+  nothing the server sent. Bells are kept in memory only.
+- Start again. While one of your own servers runs, harbor keeps how it was
+  started: its program, its arguments as an array, its folder and its
+  environment. All of it stays in harbor's memory: never in a file, in the
+  settings, in the note for the command line or in a log, and the
+  environment's values are never shown and never sent to the page. At most 20
+  stopped servers, each for 24 hours, all gone when harbor quits. Never
+  remembered: macOS's own processes, another user's, Docker and its
+  containers, harbor itself and what it runs for a public link, an app's
+  helpers, anything harbor wouldn't let you stop, and any process that runs in
+  a sandbox (a coding agent's, say): harbor would start it outside that
+  sandbox.
+- The arguments, the environment and the path that was exec'd come from the
+  process's own memory, so the process could have written anything there.
+  Which program runs is the kernel's own word instead. The exec'd path is used
+  only when it is a whole path that leads to that same file (a virtualenv's
+  python link); one that leads anywhere else is not remembered at all.
+- A request to start one names the list's entry by an id harbor made up for
+  this run, and nothing else: no command, path or argument is read from it.
+  It needs the signed-in page (both halves of the session), a POST and
+  harbor's own header, like every other action. A network visitor's session
+  is no session there: the network listener has no path to harbor's own calls
+  at all. One start at a time: while the process harbor started for an entry
+  is alive, another request for it starts nothing.
+- Before it starts, harbor asks and shows what will run: the program by where
+  it really is, on a line of its own (never by the name the process gave
+  itself); every argument, in quotes whenever it is empty or has a space, a
+  quote or anything a shell would read, with characters that can't be seen
+  shown as a mark; and when the text is cut, by how many characters. It says
+  the environment comes back as it was, and names (names only) any of these
+  that are set, because they make a program load code: `NODE_OPTIONS`,
+  `PYTHONSTARTUP`, `PYTHONPATH`, `BASH_ENV`, `ENV`, `RUBYOPT`, `PERL5OPT`,
+  `JAVA_TOOL_OPTIONS`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`,
+  `LD_PRELOAD`. If the program's file changed since harbor saw it run (a
+  rebuild does that), it says so; that is said, not refused.
+- It is started with the remembered program, arguments, folder and
+  environment directly, never through a shell and never from text that is
+  parsed. harbor refuses when the program or the folder is gone, is no longer
+  a regular file or a folder, or now really is somewhere else (a link that
+  wasn't there, or one that leads elsewhere), and when anything is already
+  listening on that port.
+- It also refuses when another account could have swapped the program or its
+  folder. From each of them up to `/`, every step has to be yours or root's,
+  not writable by everyone (a folder with the sticky bit, like `/tmp`, apart),
+  and not writable by a group other than `admin` or `wheel`. `staff` is every
+  account on the Mac, so staff-writable is refused; an admin can become root
+  anyway, and Homebrew's folders are admin's. This is about the program and
+  the working folder only. The scripts and other files the program reads are
+  not looked at.
+- A server started this way writes to `~/Library/Logs/harbor/<name>-<port>.log`
+  (mode 0600, in a folder of mode 0700). The name in it is one of harbor's own
+  labels. The folder has to be a real folder of yours: a link there is
+  refused, not followed. Whatever is at the log's path is unlinked and the log
+  is made new, so a link or a second name for another file put there never
+  gets that file emptied. harbor empties the log when it passes 5 MB. The
+  server writes to the file itself and keeps running when harbor quits, so
+  the 5 MB limit holds only while harbor runs.
+- Update now runs only on your click, and is offered only to the copy in
+  Applications itself, in a folder you can write to, and only when macOS's
+  Security framework says that copy is signed with a certificate (not ad-hoc,
+  and with certificates in its signature). A copy with a throwaway signature
+  has nothing to hold a download to, so it is never offered there. It doesn't
+  start while harbor is in the middle of stopping something for you.
+- What decides whether a download is installed is its signature. harbor asks
+  macOS's Security framework, inside its own process, whether the unpacked app
+  meets the designated requirement of the harbor that is running (every
+  architecture, nested code, strict). So the new app has to be signed with the
+  same key. It also has to have the same bundle id, the version of the release
+  that was asked for, and a version strictly newer than the running one.
+- A zip also carries who may write: access lists, write permission for a group
+  or for everyone, set-user-id bits. None of that is covered by the signature,
+  so before the check harbor removes all of it from what was unpacked, item by
+  item and never through a link. What gets installed is writable by you only.
+- Before that: the file comes over https from
+  `github.com/ips610/harbor/releases/download/v<version>/`, with a version
+  made of digits and dots and one of two fixed file names. A redirect is
+  followed only to https on port 443 of `github.com` or of a host ending in
+  `.githubusercontent.com`. More than 30 MB is refused. The zip's SHA-256 has
+  to match the release's `SHA256SUMS`; that only catches a broken download,
+  since whoever could change the zip could change the list.
+- The zip is unpacked by macOS's `ditto` into a new folder of mode 0700 beside
+  the app. Three things protect here: `ditto` keeps what it writes inside that
+  folder; what came out has to be exactly one real folder called
+  `harbor.app`; and the signature check above. harbor ends `ditto` when it has
+  written more than 200 MB or has run for 60 seconds. harbor also reads the
+  zip's own list of contents first and refuses an odd one early, but that
+  list is only what the zip says about itself, and protects nothing.
+- The swap is two renames. If the new app can't be put in place, the old one
+  is put back. The old app then goes to the Trash. If the Trash won't take
+  it, it stays where it is, in that folder beside the app, and the new copy
+  says once exactly where. The download and what was unpacked from it are
+  always deleted. Any failure before the swap leaves the installed app
+  exactly as it was, and harbor says why. Nothing from the release (a name, a
+  version, its notes) is passed to a shell or shown as markup.
 
 ## Verifying a download
 

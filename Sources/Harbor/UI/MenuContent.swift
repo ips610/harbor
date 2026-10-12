@@ -79,13 +79,22 @@ struct MenuContent: View {
                     Text("\(AppInfo.name) \(latest) is out").font(.system(size: 12))
                     Spacer()
                     Button("Get it") { updates.download() }.controlSize(.small)
+                    // Beside the link, where harbor can hold a download to its own signing key (see Updater).
+                    if updates.canUpdateNow {
+                        Button(updates.updating ? "Updating…" : "Update now") { askUpdate(latest) }.controlSize(.small).disabled(updates.updating)
+                    }
                 }
                 .padding(.horizontal, 12)
-                .padding(.bottom, 8)
+                .padding(.bottom, updates.updateProblem == nil ? 8 : 2)
+                if let problem = updates.updateProblem {
+                    Text(verbatim: problem).font(.system(size: 11)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.bottom, 8)
+                }
             }
             Divider()
             if rows.isEmpty {
                 emptyState
+                stoppedRows       // nothing is listening: all the more reason to show what stopped
             } else {
                 // A plain VStack: ~20 rows don't need laziness, and it keeps the
                 // scroll position steady while rows refresh.
@@ -102,6 +111,7 @@ struct MenuContent: View {
                         }
                     }
                     .padding(.vertical, 4)
+                    stoppedRows
                 }
                 .defaultScrollAnchor(.top)
                 .frame(maxHeight: DebugCLI.menuHeight ?? 430)
@@ -313,6 +323,46 @@ struct MenuContent: View {
         var id: String { (rows.first?.groupKey ?? "") + title }
     }
 
+    /// Servers that stopped, each with a way to start it again as it was.
+    @ViewBuilder
+    private var stoppedRows: some View {
+        if !monitor.stopped.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                SectionTitle(title: "Stopped", count: monitor.stopped.count, color: nil)
+                ForEach(monitor.stopped) { entry in
+                    HStack(spacing: 8) {
+                        Text(verbatim: ":\(entry.port)").font(.system(size: 13, weight: .semibold, design: .monospaced)).foregroundStyle(.secondary).frame(width: 58, alignment: .leading)
+                            .padding(.leading, 12)      // in line with the ports above, which have a coloured bar before them
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(verbatim: entry.name).font(.system(size: 13)).lineLimit(1)
+                            Text(verbatim: entry.note ?? Restart.command(entry.launch)).font(.system(size: 11)).foregroundStyle(entry.note == nil ? Color.secondary : Color.orange)
+                                .lineLimit(2).truncationMode(.middle)
+                        }
+                        Spacer(minLength: 4)
+                        if let log = entry.log { Pill(title: "log", help: "Show what it printed") { NSWorkspace.shared.open(log) } }
+                        Pill(title: "start again", style: .open, help: "Run it again, as it was started") { askStartAgain(entry) }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 5)
+                }
+            }
+            .padding(.bottom, 4)
+        }
+    }
+
+    /// Shows the command and the folder, and starts it on a yes.
+    private func askStartAgain(_ entry: Restart.Stopped) {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.window.appearance = monitor.appearance.nsAppearance
+        alert.messageText = "Start \(entry.name) again?"
+        alert.informativeText = Restart.question(entry)
+        alert.addButton(withTitle: "Start")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        monitor.flash(monitor.startAgain(entry.id).message)
+    }
+
     private func sections(_ rows: [PortRow]) -> [MenuSection] {
         switch grouping {
         case .flat:
@@ -357,6 +407,18 @@ struct MenuContent: View {
         monitor.refreshInterval = value
         if typed < 5 { monitor.flash("Raised to 5 seconds, the shortest interval.") }
         else if typed > 3600 { monitor.flash("Capped at 3600 seconds (one hour).") }
+    }
+
+    /// Says what an update does (and what ends with it), and starts it on a yes.
+    private func askUpdate(_ latest: String) {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.window.appearance = monitor.appearance.nsAppearance
+        alert.messageText = "Update \(AppInfo.name) to \(latest)?"
+        alert.informativeText = Updates.updateQuestion(version: latest, sharing: !monitor.lanShares.isEmpty || !Tunnels.shared.active.isEmpty)
+        alert.addButton(withTitle: "Update")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn, let why = updates.updateNow() { monitor.flash(why) }
     }
 
     /// Says exactly what will be done, does it on a yes, and says what was done.
@@ -891,6 +953,23 @@ private struct PortLine: View {
             }
             if let answer = monitor.served[row.id] {
                 DetailLine(label: "Serves", value: answer.line) { EmptyView() }
+            }
+            if !(row.isSystem || row.isSelf) {
+                // The bell: tell me when this one server stops.
+                let watching = monitor.isWatched(row)
+                HStack(spacing: 6) {
+                    Image(systemName: watching ? "bell.fill" : "bell").font(.system(size: 10)).foregroundStyle(watching ? Tone.openInk : .secondary)
+                    Text(verbatim: watching ? "A notification when it stops" : "Tell me when it stops").font(.system(size: 11)).foregroundStyle(.secondary)
+                    Spacer(minLength: 4)
+                    Pill(title: watching ? "watching" : "tell me", style: watching ? .open : .plain, help: watching ? "Stop watching this server" : "A notification when this server stops") {
+                        monitor.setWatch(row, !watching)
+                    }
+                }
+            }
+            if let log = monitor.log(for: row) {
+                DetailLine(label: "Output", value: Fmt.path(log.path)) {
+                    Pill(title: "show log", help: "\(AppInfo.name) started it, so it has no Terminal") { NSWorkspace.shared.open(log) }
+                }
             }
             let canShare = monitor.isNetworkRow(row), shared = monitor.lanShares[row.id] != nil
             // Its two names, one above the other, each with its own rename: on this Mac, and on the network.

@@ -23,6 +23,8 @@ import SwiftUI
 ///       --expand PORT          with --demo-menu: that row starts with its details open
 ///       --choosing share|network  with --expand: that row is asking "for how long?"
 ///       --menu-height N        with --demo-menu: the list may grow that tall, to show a whole open row
+///       --stopped              with --fixture: two made-up servers that stopped, and the bell on :3000
+///       --update VERSION       a made-up newer release, with "Update now" beside it (it does nothing)
 ///       --fixture [shared|both|servers|docker|all] made-up ports instead of this Mac's, for snapshots; "shared"
 ///                              also shows one of them as on the network (nothing is opened), "both"
 ///                              adds a public link to it, "servers" has both of a project's servers
@@ -79,6 +81,21 @@ enum DebugCLI {
         if servers {
             OnNetwork.shared.withVisitors { v in for device in ["192.168.1.31", "192.168.1.47"] { _ = v.signIn(to: "storefront", project: project, from: device, now: Date()) } }
         }
+    }
+
+    /// Two made-up servers that stopped (one tried again, with what became of it), and the bell on :3000.
+    @MainActor
+    private static func useStoppedFixture() {
+        func launch(_ folder: String, _ arguments: [String]) -> Restart.Launch {
+            Restart.Launch(executable: "/opt/homebrew/bin/\(arguments[0])", resolved: "/opt/homebrew/bin/\(arguments[0])", arguments: arguments, environment: [:],
+                           folder: folder, folderResolved: folder)
+        }
+        Monitor.shared.useStopped([
+            Restart.Stopped(id: "demo-docs", name: "docs", port: 4000, launch: launch("/Users/sam/code/docs", ["node", "node_modules/.bin/vite", "--port", "4000"]), at: Date().addingTimeInterval(-240)),
+            Restart.Stopped(id: "demo-worker", name: "notes-worker", port: 8001, launch: launch("/Users/sam/code/notes-api", ["python3", "-m", "uvicorn", "worker:app", "--port", "8001"]),
+                            at: Date().addingTimeInterval(-5400), log: URL(fileURLWithPath: "/Users/sam/Library/Logs/harbor/notes-worker-8001.log"), note: "It stopped again at once (exit 1). Its log has what it said."),
+        ])
+        if let row = Monitor.shared.ports.first(where: { $0.port == 3000 }) { Monitor.shared.setWatch(row, true) }
     }
 
     /// The made-up Mac. `docker` adds what a made-up Docker publishes.
@@ -277,12 +294,15 @@ enum DebugCLI {
     static func afterLaunch() -> Bool {
         let snapshotPath = value(after: "--snapshot")
         if args.contains("--bare-names") { Monitor.shared.doorIsOurs = true }  // not the real door: for looking only
-        if args.contains("--fixture") {
+        if wants("--fixture") {
             let how = value(after: "--fixture")
             useFixture(shared: how == "shared" || how == "both" || how == "all", servers: how == "servers", docker: how == "docker" || how == "all")
             // "both": on the network, and with a (made-up) public link that is ready. "all": that, and Docker's containers too.
             if how == "both" || how == "all" { Tunnels.shared.useFixture(port: 3000, title: "storefront", url: "https://quiet-harbor-demo.trycloudflare.com") }
         }
+        // --stopped: two made-up servers that stopped, and the bell on a third. --update VERSION: a made-up newer release.
+        if wants("--stopped") { useStoppedFixture() }
+        if wants("--update"), let version = value(after: "--update") { Updates.shared.useMadeUp(latest: version) }
         if args.contains("--port-notes") { Monitor.shared.pagePort = 8471; Monitor.shared.port80Taken = true }
         if args.contains("--serve") {
             // Start the page server and print its URL without opening a browser.
@@ -429,6 +449,10 @@ enum DebugCLI {
 
     /// --no-open (or --serve): never open the browser, only log the page URL.
     static var noOpen: Bool { args.contains("--no-open") || args.contains("--serve") }
+
+    /// Was this made-up thing asked for, in a debug run? Never in the real app: `harbor --fixture` on its own is the
+    /// installed copy with its own settings and agents, and made-up ports (or a made-up release) have no place there.
+    static func wants(_ flag: String) -> Bool { isDebugRun && args.contains(flag) }
 
     /// Any test flag: run without a menu bar icon and alongside an installed copy.
     static var isDebugRun: Bool {

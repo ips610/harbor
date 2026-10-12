@@ -31,6 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = LAN.firewallOn  // warm the cached firewall state in the background
         stopTunnelsOnSignals()
         Monitor.shared.start()
+        // An update that couldn't put the old copy in the Trash left a line about it: said once, here.
+        if let left = Updater.takeNote() { Monitor.shared.notify(left) }
         // Names: the proxy, and the port-80 door that lets them work without a port.
         Proxy.shared.start()
         Monitor.shared.checkDoor()

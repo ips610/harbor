@@ -113,6 +113,9 @@ enum WebAPI {
                 "nokill": n(Docker.owns(path: r.path) ? Docker.noKill(r.container) : nil),
                 // What it answered on "/" when it was last looked at: plain text, or nothing yet.
                 "served": n(m.served[r.id]?.line),
+                // The bell is set on this one; and harbor started it itself, so its output is in a log.
+                "watched": m.isWatched(r),
+                "log": m.log(for: r) != nil,
                 "app": n(r.appName),
                 "framework": n(r.framework),
                 "category": r.category.rawValue,
@@ -178,6 +181,12 @@ enum WebAPI {
             "notices": m.notices.map { ["id": $0.id, "text": $0.text] },
             // A looked-at row's answer is still on its way: the page asks again in a moment.
             "asking": m.isAsking,
+            // Servers that stopped and can be started again: what they were called, where, and their command as
+            // text. Never the environment they ran with, and nothing a request could be built from but the id.
+            "stopped": m.stopped.map { s in
+                ["id": s.id, "name": s.name, "port": Int(s.port), "folder": Fmt.path(Restart.visible(s.launch.folder)), "command": Restart.command(s.launch),
+                 "question": Restart.question(s), "ago": max(0, now.timeIntervalSince(s.at)), "note": n(s.note), "log": s.log != nil] as [String: Any]
+            },
             "share": ["available": tool != nil, "provider": n(tool?.name), "hint": hint.text, "command": hint.command],
             // How long a share lasts: the choices, and the one made last time for each kind.
             "lasts": ["public": Lasting.remembered(.link), "network": Lasting.remembered(.network),
@@ -186,6 +195,9 @@ enum WebAPI {
             "update": [
                 "current": up.current, "latest": n(up.latest), "newer": up.newer, "url": up.url.absoluteString,
                 "checking": up.checking, "failed": up.failed,
+                // "Update now": whether it is offered here, whether one is under way, why the last one stopped, and what is asked first.
+                "canUpdate": up.canUpdateNow, "updating": up.updating, "problem": n(up.updateProblem),
+                "question": n(up.latest.map { Updates.updateQuestion(version: $0, sharing: !m.lanShares.isEmpty || !tunnels.isEmpty) }),
             ],
             "network": ["ip": n(lanIP), "name": n(bonjour), "firewall": LAN.firewallOn, "asks": Lan.systemAsks(firewall: LAN.firewallOn), "plain": Lan.plainHttp],
             "portNotes": m.portNotes,
@@ -273,6 +285,28 @@ enum WebAPI {
             logAction("unshare", pid: 0, name: "", port: port)
             Tunnels.shared.stop(p)
             return done(200, ["result": "ok", "message": "Stopped sharing :\(port)."])
+        case "start-again":
+            // The entry's id and nothing else: what is run is what harbor itself remembers of that server.
+            guard let id = obj["id"] as? String else { return done(400, ["error": "Send the server's id."]) }
+            let m = Monitor.shared
+            let entry = m.stopped.first { $0.id == id }
+            logAction("start-again", pid: 0, name: entry?.name ?? "", port: Int(entry?.port ?? 0))
+            let result = m.startAgain(id)
+            return done(result.started ? 200 : 400, result.started ? ["result": "ok", "message": result.message] : ["error": result.message])
+        case "show-log":
+            // The log of a server harbor started: by the stopped entry's id, or by the pid of one that is running.
+            let m = Monitor.shared
+            let log = (obj["id"] as? String).flatMap { id in m.stopped.first { $0.id == id }?.log }
+                ?? (obj["pid"] as? Int).flatMap { pid in m.ports.first { Int($0.pid) == pid }.flatMap(m.log(for:)) }
+            guard let log, !m.isMadeUp else { return done(400, ["error": "There is no log for that."]) }
+            guard NSWorkspace.shared.open(log) else { return done(400, ["error": "The log isn't there any more."]) }
+            return done(200, ["result": "ok", "message": "Opened \(Fmt.path(log.path))."])
+        case "update-now":
+            // Only ever from here, on the owner's click on the signed-in page. What is downloaded and from where is harbor's own business (see Updater).
+            logAction("update-now", pid: 0, name: AppInfo.name, port: 0)
+            // The answer is what was really done: "Updating…" only when an update is under way.
+            if let why = Updates.shared.updateNow() { return done(400, ["error": why]) }
+            return done(200, ["result": "ok", "message": "Updating…"])
         case "check-update":
             // The page polls quickly while "checking" is true.
             Updates.shared.check(force: true)
@@ -357,6 +391,12 @@ enum WebAPI {
             if let problem = m.makeMain(row) { return done(400, ["error": problem]) }
             logAction("main", pid: Int(pid), name: row.processName, port: Int(row.port))
             return done(200, ["result": "ok", "message": "\(m.names.base[Names.key(row)] ?? row.title)\(Names.suffix) opens port \(row.port) now."])
+        case "watch":
+            // The bell on one server: tell me when it stops.
+            guard let row = lanRow, !row.isSystem, !row.isSelf else { return done(400, ["error": "Not a port."]) }
+            let on = (obj["on"] as? Bool) ?? false
+            m.setWatch(row, on)
+            return done(200, ["result": "ok", "message": on ? "You'll be told when \(m.names.byRow[row.id] ?? row.title) stops." : "The bell is off."])
         case "more":
             // Half an hour more for a public link or a server on the network that has a deadline. Only ever asked for by its owner, here.
             guard let row = lanRow else { return done(400, ["error": "Not a port."]) }
