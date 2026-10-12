@@ -62,7 +62,8 @@ Only the latest release is supported. If you're on an older one, update first.
     `Origin`, or with no `Origin` the start of its `Referer`, is exactly a
     shared name of the same project. `null`, another site, another project's
     name, or neither header: the sign-in page. So another website open on a
-    signed-in device can't read or call the project's other servers;
+    signed-in device can't read or call the project's other servers, unless the
+    project's own page sends the browser there (an open redirect in it, say);
   - the session is in use from that address: its cookie came from there in the
     last 15 minutes, or a connection it came with is still open. Requests let
     in this way don't count as use.
