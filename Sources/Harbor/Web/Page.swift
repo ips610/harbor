@@ -336,6 +336,9 @@ function qrSvg(rows, label) {
   .pname { grid-column: 1 / -1; margin-top: -5px; padding-left: 110px; font: 12.5px/1.5 var(--f-mono); color: var(--muted);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .pname a { color: var(--open-ink); text-decoration: none; }
+  /* What the server answered when harbor last asked it: its status, and its page's title. */
+  .pserved { margin-top: -6px; color: var(--text-2); }
+  .left { color: var(--text-2); font-variant-numeric: tabular-nums; }
   .pname a:hover { text-decoration: underline; text-underline-offset: 3px; }
   .card-acts { display: flex; flex: none; }
   .pacts { display: flex; gap: 6px; align-items: center; }
@@ -646,6 +649,7 @@ const sharing = new Map();  // row id -> { kind: confirm|hint, text, command }
 const qrShown = new Set();  // ports showing a QR code
 const lanShown = new Set(); // rows showing "open on another device"
 const lanAsk = new Map();   // row id -> the password suggested while "on network" is being turned on
+const lanFor = new Map();   // row id -> how long it is to stay on the network: null while that is being chosen, then the seconds
 const lanSeen = new Map();  // row id -> the network password, while "show" is on
 const swapHist = [];        // swap in use, one sample per poll, only while the page is open
 const qrCache = new Map();
@@ -708,14 +712,26 @@ async function gate() {
   if (!key) banner(lines, lines[0] === QUIT_TEXT ? 'Quit' : 'Signed out');
 }
 
+// The rows on screen right now. Only those are asked what they serve, and harbor itself
+// decides how many at a time and how often; a hidden tab doesn't poll at all.
+function onScreen() {
+  const ids = [];
+  for (const li of document.querySelectorAll('li[data-id]')) {
+    const r = li.getBoundingClientRect();
+    if (r.height > 0 && r.bottom > 0 && r.top < innerHeight) ids.push(li.dataset.id);
+  }
+  return ids.slice(0, 40);
+}
+let seen = '';
 async function poll() {
   clearTimeout(timer);
   timer = null;
   if (document.visibilityState !== 'visible') return;
   // No key yet: don't ask for data, ask harbor for a signed-in tab.
   if (!key) return gate();
+  seen = onScreen().join(',');
   try {
-    const next = await api('/api/state');
+    const next = await api('/api/state' + (seen ? '?see=' + seen : ''));
     if (next.quit) {
       // harbor was quit from its menu: stop asking, or launchd would start it again.
       banner([QUIT_TEXT], 'Quit');
@@ -731,10 +747,18 @@ async function poll() {
     if (e.message === 'session') return gate();
     banner(["__APP__ isn't answering. Open it from the menu bar or Applications, then reload this page."], 'Not answering');
   }
-  // Quicker while an update check runs, so its answer shows up straight away.
-  const wait = state && state.update && state.update.checking ? 1000 : pollMs();
+  // Quicker while an update check runs, so its answer shows up straight away; and while a
+  // row's answer is on its way, or rows have come on screen that harbor hasn't been told of.
+  const soon = state && (state.asking || onScreen().join(',') !== seen);
+  const wait = state && state.update && state.update.checking ? 1000 : soon ? 1200 : pollMs();
   if (document.visibilityState === 'visible' && wait > 0) timer = setTimeout(poll, wait);
 }
+// Scrolled to other rows: tell harbor once the scrolling has stopped.
+let scrolled = null;
+window.addEventListener('scroll', () => {
+  clearTimeout(scrolled);
+  scrolled = setTimeout(() => { if (state && onScreen().join(',') !== seen) poll(); }, 400);
+}, { passive: true });
 window.addEventListener('focus', () => poll());
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') poll();
@@ -757,15 +781,17 @@ function visiblePorts() {
     [p.name, p.title, p.framework, p.project, p.command, p.app, p.host].some((v) => v && v.toLowerCase().includes(q)));
 }
 
-function groupKey(p) { return p.projectPath ? 'p:' + p.projectPath : 'a:' + (p.app || p.name); }
+function groupKey(p) { return p.group || (p.projectPath ? 'p:' + p.projectPath : 'a:' + (p.app || p.name)); }
 
 function groups(ports) {
   const map = new Map();
   for (const p of ports) {
     const key = groupKey(p);
     if (!map.has(key)) map.set(key, {
-      key, rows: [], rank: p.isProject ? 0 : p.projectPath ? 1 : 2,
-      title: p.project || p.app || p.name, path: p.projectPath, folder: p.projectPath ? p.folder : null,
+      key, rows: [], rank: p.isProject ? 0 : p.projectPath || (p.container && p.container.project) ? 1 : 2,
+      title: p.groupTitle || p.project || p.app || p.name, path: p.projectPath, folder: p.projectPath ? p.folder : null,
+      // Docker's: a compose project, or the containers that belong to none.
+      sub: p.container ? (p.container.project ? 'Docker Compose project' : 'Docker containers') : null,
     });
     map.get(key).rows.push(p);
   }
@@ -905,7 +931,9 @@ function renderPorts(ports, all) {
   const shape = model.map((g) => [g.key, g.rows.map((p) => [p.id, p.title, p.name, p.framework, p.command, p.address,
     uptime(p.uptime), bytes(p.memory), p.workers, p.busy, p.system, p.hint, phase.get(p.id), opened.has(p.id),
     p.tunnel, sharing.get(p.id), qrShown.has(p.port), state.share.available, lanShown.has(p.id), p.lan, p.lanBonjour, p.net,
-    p.lanReachable, p.loopbackOnly, p.macos, state.network, p.host, p.local, lanAsk.get(p.id), lanSeen.get(p.id)])]);
+    p.lanReachable, p.loopbackOnly, p.macos, state.network, p.host, p.local, lanAsk.get(p.id), lanSeen.get(p.id),
+    // What a container is, what the row last answered, and how long a share is being asked to last or has left.
+    p.container, p.nokill, p.served, lanFor.has(p.id) ? String(lanFor.get(p.id)) : '', state.lasts])]);
   swap('cards', group + query + JSON.stringify(shape), () => {
     $('cards').className = group === 'project' ? 'cards' : 'stack-list';
     if (!ports.length) {
@@ -924,7 +952,7 @@ function card(g) {
     el('div', { class: 'card-title' },
       el('h3', { text: g.title }),
       mac ? el('p', { class: 'card-badge' }, macGlyph(), 'macOS service')
-        : el('p', { class: 'card-path mono', text: g.path || 'App or service' }),
+        : el('p', { class: 'card-path mono', text: g.path || g.sub || 'App or service' }),
       frameworks.length || onNetwork ? el('div', { class: 'chips' }, frameworks.map((f) => el('span', { class: 'chip', text: f })),
         onNetwork ? el('span', { class: 'chip warn', text: 'on network', title: onNetwork.local.link }) : null) : null),
     el('span', { class: 'card-acts' },
@@ -956,18 +984,18 @@ function row(p, showProject) {
   else if (ph && ph.kind === 'confirm') acts = [pill('confirm?', 'confirm', () => runStop(p, 'stop')), pill('cancel', '', () => setPhase(p.id, null))];
   else if (ph && ph.kind === 'force') acts = [pill('force kill', 'force', () => runStop(p, 'force')), pill('cancel', '', () => setPhase(p.id, null))];
   else if (ph && ph.kind === 'admin') acts = [pill('admin password…', 'admin', () => runStop(p, 'admin')), pill('cancel', '', () => setPhase(p.id, null))];
-  else if (sh && sh.kind === 'confirm') acts = [pill('share', 'go', () => startShare(p)), pill('cancel', '', () => setShare(p.id, null))];
+  else if (sh && sh.kind === 'confirm') acts = [...lasting('public', pill, (seconds) => startShare(p, seconds)), pill('cancel', '', () => setShare(p.id, null))];
   else acts = [
     el('a', { class: 'pl open', href: safeUrl(address(p)), target: '_blank', rel: 'noopener noreferrer', text: 'open', title: 'Open ' + address(p), onclick: stop }),
     pill('copy', '', () => copy(p), { title: 'Copy ' + address(p) }),
     p.system ? null : qrButton(p),
     p.system ? null : shareAction(p, pill),
-    p.system ? null : pill('kill', 'kill', () => armKill(p), { title: `Kill PID ${p.pid}` }),
+    p.system || p.nokill ? null : pill('kill', 'kill', () => armKill(p), { title: `Kill PID ${p.pid}` }),
   ];
 
   const isOpen = opened.has(p.id);
   const area = !p.system && (lanShown.has(p.id) || isOpen);
-  const li = el('li', { class: isOpen ? 'open' : '' },
+  const li = el('li', { class: isOpen ? 'open' : '', 'data-id': p.id },
     el('div', { class: 'prow', role: 'button', tabindex: '0', 'aria-expanded': String(isOpen),
       onclick: () => toggle(p.id), onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(p.id); } } },
       el('div', { class: 'pmain' },
@@ -983,7 +1011,8 @@ function row(p, showProject) {
       el('div', { class: 'pacts' }, acts),
       // Its name, with the plain address beside it.
       p.host ? el('div', { class: 'pname' }, el('a', { href: safeUrl(p.hostUrl), target: '_blank', rel: 'noopener noreferrer', text: p.host, title: 'Open ' + p.hostUrl, onclick: stop }),
-        ' · ' + p.url.replace('http://', '')) : null),
+        ' · ' + p.url.replace('http://', '')) : null,
+      p.host && p.served ? el('div', { class: 'pname pserved', text: p.served, title: 'What it answered when __app__ last asked' }) : null),
     ph && ph.text ? el('p', { class: 'pline' + (ph.kind === 'msg' ? ' info' : '') , text: ph.text }) : null,
     sh && sh.kind === 'confirm' ? el('p', { class: 'pline share', text: sh.text }) : null,
     sh && sh.kind === 'hint' ? el('p', { class: 'pline info' }, sh.text + ' ', el('code', { text: sh.command }), ' ',
@@ -1004,6 +1033,12 @@ function row(p, showProject) {
 function details(p) {
   const items = [];
   const add = (label, value, action) => items.push(el('dt', { text: label }), el('dd', { text: value }), action || el('span'));
+  if (p.container) {
+    add('Container', p.container.name);
+    if (p.container.image) add('Image', p.container.image);
+    if (p.container.project) add('Compose', p.container.project + (p.container.service ? ' / ' + p.container.service : ''));
+  }
+  if (p.nokill) add('Kill', p.nokill);
   if (p.folder) add('Folder', p.folder, el('button', { class: 'pl', text: 'reveal', onclick: () => act('reveal', p.pid) }));
   if (p.command) add('Command', p.command);
   add('Address', p.address);
@@ -1050,6 +1085,15 @@ function shareAction(p, pill) {
   if (p.tunnel) return pill('unshare', 'kill', () => stopShare(p), { title: 'Stop sharing :' + p.port });
   return pill('share', 'share', () => askShare(p), { title: 'Get a public link for :' + p.port });
 }
+// How long a share lasts: a pill for each choice, the one made last time marked.
+function lasting(kind, pill, go) {
+  return state.lasts.choices.map((c) => pill(c.title, c.seconds === state.lasts[kind] ? 'go' : '', () => go(c.seconds)));
+}
+// The time a share has left, with half an hour more for the asking.
+function timeLeft(p, pill, left, kind) {
+  return left ? [el('span', { class: 'left', text: left }), pill('+30 min', '', async () => { const r = await act('more', p.pid, { port: p.port, kind }); if (r) toast(r.message); poll(); },
+    { title: 'Half an hour more' })] : null;
+}
 function tunnelLine(p, pill, area) {
   if (!p.tunnel) return null;
   if (p.tunnel.state === 'starting') return el('p', { class: 'ptunnel', text: `Opening a public link with ${p.tunnel.provider}…` });
@@ -1058,6 +1102,7 @@ function tunnelLine(p, pill, area) {
   return el('div', { class: 'ptunnel' }, 'Public link',
     el('a', { href: safePublic(url), target: '_blank', rel: 'noopener noreferrer', text: url, onclick: (e) => e.stopPropagation() }),
     pill('copy', '', () => copyText(url)),
+    timeLeft(p, pill, p.tunnel.left, 'public'),
     // With the row's panel open its code is there already, beside the others.
     area ? null : pill(qrShown.has(p.port) ? 'hide qr' : 'qr', '', () => { if (qrShown.has(p.port)) qrShown.delete(p.port); else qrShown.add(p.port); render(); }));
 }
@@ -1155,6 +1200,10 @@ function safeLocal(u) { return /^http:\/\/[a-z0-9-]+\.local(:\d+)?\/$/.test(u) ?
 function setLanAsk(id, v) { if (v) lanAsk.set(id, v); else lanAsk.delete(id); render(); }
 // Not on the network yet: the switch, and the name it would have there.
 function networkOffer(p, pill) {
+  // First how long, then (when the project has none yet) the password.
+  if (lanFor.get(p.id) === null) return el('div', { class: 'ptunnel' }, 'On network for',
+    lasting('network', pill, (seconds) => { lanFor.set(p.id, seconds); lanStart(p); }),
+    pill('cancel', '', () => { lanFor.delete(p.id); render(); }));
   const suggested = lanAsk.get(p.id);
   if (suggested) return el('div', { class: 'ptunnel' }, 'Password', el('code', { text: suggested }),
     pill('use it', 'go', () => lanTurnOn(p, { password: suggested })),
@@ -1165,9 +1214,9 @@ function networkOffer(p, pill) {
     pill('no password', '', async () => {
       if (await ask('Share without a password?', p.local.anyone, 'Share')) lanTurnOn(p, { open: true });
     }),
-    pill('cancel', '', () => setLanAsk(p.id, null)));
+    pill('cancel', '', () => { lanFor.delete(p.id); setLanAsk(p.id, null); }));
   return el('div', { class: 'ptunnel' }, 'On network as', el('code', { text: p.local.name + '.local' }),
-    pill('turn on', 'open', () => lanStart(p), { title: 'Other devices on this Wi-Fi open it at http://' + p.local.name + '.local/' }),
+    pill('turn on', 'open', () => { lanFor.set(p.id, null); render(); }, { title: 'Other devices on this Wi-Fi open it at http://' + p.local.name + '.local/' }),
     pill('rename', '', () => renameOnNetwork(p), { title: 'Change its name on the network' }));
 }
 // On the network: its link, its password, a QR for a phone, and what a password does and doesn't do.
@@ -1177,6 +1226,7 @@ function networkBox(p, pill) {
     el('div', { class: 'ptunnel' }, 'On network',
       el('a', { href: safeLocal(p.local.link), target: '_blank', rel: 'noopener noreferrer', text: p.local.link, onclick: (e) => e.stopPropagation() }),
       pill('copy', '', () => copyText(p.local.link)), pill('rename', '', () => renameOnNetwork(p)),
+      timeLeft(p, pill, p.local.left, 'network'),
       pill('turn off', 'kill', async () => { const r = await act('lan-off', p.pid, { port: p.port }); if (r) toast(r.message); lanSeen.delete(p.id); qrCache.delete('name' + p.port); poll(); })),
     el('div', { class: 'ptunnel' }, 'Password', p.local.password
       ? [el('code', { text: shown || '••••••••' }),
@@ -1205,7 +1255,9 @@ async function lanStart(p) {
 }
 async function lanTurnOn(p, extra) {
   lanAsk.delete(p.id);
-  const r = await act('lan-on', p.pid, { port: p.port, ...extra });
+  const chosen = lanFor.get(p.id);
+  lanFor.delete(p.id);
+  const r = await act('lan-on', p.pid, { port: p.port, ...(chosen == null ? {} : { for: chosen }), ...extra });
   if (r) { toast(r.message); if (extra.password) lanSeen.set(p.id, extra.password); }
   poll();
 }
@@ -1239,13 +1291,13 @@ function qrBox(port, kind) {
 function setShare(id, v) { if (v) sharing.set(id, v); else sharing.delete(id); render(); }
 function askShare(p) {
   if (!state.share.available) return setShare(p.id, { kind: 'hint', text: state.share.hint, command: state.share.command });
-  const entry = { kind: 'confirm', text: `Anyone with the link can open ${p.project || p.app || p.name} on port ${p.port} until you stop sharing.` };
+  const entry = { kind: 'confirm', text: `Anyone with the link can open ${p.project || p.app || p.name} on port ${p.port}. For how long?` };
   setShare(p.id, entry);
-  setTimeout(() => { if (sharing.get(p.id) === entry) setShare(p.id, null); }, 8000);
+  setTimeout(() => { if (sharing.get(p.id) === entry) setShare(p.id, null); }, 15000);
 }
-async function startShare(p) {
+async function startShare(p, seconds) {
   setShare(p.id, null);
-  const r = await act('share', p.pid, { port: p.port });
+  const r = await act('share', p.pid, { port: p.port, for: seconds });
   if (r && r.result === 'unavailable') setShare(p.id, { kind: 'hint', text: r.message, command: state.share.command });
   poll();
 }
@@ -1316,7 +1368,7 @@ function renderMac() {
           el('span', { class: 'val', text: bytes(a.memory) }),
           el('span', { class: 'slot' }, a.canQuit
             ? (busy.has(a.pid) ? el('span', { class: 'busy' }, el('i', { class: 'spinner' }))
-              : el('button', { class: 'pl kill', text: 'quit', onclick: () => quitProcess(a.pid, a.name, `${a.name} is using ${bytes(a.memory)}${a.count > 1 ? ' across ' + a.count + ' processes' : ''}. It closes the normal way and may ask you to save your work.`) }))
+              : el('button', { class: 'pl kill', text: 'quit', onclick: () => quitProcess(a.pid, a.name, `${a.name} is using ${bytes(a.memory)}${a.count > 1 ? ' across ' + a.count + ' processes' : ''}. It closes the normal way and may ask you to save your work.${a.quitNote ? ' ' + a.quitNote : ''}`, 'apps') }))
             : null));
       })));
     return [memPanel, appPanel];
@@ -1381,13 +1433,14 @@ async function act(op, pid, extra) {
   catch (e) { toast(e.message); return null; }
 }
 
-async function quitProcess(pid, name, body) {
-  if (await ask(`Quit ${name}?`, body, 'Quit')) await run('quit', pid, name);
+// `from` says where the quit was asked for: 'apps' is the list of apps, the one place Docker Desktop may be quit from.
+async function quitProcess(pid, name, body, from) {
+  if (await ask(`Quit ${name}?`, body, 'Quit')) await run('quit', pid, name, from);
 }
 
-async function run(op, pid, label) {
+async function run(op, pid, label, from) {
   busy.add(pid); render();
-  const r = await act(op, pid);
+  const r = await act(op, pid, from ? { from } : null);
   busy.delete(pid);
   if (r && r.result === 'still_running') {
     if (await ask(`${label} is still running`, r.message, 'Force stop')) return run('force', pid, label);

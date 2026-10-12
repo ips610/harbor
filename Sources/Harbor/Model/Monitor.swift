@@ -138,17 +138,25 @@ final class Monitor {
         if c != badgeCount { badgeCount = c }
     }
 
+    /// How often harbor scans with nothing open, or nil for not at all. With something on the
+    /// network: every 15 seconds, or sooner when the refresh setting is shorter, whatever that
+    /// setting is (a minute, an hour, manual): a share is for one server, and for one container,
+    /// and only a scan sees that it has gone. Otherwise only for a badge, at the refresh setting.
+    nonisolated static func scanEvery(refresh: Double, sharing: Bool, badge: Bool) -> Double? {
+        if sharing { return refresh > 0 ? min(refresh, 15) : 15 }
+        return badge && refresh > 0 ? refresh : nil
+    }
+
     private func updateBadgeTimer() {
         badgeTimer?.invalidate()
         badgeTimer = nil
-        // With a badge to keep right, or something on the network to keep an eye on (then at least every 15 s, manual refresh or not).
         let sharing = !lanShares.isEmpty
-        guard started, sharing || (badgeMode != "hidden" && refreshInterval > 0) else { return }
-        let every = refreshInterval > 0 ? refreshInterval : 15
+        guard started, let every = Self.scanEvery(refresh: refreshInterval, sharing: sharing, badge: badgeMode != "hidden") else { return }
         let t = Timer(timeInterval: every, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                // The open menu, or the page's polls, already scan and refresh the badge.
-                guard let self, !self.isFastMode, !self.webActive else { return }
+                // For the badge alone, the open menu or the page's polls already scan. For a share that isn't enough:
+                // they scan at the refresh setting, which may be a minute or never.
+                guard let self, sharing || (!self.isFastMode && !self.webActive) else { return }
                 self.requestFullScan()
             }
         }
@@ -338,15 +346,21 @@ final class Monitor {
 
     /// Made-up ports for snapshots (`--fixture`): shown instead of this Mac's, and never scanned over.
     @ObservationIgnored private var fixture: [PortRow]?
+    /// Is this the made-up Mac? Then nothing real is ever started, asked or opened for a row.
+    var isMadeUp: Bool { fixture != nil }
 
     func useFixture(_ rows: [PortRow], shared key: String?, every: Bool = false) {
         fixture = rows
         requestFullScan()
+        // What the made-up servers "answer", so a snapshot shows the line without anything being asked.
+        let answers: [UInt16: String] = [3000: "200 · Storefront – Admin", 3001: "404", 8000: "200 · Notes API · Swagger UI", 8080: "301 → /shop/", 8025: "200 · Mailpit"]
+        served = Dictionary(uniqueKeysWithValues: rows.compactMap { row in answers[row.port].map { (row.id, Served(line: $0, at: Date())) } })
         guard let key else { return }
         // The project's main server; or, for the look of several, each of its servers under its own name.
         for row in rows where Names.key(row) == key && (every || isMain(row)) {
             guard let name = networkName(row) else { continue }
-            lanShares[row.id] = LanShare(name: name, project: key, port: 80, hasPassword: true, pid: row.pid, serverPort: row.port, started: row.started, announced: true)
+            lanShares[row.id] = LanShare(name: name, project: key, port: 80, hasPassword: true, pid: row.pid, serverPort: row.port, started: row.started,
+                                         container: row.container?.id, announced: true)
         }
         guard lanShares.values.contains(where: { $0.project == key }) else { return }
         // The made-up project has a made-up password, so every row of it says the same.
@@ -367,8 +381,10 @@ final class Monitor {
         scanInFlight = true
         DebugCLI.log("full scan")
         let sampleCPU = isFastMode || !visible.isEmpty || webActive
+        // With a container on the network, every scan asks Docker again: nothing kept from a moment ago.
+        let freshDocker = lanShares.values.contains { $0.container != nil }
         queue.async { [weak self, scanner] in
-            let scan = scanner.fullScan(sampleCPU: sampleCPU)
+            let scan = scanner.fullScan(sampleCPU: sampleCPU, freshDocker: freshDocker)
             let m = SystemMemory.read()
             DispatchQueue.main.async { [weak self] in
                 MainActor.assumeIsolated {
@@ -390,6 +406,9 @@ final class Monitor {
         let table = Names.assign(scan.ports, saved: savedNames, previous: names, mains: savedMains)
         if table != names { names = table }
         moveOldNetworkNames()
+        if served.keys.contains(where: { id in !scan.ports.contains { $0.id == id } }) {
+            served = served.filter { answer in scan.ports.contains { $0.id == answer.key } }
+        }
         // A share is for one server: that process, on that port. When it is gone the project
         // comes off the network, whatever else of it still runs or has started since. And when
         // another program listens on that port too (on one address, say, in front of a server
@@ -397,6 +416,9 @@ final class Monitor {
         for (key, share) in lanShares {
             if !scan.ports.contains(where: { $0.id == share.row && $0.started == share.started }) {
                 stopSharing(key, because: "\(share.name)\(Lan.suffix) stopped, so it is off the network.")
+            } else if scan.ports.first(where: { $0.id == share.row })?.container?.id != share.container {
+                // Docker's process is still there and still has the port, but for another container (or none it can name).
+                stopSharing(key, because: "The container behind \(share.name)\(Lan.suffix) stopped or changed, so it is off the network.")
             } else if let other = Self.otherListener(on: share.serverPort, than: share.pid, in: scan.ports) {
                 stopSharing(key, because: "\(other.processName) is listening on port \(share.serverPort) too, so \(share.name)\(Lan.suffix) is off the network.")
             }
@@ -409,6 +431,7 @@ final class Monitor {
         }
         refreshBadge()
         Tunnels.shared.prune(listening: Set(scan.ports.map(\.port)))
+        endExpired()
         if apps != scan.apps {
             // Load icons here, not while the list is laying out its rows.
             IconCache.shared.warm(scan.apps.prefix(60).compactMap(\.bundlePath))
@@ -417,11 +440,47 @@ final class Monitor {
         if others != scan.others { others = scan.others }
         lastScanDuration = scan.duration
         lastFullScan = Date()
+        leaveNote()
         setMemory(m)
         setZombies(scan.zombies)
         let waiting = pendingFresh
         pendingFresh = []
         waiting.forEach { $0() }
+    }
+
+    // MARK: What a row serves (see Probe)
+
+    struct Served: Equatable {
+        let line: String
+        let at: Date
+    }
+
+    /// What each looked-at row last answered on "/", by row. Forgotten when the row goes.
+    private(set) var served: [String: Served] = [:]
+    @ObservationIgnored private var asking = Set<String>()
+    /// Is an answer still on its way? (The page looks again a moment later.)
+    var isAsking: Bool { !asking.isEmpty }
+
+    /// Somebody is looking at these rows right now: their details are open in the menu, or
+    /// they are on screen on the page. Only then, and only as often as `Probe.pick` allows,
+    /// is a server asked what it serves. Nothing here runs from a timer.
+    func look(at ids: [String], now: Date = Date()) {
+        guard fixture == nil, !ids.isEmpty else { return }       // made-up rows have made-up answers
+        let picked = Probe.pick(ids, rows: ports, named: Set(names.byRow.keys), last: served.mapValues(\.at), asking: asking, now: now)
+        for id in picked {
+            guard let row = ports.first(where: { $0.id == id }), let name = names.byRow[id], let target = names.targets[name], let host = nameHost(row) else { continue }
+            asking.insert(id)
+            DispatchQueue.global(qos: .utility).async {
+                let line = Probe.ask(target, host: host)
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        let m = Monitor.shared
+                        m.asking.remove(id)
+                        if m.ports.contains(where: { $0.id == id }) { m.served[id] = Served(line: line, at: Date()) }
+                    }
+                }
+            }
+        }
     }
 
     // MARK: Ports
@@ -471,7 +530,7 @@ final class Monitor {
         }
         if !lanShares.isEmpty, lanIPv6Taken, let port = lanShares.values.first?.port { notes.append("Another program has port \(port) on IPv6") }
         guard let port = pagePort else { return notes }
-        if port != Ports.harbor.usual { notes.append("On port \(port): \(Ports.harbor.usual) was in use") }
+        if port != Ports.harbor.usual, fixture == nil { notes.append("On port \(port): \(Ports.harbor.usual) was in use") }   // a made-up Mac has no such thing to say
         if port80Taken {
             notes.append("\(WebServer.host) needs port 80, which another program is using; use \(WebServer.host):\(port)")
         }
@@ -489,6 +548,11 @@ final class Monitor {
         let pid: pid_t
         let serverPort: UInt16
         let started: Date?
+        /// The container it is shared for, when the process is Docker's own: that process holds
+        /// every published port, so only the container's id tells whose port this is.
+        var container: String? = nil
+        /// When it comes off the network by itself (see Lasting). nil: when it is turned off.
+        var until: Date? = nil
         var row: String { "\(pid)-\(serverPort)" }      // PortRow.id
         /// macOS has announced the name: nil until it answers, which it only does once the
         /// user has let harbor use the local network.
@@ -502,7 +566,78 @@ final class Monitor {
     /// server and stays with it). Never remembered across launches; names and passwords are.
     private(set) var lanShares: [String: LanShare] = [:] {
         // While something is on the network harbor keeps looking, with everything closed too.
-        didSet { if oldValue.isEmpty != lanShares.isEmpty { updateBadgeTimer() } }
+        didSet {
+            if oldValue.isEmpty != lanShares.isEmpty { updateBadgeTimer() }
+            if oldValue != lanShares { sharesChanged() }
+        }
+    }
+
+    // MARK: Shares that stop by themselves (see Lasting)
+
+    @ObservationIgnored private var expiryTimer: Timer?
+    @ObservationIgnored private var wakeWatch: NSObjectProtocol?
+
+    /// Something was shared, stopped, or given more time: the one timer is set for the
+    /// nearest deadline (none while nothing has one), and the command line's note is brought
+    /// up to date. The timer alone isn't trusted: it doesn't run while the Mac sleeps, so
+    /// the deadlines are also looked at on waking and with every scan.
+    func sharesChanged() {
+        armExpiry()
+        leaveNote()
+    }
+
+    /// When the one timer will next look, for a test.
+    var expiryArmedFor: Date? { expiryTimer.flatMap { $0.isValid ? $0.fireDate : nil } }
+    /// The timer goes off now, whatever the clock says (a test's stand-in for a clock that was set back).
+    func fireExpiryTimer() { expiryTimer?.fire() }
+
+    private func armExpiry() {
+        expiryTimer?.invalidate()
+        expiryTimer = nil
+        let deadlines = lanShares.values.compactMap(\.until) + Tunnels.shared.active.values.compactMap(\.until)
+        if let next = deadlines.min() {
+            let timer = Timer(fire: next, interval: 0, repeats: false) { _ in MainActor.assumeIsolated { Monitor.shared.endExpired() } }
+            timer.tolerance = 1
+            RunLoop.main.add(timer, forMode: .common)
+            expiryTimer = timer
+            if wakeWatch == nil {
+                wakeWatch = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { _ in
+                    MainActor.assumeIsolated { Monitor.shared.endExpired() }
+                }
+            }
+        }
+    }
+
+    /// Stops what has run out of time, exactly as turning it off by hand does, and says so.
+    func endExpired(now: Date = Date()) {
+        for (id, share) in lanShares where Lasting.isOver(share.until, now: now) {
+            stopSharing(id, because: "\(share.name)\(Lan.suffix) is off the network: its time is up.")
+        }
+        Tunnels.shared.endExpired(now: now)
+        // The timer is good for one go. If it went off early (the clock was set back) nothing was over, and
+        // without this nothing would look again: set it for whatever deadline is still ahead.
+        armExpiry()
+    }
+
+    /// Half an hour more for a server that is on the network with a deadline.
+    func moreTime(_ row: PortRow, now: Date = Date()) {
+        guard let until = lanShares[row.id]?.until else { return }
+        lanShares[row.id]?.until = Lasting.extended(until, now: now)
+    }
+
+    /// Gives a share a deadline, or takes it away (nil). Made-up shares and tests use it.
+    func setDeadline(_ id: String, _ until: Date?) {
+        lanShares[id]?.until = until
+    }
+
+    /// What the command line is told (see Shared): which rows are on the network or behind a public link.
+    private func leaveNote() {
+        var links: [String: String] = [:]
+        for (port, tunnel) in Tunnels.shared.active {
+            if case .ready(let url) = tunnel.phase, let row = ports.first(where: { $0.port == port }) { links[row.id] = url }
+        }
+        let network = Dictionary(uniqueKeysWithValues: lanShares.map { id, share in (id, "http://\(share.name)\(Lan.suffix)\(share.port == 80 ? "" : ":\(share.port)")/") })
+        Shared.leave(names: names.byRow, door: doorIsOurs, proxy: Int(proxyPort), network: network, links: links)
     }
     /// While sharing: harbor couldn't have the port on IPv6 as well, because another program has it.
     private(set) var lanIPv6Taken = false
@@ -649,8 +784,12 @@ final class Monitor {
     /// and its own name there. With `password` that becomes the project's password first;
     /// `open` takes the project's password away; neither uses the one it has. Returns what
     /// is wrong, or nil.
-    func shareOnNetwork(_ row: PortRow, password: String? = nil, open: Bool = false) -> String? {
+    ///
+    /// `lasting` is how long it stays on: one of Lasting's choices, or nil for what it has
+    /// (a share that is only moving to a new name keeps its deadline) or was chosen last time.
+    func shareOnNetwork(_ row: PortRow, password: String? = nil, open: Bool = false, lasting: Int? = nil) -> String? {
         let project = Names.key(row)
+        guard lasting == nil || Lasting.pick(lasting, kind: .network) != nil else { return "On the network for 30 minutes, an hour, or until you turn it off." }
         guard let base = names.base[project], let own = names.byRow[row.id], let target = names.targets[own] else {
             return "\(row.title) has no name, so it can't go on the network."
         }
@@ -701,7 +840,12 @@ final class Monitor {
         }
         lanNetwork = network
         lanIPv6Taken = !OnNetwork.shared.holdsIPv6
-        lanShares[row.id] = LanShare(name: name, project: project, port: port, hasPassword: stored != nil, pid: row.pid, serverPort: row.port, started: row.started)
+        // Its deadline: the one just chosen; else the one it had (a rename doesn't buy time); else the usual choice.
+        let chosen = lasting != nil || old == nil ? Lasting.pick(lasting, kind: .network) ?? 0 : nil
+        let until = Lasting.until(chosen: chosen, moving: old.map(\.until), now: Date())
+        if let chosen { Lasting.remember(.network, chosen) }
+        lanShares[row.id] = LanShare(name: name, project: project, port: port, hasPassword: stored != nil, pid: row.pid, serverPort: row.port, started: row.started,
+                                     container: row.container?.id, until: until)
         _ = LAN.firewallOn  // read it now, so the panel can say what macOS may ask
         return nil
     }

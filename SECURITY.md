@@ -114,6 +114,56 @@ Only the latest release is supported. If you're on an older one, update first.
   never touched.
 - Sharing a port runs `cloudflared` (or `ngrok`) from a fixed path, only when
   you ask, and the tunnel stops when harbor does. harbor never installs anything.
+- A public link, and a server on the network, can be given 30 minutes or an
+  hour. The deadline is a time on the clock, so a Mac that slept through it
+  stops the share when it wakes. Only your own "+30 min" moves it, and a
+  rename doesn't. Any other length is refused, not read as "for ever".
+- The status line beside a row ("200 · Storefront") comes from one `GET /`
+  that harbor sends itself, to the server's own address on this Mac, and only
+  while you are looking at that row: its details open in the menu, or the row
+  on screen on the page. At most six at a time and once a minute per row;
+  nothing from a timer. The request carries no cookie and no credentials, no
+  redirect is followed, at most 64 KB is read, and it gives up after 3
+  seconds. It is never sent to a database, to an app's own helper port, to a
+  port browsers refuse, to macOS's services, or to harbor's or headroom's own
+  ports. The title is cut to 80 characters, stripped of control and
+  direction-changing characters, and only ever shown as text. Neither the
+  title nor a redirect's target is logged.
+- Docker's containers are named from one request, `GET /containers/json`, to
+  your own Docker socket (a unix socket this account owns). That is the only
+  thing harbor ever writes to it; the `docker` command is never run. It is
+  asked only while one of Docker's processes is listening, at most every 15
+  seconds, with a one-second limit. What comes back is treated like any other
+  outside text. Only a process inside the real Docker.app or OrbStack.app (in
+  `/Applications` or `~/Applications`), or Lima's own `limactl` under
+  Homebrew, counts as Docker's. The process on a container's port is Docker
+  itself, so harbor offers no kill there and refuses a kill, or a quit, asked
+  for through that row from the page or the command line. Docker Desktop can
+  still be quit on purpose from the list of apps, and harbor says first that
+  every container stops with it. The `docker stop` hint names the container
+  only when its name is one Docker itself would allow. A container never
+  takes a `.localhost` name from a project folder or an app that wants the
+  same one at the same time.
+- A container on the network is pinned to its container id as well. While
+  anything is on the network harbor scans at least every 15 seconds, whatever
+  the refresh setting and whatever is open. So when another container gets
+  that port, the share stops within 15 seconds, not at once.
+- The `harbor` command runs in its own process with the same scanner and the
+  same rules. It never talks to the running app and never reads the session
+  files. `harbor kill` asks first, re-checks that the process is still the
+  one it asked about before any signal, never touches macOS's processes,
+  harbor, Docker or another user's processes, and has no administrator path.
+  What it prints is stripped of escape sequences.
+- The running app leaves the command one small file,
+  `~/Library/Application Support/local.harbor/shared` (mode 0600): which row
+  goes by which name, and what is on the network or behind a public link. No
+  passwords, no session. The command believes it only while the process that
+  wrote it is still that process, and takes a name from it only if it is a
+  plain label.
+- Installing the command makes one symlink to the app's own binary in
+  `/usr/local/bin`, or in `~/.local/bin` when that one can't be written to.
+  No administrator password. A file or link called `harbor` that isn't
+  harbor's own is never replaced or removed.
 
 ## Verifying a download
 

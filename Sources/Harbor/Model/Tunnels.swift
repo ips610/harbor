@@ -18,6 +18,8 @@ final class Tunnels {
         let title: String
         let provider: String
         var phase: Phase
+        /// When it stops by itself (see Lasting). nil: when it is stopped.
+        var until: Date? = nil
     }
 
     struct Tool {
@@ -30,7 +32,7 @@ final class Tunnels {
 
     /// A made-up public link that is "ready", for snapshots (`--fixture both`). Nothing is started.
     func useFixture(port: UInt16, title: String, url: String) {
-        active[port] = Tunnel(port: port, title: title, provider: "cloudflared", phase: .ready(url))
+        active[port] = Tunnel(port: port, title: title, provider: "cloudflared", phase: .ready(url), until: Date().addingTimeInterval(42 * 60 + 30))
     }
     @ObservationIgnored private var processes: [UInt16: Process] = [:]
     @ObservationIgnored private var qrCache: [String: CGImage] = [:]
@@ -74,10 +76,14 @@ final class Tunnels {
 
     // MARK: Start / stop
 
-    /// Returns a message when sharing can't start.
+    /// Returns a message when sharing can't start. `seconds` is how long it lasts: one of
+    /// Lasting's choices, or nil for the one chosen last time.
     @discardableResult
-    func start(_ row: PortRow) -> String? {
+    func start(_ row: PortRow, for seconds: Int? = nil) -> String? {
         if active[row.port] != nil { return nil }
+        guard let lasting = Lasting.pick(seconds, kind: .link) else { return "A public link lasts 30 minutes, an hour, or until you stop it." }
+        // Made-up ports (snapshots, tests) have the numbers of real ones: no tool is ever started for them.
+        guard !Monitor.shared.isMadeUp else { return "These ports are made up, so nothing is shared." }
         guard let tool = Self.tool else { return Self.hint.text }
         // Point the tunnel at an address the server really listens on.
         let host = row.addresses == ["::1"] ? "[::1]" : "127.0.0.1"
@@ -113,7 +119,9 @@ final class Tunnels {
         }
         processes[port] = p
         remember(p.processIdentifier)
-        active[port] = Tunnel(port: port, title: row.title, provider: tool.name, phase: .starting)
+        active[port] = Tunnel(port: port, title: row.title, provider: tool.name, phase: .starting, until: Lasting.deadline(lasting, from: Date()))
+        Lasting.remember(.link, lasting)
+        Monitor.shared.sharesChanged()
         DispatchQueue.main.asyncAfter(deadline: .now() + 45) { [weak self] in
             MainActor.assumeIsolated {
                 guard let self, self.active[port]?.phase == .starting else { return }
@@ -124,8 +132,24 @@ final class Tunnels {
         return nil
     }
 
+    /// Half an hour more for a link that has a deadline.
+    func more(_ port: UInt16, now: Date = Date()) {
+        guard let until = active[port]?.until else { return }
+        active[port]?.until = Lasting.extended(until, now: now)
+        Monitor.shared.sharesChanged()
+    }
+
+    /// Links whose time is up stop exactly as a manual stop does, and that is said.
+    func endExpired(now: Date) {
+        for (port, tunnel) in active where Lasting.isOver(tunnel.until, now: now) {
+            stop(port)
+            Monitor.shared.notify("The public link for :\(port) has ended: its time is up.")
+        }
+    }
+
     func stop(_ port: UInt16) {
         active[port] = nil
+        Monitor.shared.sharesChanged()
         guard let p = processes.removeValue(forKey: port) else { return }
         let pid = p.processIdentifier
         if p.isRunning { p.terminate() }
@@ -164,6 +188,7 @@ final class Tunnels {
         guard var t = active[port], t.phase == .starting else { return }
         t.phase = .ready(url)
         active[port] = t
+        Monitor.shared.sharesChanged()
         Monitor.shared.flash("Sharing :\(port) at \(url)")
     }
 
@@ -172,6 +197,7 @@ final class Tunnels {
         guard processes[port]?.processIdentifier == pid else { return }  // stopped on purpose
         processes[port] = nil
         active[port] = nil
+        Monitor.shared.sharesChanged()
         Monitor.shared.notify("Sharing :\(port) stopped: the tunnel tool exited.")
     }
 

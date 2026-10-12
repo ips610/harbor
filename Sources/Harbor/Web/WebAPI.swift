@@ -27,11 +27,13 @@ enum WebAPI {
 
     // MARK: State
 
-    static func state(_ done: @escaping (Data) -> Void) {
+    /// `see`: the rows the page has on screen. Those, and only those, are asked what they serve.
+    static func state(see: [String] = [], _ done: @escaping (Data) -> Void) {
         let m = Monitor.shared
         m.webTouch()
         Updates.shared.check()  // at most once a day
         m.fresh(maxAge: 2.0) {
+            m.look(at: see)
             let object = build()
             done((try? JSONSerialization.data(withJSONObject: object)) ?? Data("{}".utf8))
         }
@@ -55,7 +57,9 @@ enum WebAPI {
                     ? Lan.passwordNote(project: m.names.base[project] ?? r.title, several: m.hasSiblings(r), devices: m.devices(r)) : nil),
                 "help": n(share != nil && m.lanShares.contains { $0.key != r.id && $0.value.project == project } ? Lan.callByName : nil),
                 // What the page asks before the project goes without a password.
-                "anyone": m.anyoneCanOpen(r)]
+                "anyone": m.anyoneCanOpen(r),
+                // The time it has left on the network, when it has a deadline.
+                "left": n(Lasting.left(share?.until, now: Date()))]
     }
 
     /// SMAppService.status is a blocking XPC call to the system: read it at most
@@ -85,7 +89,7 @@ enum WebAPI {
             if let t = tunnels[r.port] {
                 switch t.phase {
                 case .starting: tunnel = ["state": "starting", "provider": t.provider]
-                case .ready(let url): tunnel = ["state": "ready", "provider": t.provider, "url": url]
+                case .ready(let url): tunnel = ["state": "ready", "provider": t.provider, "url": url, "left": n(Lasting.left(t.until, now: now))]
                 case .failed(let msg): tunnel = ["state": "failed", "provider": t.provider, "message": msg]
                 }
             }
@@ -100,8 +104,15 @@ enum WebAPI {
                 "id": r.id,
                 "port": Int(r.port),
                 "pid": Int(r.pid),
-                "name": r.processName,
+                "name": r.label,
                 "title": r.title,
+                // A container: what it is, the card it belongs on, and why it has no kill.
+                "container": n(r.container.map { ["name": $0.name, "image": $0.image, "project": n($0.project), "service": n($0.service)] as [String: Any] }),
+                "group": n(r.container.map { _ in r.groupKey }),
+                "groupTitle": n(r.container?.group),
+                "nokill": n(Docker.owns(path: r.path) ? Docker.noKill(r.container) : nil),
+                // What it answered on "/" when it was last looked at: plain text, or nothing yet.
+                "served": n(m.served[r.id]?.line),
                 "app": n(r.appName),
                 "framework": n(r.framework),
                 "category": r.category.rawValue,
@@ -138,6 +149,8 @@ enum WebAPI {
             return [
                 "id": g.id, "name": g.name, "pid": Int(g.mainPid), "count": g.pids.count,
                 "memory": Double(g.footprint), "cpu": n(g.cpu), "canQuit": g.canQuit,
+                // Said before it is quit: with Docker Desktop, every container goes too.
+                "quitNote": n(Docker.owns(path: g.mainPath) ? Docker.quitNote : nil),
                 "folder": n(g.cwd.flatMap { $0 == "/" ? nil : Fmt.path($0) }),
             ]
         }
@@ -163,7 +176,12 @@ enum WebAPI {
             "badgeCount": m.badgeCount,  // equals the visible rows (0 with the badge hidden)
             "ports": ports,
             "notices": m.notices.map { ["id": $0.id, "text": $0.text] },
+            // A looked-at row's answer is still on its way: the page asks again in a moment.
+            "asking": m.isAsking,
             "share": ["available": tool != nil, "provider": n(tool?.name), "hint": hint.text, "command": hint.command],
+            // How long a share lasts: the choices, and the one made last time for each kind.
+            "lasts": ["public": Lasting.remembered(.link), "network": Lasting.remembered(.network),
+                      "choices": Lasting.choices.map { ["seconds": $0, "title": Lasting.title($0)] as [String: Any] }],
             "loginItem": loginItemOn,
             "update": [
                 "current": up.current, "latest": n(up.latest), "newer": up.newer, "url": up.url.absoluteString,
@@ -296,8 +314,9 @@ enum WebAPI {
                 return done(400, ["error": "That port isn't on the page any more."])
             }
             if shareRow.isSystem || shareRow.isSelf { return done(400, ["error": "harbor doesn't share macOS services or itself."]) }
+            if let asked = obj["for"], Lasting.pick(asked as? Int ?? -1, kind: .link) == nil { return done(400, ["error": "A public link lasts 30 minutes, an hour, or until you stop it."]) }
             logAction("share", pid: Int(pid), name: shareRow.processName, port: port)
-            if let problem = Tunnels.shared.start(shareRow) {
+            if let problem = Tunnels.shared.start(shareRow, for: obj["for"] as? Int) {
                 return done(200, ["result": "unavailable", "message": problem])
             }
             return done(200, ["result": "starting", "message": "Opening a public link for :\(port)…"])
@@ -316,7 +335,8 @@ enum WebAPI {
         case "lan-on":
             // On the network as <name>.local: with the password sent, with none (open), or with the one it has.
             guard let row = lanRow else { return done(400, ["error": "Not a port."]) }
-            if let problem = m.shareOnNetwork(row, password: obj["password"] as? String, open: (obj["open"] as? Bool) ?? false) {
+            if let asked = obj["for"], Lasting.pick(asked as? Int ?? -1, kind: .network) == nil { return done(400, ["error": "On the network for 30 minutes, an hour, or until you turn it off."]) }
+            if let problem = m.shareOnNetwork(row, password: obj["password"] as? String, open: (obj["open"] as? Bool) ?? false, lasting: obj["for"] as? Int) {
                 return done(400, ["error": problem])
             }
             logAction("lan-on", pid: Int(pid), name: row.processName, port: Int(row.port))
@@ -337,6 +357,17 @@ enum WebAPI {
             if let problem = m.makeMain(row) { return done(400, ["error": problem]) }
             logAction("main", pid: Int(pid), name: row.processName, port: Int(row.port))
             return done(200, ["result": "ok", "message": "\(m.names.base[Names.key(row)] ?? row.title)\(Names.suffix) opens port \(row.port) now."])
+        case "more":
+            // Half an hour more for a public link or a server on the network that has a deadline. Only ever asked for by its owner, here.
+            guard let row = lanRow else { return done(400, ["error": "Not a port."]) }
+            if (obj["kind"] as? String) == "public", Tunnels.shared.active[row.port]?.until != nil {
+                Tunnels.shared.more(row.port)
+            } else if (obj["kind"] as? String) == "network", m.lanShares[row.id]?.until != nil {
+                m.moreTime(row)
+            } else {
+                return done(400, ["error": "That has no time limit to add to."])
+            }
+            return done(200, ["result": "ok", "message": "30 minutes more."])
         case "lan-password":
             // A new one typed, a new random one, or none: for the project, all its servers. Whoever was signed in signs in again.
             guard let row = lanRow else { return done(400, ["error": "Not a port."]) }
@@ -355,6 +386,10 @@ enum WebAPI {
             return done(400, ["error": "Unknown action."])
         }
 
+        // Docker Desktop is quit on purpose from the list of apps, or not at all: never through a port row's pid.
+        if op == "quit", let no = Docker.quitRefusal(path: path, isListedApp: group != nil, fromApps: (obj["from"] as? String) == "apps") {
+            return done(200, ["result": ActionResult.system.rawValue, "message": no])
+        }
         if op == "force" && !fresh(mayForce[pid]) { return done(409, ["error": "Stop it first."]) }
         if op == "admin" && !fresh(mayAdmin[pid]) { return done(409, ["error": "Stop it first."]) }
 

@@ -21,8 +21,9 @@ import SwiftUI
 ///       --lan-door LABEL PLIST the door that steps aside when the listener opens on a port
 ///                              under 1024: a throwaway one (never the real label)
 ///       --expand PORT          with --demo-menu: that row starts with its details open
+///       --choosing share|network  with --expand: that row is asking "for how long?"
 ///       --menu-height N        with --demo-menu: the list may grow that tall, to show a whole open row
-///       --fixture [shared|both|servers] made-up ports instead of this Mac's, for snapshots; "shared"
+///       --fixture [shared|both|servers|docker|all] made-up ports instead of this Mac's, for snapshots; "shared"
 ///                              also shows one of them as on the network (nothing is opened), "both"
 ///                              adds a public link to it, "servers" has both of a project's servers
 ///                              on the network and two made-up devices signed in
@@ -71,11 +72,21 @@ enum DebugCLI {
 
     /// A small made-up Mac: two projects and two apps. Snapshots of real ports must not leave this one.
     @MainActor
-    private static func useFixture(shared: Bool, servers: Bool = false) {
+    private static func useFixture(shared: Bool, servers: Bool = false, docker: Bool = false) {
+        let rows = fixtureRows(docker: docker)
+        let project = "/Users/sam/code/storefront"
+        Monitor.shared.useFixture(rows, shared: shared || servers ? project : nil, every: servers)
+        if servers {
+            OnNetwork.shared.withVisitors { v in for device in ["192.168.1.31", "192.168.1.47"] { _ = v.signIn(to: "storefront", project: project, from: device, now: Date()) } }
+        }
+    }
+
+    /// The made-up Mac. `docker` adds what a made-up Docker publishes.
+    static func fixtureRows(docker: Bool = false) -> [PortRow] {
         func row(_ port: UInt16, _ process: String, folder: String? = nil, app: String? = nil, framework: String? = nil,
                  category: PortCategory = .dev, scope: AddressScope = .loopback, pid: pid_t, minutes: Double) -> PortRow {
             PortRow(port: port, addresses: scope == .all ? ["all interfaces"] : ["127.0.0.1"], scope: scope, pid: pid, ppid: 1,
-                    processName: process, path: nil, cwd: folder, projectRoot: folder, command: folder == nil ? nil : "\(process) dev",
+                    processName: process, path: app.map { "/Applications/\($0).app/Contents/MacOS/\(process)" } ?? "/opt/homebrew/bin/\(process)", cwd: folder, projectRoot: folder, command: folder == nil ? nil : "\(process) dev",
                     started: Date().addingTimeInterval(-minutes * 60), footprint: UInt64(40 + Int(port) % 200) << 20, workers: 0, workerPids: [],
                     isSystem: false, appBundle: app.map { "/Applications/\($0).app" }, appName: app, framework: framework,
                     category: category, isSelf: false)
@@ -87,11 +98,16 @@ enum DebugCLI {
             row(5432, "postgres", app: "Postgres", framework: "PostgreSQL", category: .database, pid: 612, minutes: 3000),
             row(11434, "ollama", app: "Ollama", framework: "Ollama", category: .appHelper, pid: 733, minutes: 900),
         ]
-        let project = "/Users/sam/code/storefront"
-        Monitor.shared.useFixture(rows, shared: shared || servers ? project : nil, every: servers)
-        if servers {
-            OnNetwork.shared.withVisitors { v in for device in ["192.168.1.31", "192.168.1.47"] { _ = v.signIn(to: "storefront", project: project, from: device, now: Date()) } }
+        guard docker else { return rows }
+        // What Docker publishes, each as its container: a compose project of two, and one on its own.
+        func published(_ port: UInt16, _ name: String, _ image: String, project: String? = nil, service: String? = nil) -> PortRow {
+            PortRow(port: port, addresses: ["all interfaces"], scope: .all, pid: 2201, ppid: 1, processName: "Docker", path: "/Applications/Docker.app/Contents/MacOS/com.docker.backend",
+                    cwd: nil, projectRoot: nil, command: nil, started: Date().addingTimeInterval(-5400), footprint: 180 << 20, workers: 0, workerPids: [],
+                    isSystem: false, appBundle: "/Applications/Docker.app", appName: "Docker", framework: "Docker", category: .appHelper, isSelf: false)
+                .inContainer(Docker.Container(id: String(repeating: "a", count: 12) + String(port), name: name, image: image, project: project, service: service))
         }
+        return rows + [published(8080, "shop-web-1", "nginx:1.27", project: "shop", service: "web"), published(5433, "shop-db-1", "postgres:16", project: "shop", service: "db"),
+                       published(8025, "mailpit", "axllent/mailpit")]
     }
 
     // MARK: Agent on a test port
@@ -263,9 +279,9 @@ enum DebugCLI {
         if args.contains("--bare-names") { Monitor.shared.doorIsOurs = true }  // not the real door: for looking only
         if args.contains("--fixture") {
             let how = value(after: "--fixture")
-            useFixture(shared: how == "shared" || how == "both", servers: how == "servers")
-            // "both": on the network, and with a (made-up) public link that is ready.
-            if how == "both" { Tunnels.shared.useFixture(port: 3000, title: "storefront", url: "https://quiet-harbor-demo.trycloudflare.com") }
+            useFixture(shared: how == "shared" || how == "both" || how == "all", servers: how == "servers", docker: how == "docker" || how == "all")
+            // "both": on the network, and with a (made-up) public link that is ready. "all": that, and Docker's containers too.
+            if how == "both" || how == "all" { Tunnels.shared.useFixture(port: 3000, title: "storefront", url: "https://quiet-harbor-demo.trycloudflare.com") }
         }
         if args.contains("--port-notes") { Monitor.shared.pagePort = 8471; Monitor.shared.port80Taken = true }
         if args.contains("--serve") {
@@ -381,6 +397,12 @@ enum DebugCLI {
     /// it would announce. With 127.0.0.1 everything about the listener can be checked from
     /// this Mac, where a firewall would hold connections through the network address.
     static var lanAddress: String? { isDebugRun ? value(after: "--lan-address") : nil }
+
+    /// --choosing share|network: with --expand, that row starts with its "for how long?" choices showing, for snapshots.
+    static var choosing: String? { value(after: "--choosing") }
+
+    /// --shared-file PATH: where a debug run leaves its note for the command line (none otherwise, see Shared).
+    static var sharedFile: String? { value(after: "--shared-file") }
 
     /// --expand PORT: the menu row that starts with its details open, for snapshots.
     static var expandPort: UInt16? { UInt16(value(after: "--expand") ?? "") }

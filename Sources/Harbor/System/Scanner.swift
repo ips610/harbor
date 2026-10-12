@@ -25,6 +25,22 @@ struct PortRow: Identifiable, Hashable {
     let framework: String?
     let category: PortCategory
     let isSelf: Bool
+    /// The container this port is published for, when the listener is Docker's own process (see Docker).
+    var container: Docker.Container? = nil
+
+    /// The same listener, known as the container it forwards to: a database or a dev
+    /// server by its image, and tagged with that image.
+    func inContainer(_ c: Docker.Container) -> PortRow {
+        PortRow(port: port, addresses: addresses, scope: scope, pid: pid, ppid: ppid, processName: processName, path: path, cwd: cwd,
+                projectRoot: projectRoot, command: command, started: started, footprint: footprint, workers: workers, workerPids: workerPids,
+                isSystem: isSystem, appBundle: appBundle, appName: appName, framework: c.image.isEmpty ? framework : c.image,
+                category: c.isDatabase ? .database : .dev, isSelf: isSelf, container: c)
+    }
+
+    /// What the row goes by: the container, else the process.
+    var label: String { container?.title ?? processName }
+    /// What its card is called: the compose project (or "Docker"), else its own title.
+    var groupTitle: String { container?.group ?? title }
 
     /// Hidden unless "Show system ports" is on.
     var isHiddenByDefault: Bool { port < 1024 || isSystem || isSelf }
@@ -87,7 +103,7 @@ struct PortRow: Identifiable, Hashable {
     }
 
     /// The card a row belongs to: its project folder, else its app.
-    var groupKey: String { projectFolder.map { "p:" + Fmt.path($0) } ?? "a:" + (appName ?? processName) }
+    var groupKey: String { container.map { "d:" + $0.group } ?? projectFolder.map { "p:" + Fmt.path($0) } ?? "a:" + (appName ?? processName) }
 
     /// Project colours, in the page's fixed order.
     static let palette = ["#4f8cf7", "#19a77d", "#9a84f4", "#de5a88", "#cf9214", "#16a6c2", "#e8743f", "#6b8f2a"]
@@ -106,7 +122,7 @@ struct PortRow: Identifiable, Hashable {
     }
 
     /// What to call this server in one word: its project, else its app.
-    var title: String { projectFolder.map(Fmt.lastComponent) ?? appName ?? processName }
+    var title: String { container?.title ?? projectFolder.map(Fmt.lastComponent) ?? appName ?? processName }
 
     /// A hint for well-known macOS listeners that surprise developers.
     var hint: String? {
@@ -224,6 +240,7 @@ final class Scanner: @unchecked Sendable {
     private var commandCache: [pid_t: (name: String, command: String)] = [:]
     private var bundleNames: [String: String] = [:]
     private var frameworkCache: [String: String] = [:]
+    private var docker = Docker.Book()
 
     private static let projectMarkers = [
         ".git", "package.json", "pyproject.toml", "Cargo.toml", "go.mod", "Gemfile",
@@ -285,7 +302,7 @@ final class Scanner: @unchecked Sendable {
 
     // MARK: Full scan (only while a window or the menu is open)
 
-    func fullScan(sampleCPU: Bool) -> FullScan {
+    func fullScan(sampleCPU: Bool, freshDocker: Bool = false) -> FullScan {
         let t0 = LibProc.monotonicNanos()
         var report = ZombieReport()
         var byParent: [pid_t: Int] = [:]
@@ -331,7 +348,8 @@ final class Scanner: @unchecked Sendable {
         cpuPrev = sampleCPU ? newCPU : [:]
         report.parents = Self.parents(byParent)
 
-        let ports = scanPorts(procs)
+        // Docker's published ports, each as its container (asked only while Docker is listening).
+        let ports = docker.name(scanPorts(procs), fresh: freshDocker)
         let apps = groupApps(procs, sampleCPU: sampleCPU)
         others.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         let dt = Double(LibProc.monotonicNanos() - t0) / 1e9

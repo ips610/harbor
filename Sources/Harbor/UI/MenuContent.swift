@@ -219,6 +219,8 @@ struct MenuContent: View {
             .disabled(updates.checking)
             Text("\(AppInfo.name) \(updates.current)")
             Button("\(AppInfo.name) on GitHub") { NSWorkspace.shared.open(Updates.home) }
+            // harbor ls, kill and open in Terminal: a link to this app on the PATH, put there or taken away again.
+            Button(CommandLink.installed() == nil ? "Install the harbor command…" : "Remove the harbor command…") { askCommand() }
             Divider()
             Button("Open \(AppInfo.name) page") { WebServer.shared.openInBrowser() }
             Button("Quit \(AppInfo.name)") { NSApp.terminate(nil) }
@@ -323,9 +325,9 @@ struct MenuContent: View {
         case .project:
             // Like the page's cards: projects, then plain folders, then apps.
             let groups = Dictionary(grouping: rows) { $0.groupKey }
-            func rank(_ r: PortRow) -> Int { r.projectRoot != nil ? 0 : r.projectFolder != nil ? 1 : 2 }
+            func rank(_ r: PortRow) -> Int { r.projectRoot != nil ? 0 : r.projectFolder != nil || r.container?.project != nil ? 1 : 2 }
             return groups.values
-                .map { rs in MenuSection(title: rs[0].title, rows: rs.sorted { $0.port < $1.port }) }
+                .map { rs in MenuSection(title: rs[0].groupTitle, rows: rs.sorted { $0.port < $1.port }) }
                 .sorted { a, b in
                     let ra = rank(a.rows[0]), rb = rank(b.rows[0])
                     if ra != rb { return ra < rb }
@@ -355,6 +357,25 @@ struct MenuContent: View {
         monitor.refreshInterval = value
         if typed < 5 { monitor.flash("Raised to 5 seconds, the shortest interval.") }
         else if typed > 3600 { monitor.flash("Capped at 3600 seconds (one hour).") }
+    }
+
+    /// Says exactly what will be done, does it on a yes, and says what was done.
+    private func askCommand() {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.window.appearance = monitor.appearance.nsAppearance
+        let installed = CommandLink.installed()
+        if let installed {
+            alert.messageText = "Remove the harbor command?"
+            alert.informativeText = "\(Fmt.path(installed)) is a link to this app. Without it Terminal no longer has harbor ls, kill and open; the app itself stays as it is."
+        } else {
+            alert.messageText = "Install the harbor command?"
+            alert.informativeText = "A link to this app goes into /usr/local/bin, or into ~/.local/bin when that one can't be written to. No administrator password. After that Terminal has harbor ls, harbor kill <port> and harbor open <port or name>."
+        }
+        alert.addButton(withTitle: installed == nil ? "Install" : "Remove")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        monitor.notify(installed == nil ? CommandLink.install().note : CommandLink.remove())
     }
 
     private func setLoginItem(_ on: Bool) {
@@ -404,6 +425,9 @@ private struct PortLine: View {
     @State private var showQR = false
     @State private var showLAN = false
     @State private var showPassword = false
+    /// "For how long?" is being asked: for a public link, or for the network.
+    @State private var choosingShare = false
+    @State private var choosingNetwork = false
 
     var body: some View {
         let tunnel = Tunnels.shared.active[row.port]
@@ -419,7 +443,7 @@ private struct PortLine: View {
                     .frame(width: 58, alignment: .leading)
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 5) {
-                        let name = Text(showTitle ? row.title : row.processName).font(.system(size: 13)).lineLimit(1)
+                        let name = Text(verbatim: showTitle ? row.title : row.label).font(.system(size: 13)).lineLimit(1)
                         // The framework tag only when it fits whole; otherwise just the name.
                         if let fw = row.framework, fw != row.title {
                             ViewThatFits(in: .horizontal) {
@@ -490,9 +514,10 @@ private struct PortLine: View {
                         .popover(isPresented: $showLAN, arrowEdge: .bottom) { LANCard(row: row) }
                 }
                 if !(row.isSystem || row.isSelf) {
-                    ShareControl(row: row, note: $shareNote)
+                    ShareControl(row: row, note: $shareNote, choosing: $choosingShare)
                 }
-                if !(row.isSystem || row.isSelf) {
+                // Not for a container either: the process on its port is Docker itself (the details say so).
+                if !(row.isSystem || row.isSelf || Docker.owns(path: row.path)) {
                     StopControl(
                         verb: "kill",
                         question: question,
@@ -538,6 +563,18 @@ private struct PortLine: View {
                     .textSelection(.enabled)
                     .padding(.leading, 77)
             }
+            if choosingShare {
+                // How long the public link lasts: one click on a choice starts it. The one made last time is marked.
+                HStack(spacing: 6) {
+                    ForEach(Lasting.choices, id: \.self) { seconds in
+                        Pill(title: Lasting.title(seconds), style: seconds == Lasting.remembered(.link) ? .go : .plain) {
+                            choosingShare = false
+                            shareNote = Tunnels.shared.start(row, for: seconds)
+                        }
+                    }
+                }
+                .padding(.leading, 77)
+            }
             if let tunnel { tunnelLine(tunnel).padding(.leading, 77) }
             if expanded { details.padding(.leading, 77) }
         }
@@ -548,7 +585,16 @@ private struct PortLine: View {
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture { withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() } }
-        .onAppear { if DebugCLI.expandPort == row.port { expanded = true } }
+        .onAppear {
+            guard DebugCLI.expandPort == row.port else { return }
+            expanded = true
+            // For a snapshot of the "for how long?" choices.
+            choosingShare = DebugCLI.choosing == "share"
+            choosingNetwork = DebugCLI.choosing == "network"
+            if choosingShare { shareNote = "Anyone with the link can open \(row.title) on port \(row.port). For how long?" }
+        }
+        // Its details are open: now, and only now, is its server asked what it serves.
+        .onChange(of: expanded, initial: true) { _, open in if open { monitor.look(at: [row.id]) } }
         .contextMenu {
             Button("Open \(monitor.address(row).absoluteString)") { Engine.open(row) }
             Button("Copy URL") { Engine.copyURL(row); monitor.flash("Copied \(monitor.address(row).absoluteString)") }
@@ -566,7 +612,8 @@ private struct PortLine: View {
                     Button("Network Password…") { askNetworkPassword() }
                     Button("Turn Off \(name)\(Lan.suffix)") { monitor.stopSharing(row.id) }
                 } else {
-                    Button("Put on Network as \(name)\(Lan.suffix)…") { askShare() }
+                    // The same way in as "turn on": its details open, asking for how long first.
+                    Button("Put on Network as \(name)\(Lan.suffix)…") { expanded = true; choosingNetwork = true }
                 }
                 Button("Rename on Network…") { askNetworkName() }
                 if monitor.hasSiblings(row), !monitor.isMain(row) { Button("Make This the Main Server") { makeMain() } }
@@ -598,6 +645,11 @@ private struct PortLine: View {
                 Pill(title: "turn off", style: .danger) { monitor.stopSharing(row.id); showPassword = false }
             }
             .padding(.leading, 58)
+            if let left = Lasting.left(monitor.lanShares[row.id]?.until, now: Date()) {
+                DetailLine(label: "Stays on", value: left) {
+                    Pill(title: "+30 min", help: "Half an hour more") { monitor.moreTime(row) }
+                }
+            }
             DetailLine(label: "Password", value: monitor.lanShares[row.id]?.hasPassword == true
                        ? (showPassword ? monitor.networkPassword(key) ?? "" : "••••••••") : "none: anyone on this Wi-Fi can open it") {
                 if monitor.lanShares[row.id]?.hasPassword == true { Pill(title: showPassword ? "hide" : "show") { showPassword.toggle() } }
@@ -625,8 +677,19 @@ private struct PortLine: View {
             // line: beside a name they would squeeze it into two.
             DetailLine(label: Lan.suffix, value: "\(name)\(Lan.suffix)  ·  off") { EmptyView() }
             HStack(spacing: 6) {
-                Pill(title: "turn on", style: .open, help: "Other devices on this Wi-Fi open it at http://\(name)\(Lan.suffix)/") { askShare() }
-                Pill(title: "rename", help: "Change its name on the network") { askNetworkName() }
+                if choosingNetwork {
+                    // How long it stays on the network, then (when the project has none yet) its password.
+                    ForEach(Lasting.choices, id: \.self) { seconds in
+                        Pill(title: Lasting.title(seconds), style: seconds == Lasting.remembered(.network) ? .go : .plain) {
+                            choosingNetwork = false
+                            askShare(lasting: seconds)
+                        }
+                    }
+                    Pill(title: "cancel") { choosingNetwork = false }
+                } else {
+                    Pill(title: "turn on", style: .open, help: "Other devices on this Wi-Fi open it at http://\(name)\(Lan.suffix)/") { choosingNetwork = true }
+                    Pill(title: "rename", help: "Change its name on the network") { askNetworkName() }
+                }
             }
             .padding(.leading, 58)
         }
@@ -665,19 +728,19 @@ private struct PortLine: View {
     }
 
     /// Turning it on: with the password it has, or one suggested here to keep, change or do without.
-    private func askShare() {
+    private func askShare(lasting: Int? = nil) {
         let key = Names.key(row)
         guard let name = monitor.networkName(row) else { return }
         var problem: String?
         if monitor.hasNetworkPassword(key) {
-            problem = monitor.shareOnNetwork(row)
+            problem = monitor.shareOnNetwork(row, lasting: lasting)
         } else if let choice = ask("Put \(name)\(Lan.suffix) on your network?",
                                    "Other devices on this Wi-Fi open it with this password. Keep it, or type your own (at least \(Lan.minPassword) characters).",
                                    value: Lan.randomPassword(), yes: "Share", other: "No Password…") {
             if !choice.other {
-                problem = monitor.shareOnNetwork(row, password: choice.answer)
+                problem = monitor.shareOnNetwork(row, password: choice.answer, lasting: lasting)
             } else if confirm("Share without a password?", monitor.anyoneCanOpen(row), yes: "Share") {
-                problem = monitor.shareOnNetwork(row, open: true)
+                problem = monitor.shareOnNetwork(row, open: true, lasting: lasting)
             } else {
                 return
             }
@@ -757,6 +820,12 @@ private struct PortLine: View {
                     // With the details open and another code in them, this one is there too, beside it: both at once.
                     if !both { Pill(title: showQR ? "hide qr" : "qr") { showQR.toggle() } }
                 }
+                if let left = Lasting.left(t.until, now: Date()) {
+                    HStack(spacing: 6) {
+                        Text(verbatim: "Public link · \(left)").font(.system(size: 11)).foregroundStyle(.secondary)
+                        Pill(title: "+30 min", help: "Half an hour more") { Tunnels.shared.more(row.port) }
+                    }
+                }
                 if showQR, !both { QRCode(text: url).frame(maxWidth: .infinity) }
             }
         }
@@ -783,7 +852,7 @@ private struct PortLine: View {
 
     private var subtitle: String {
         var parts: [String] = []
-        if showTitle && row.title != row.processName { parts.append(row.processName) }
+        if showTitle && row.title != row.label { parts.append(row.label) }
         parts.append("pid \(row.pid)")
         if row.workers > 0 { parts[parts.count - 1] += " +\(row.workers)" }
         if row.started != nil { parts.append("up \(Fmt.uptime(since: row.started))") }
@@ -792,6 +861,14 @@ private struct PortLine: View {
 
     private var details: some View {
         VStack(alignment: .leading, spacing: 4) {
+            if let c = row.container {
+                DetailLine(label: "Container", value: c.name) { EmptyView() }
+                if !c.image.isEmpty { DetailLine(label: "Image", value: c.image) { EmptyView() } }
+                if let project = c.project { DetailLine(label: "Compose", value: project + (c.service.map { " / " + $0 } ?? "")) { EmptyView() } }
+            }
+            if Docker.owns(path: row.path) {
+                Text(verbatim: Docker.noKill(row.container)).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             if let folder = row.folder {
                 DetailLine(label: "Folder", value: Fmt.path(folder)) {
                     Pill(title: "reveal") { Engine.reveal(folder) }
@@ -811,6 +888,9 @@ private struct PortLine: View {
                     Engine.copy(row.url.absoluteString)
                     monitor.flash("Copied \(row.url.absoluteString)")
                 }
+            }
+            if let answer = monitor.served[row.id] {
+                DetailLine(label: "Serves", value: answer.line) { EmptyView() }
             }
             let canShare = monitor.isNetworkRow(row), shared = monitor.lanShares[row.id] != nil
             // Its two names, one above the other, each with its own rename: on this Mac, and on the network.
@@ -856,8 +936,15 @@ private struct PortLine: View {
 private struct ShareControl: View {
     let row: PortRow
     @Binding var note: String?
-    @State private var confirming = false
+    /// "For how long?": the row shows the choices under itself while this is on.
+    @Binding var confirming: Bool
     @State private var armed = 0
+
+    init(row: PortRow, note: Binding<String?>, choosing: Binding<Bool>) {
+        self.row = row
+        _note = note
+        _confirming = choosing
+    }
 
     var body: some View {
         if let t = Tunnels.shared.active[row.port] {
@@ -870,10 +957,6 @@ private struct ShareControl: View {
                 }
             }
         } else if confirming {
-            Pill(title: "share", style: .go) {
-                confirming = false
-                note = Tunnels.shared.start(row)
-            }
             Pill(title: "cancel") { confirming = false; note = nil }
         } else {
             Pill(title: "share", style: .share, help: "Get a public link for :\(row.port)") {
@@ -882,11 +965,11 @@ private struct ShareControl: View {
                     return
                 }
                 confirming = true
-                note = "Anyone with the link can open \(row.title) on port \(row.port) until you stop sharing."
+                note = "Anyone with the link can open \(row.title) on port \(row.port). For how long?"
                 armed += 1
                 let token = armed
                 Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 8_000_000_000)
+                    try? await Task.sleep(nanoseconds: 15_000_000_000)
                     if armed == token, confirming { confirming = false; note = nil }
                 }
             }
@@ -1062,7 +1145,7 @@ private struct HealthFooter: View {
                     if p.canQuit {
                         StopControl(
                             verb: "quit",
-                            question: "Quit \(p.name) (pid \(p.pid))? macOS then clears its stuck processes.",
+                            question: "Quit \(p.name) (pid \(p.pid))? macOS then clears its stuck processes." + (Docker.owns(path: p.path) ? " " + Docker.quitNote : ""),
                             primary: {
                                 await Engine.quit(pid: p.pid, bundlePath: p.path.flatMap(LibProc.appBundle(forExecutable:)),
                                                   name: p.name, path: p.path)

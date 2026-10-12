@@ -71,7 +71,12 @@ enum Names {
     }
 
     /// What a name belongs to, and what a rename is saved under: the project folder, else the app.
-    static func key(_ row: PortRow) -> String { row.projectFolder ?? "app:" + (row.appName ?? row.processName) }
+    /// A container is its own: "docker/<compose project>/<service>", which the rules below read
+    /// like a folder, so two projects' "web" become web and shop-web.
+    static func key(_ row: PortRow) -> String {
+        if let c = row.container { return "docker/\(c.project ?? "docker")/\(c.title)" }
+        return row.projectFolder ?? "app:" + (row.appName ?? row.processName)
+    }
 
     /// Gives every project a name, and its other ports `<name>-<port>`.
     ///
@@ -94,7 +99,10 @@ enum Names {
         let held = Set(previous.byRow.filter { live.contains($0.key) }.values)
         func started(_ k: String) -> Date { groups[k]?.compactMap(\.started).min() ?? .distantFuture }
         func rank(_ k: String) -> Int { saved[k] != nil ? 0 : previous.base[k] != nil ? 1 : 2 }
-        let order = groups.keys.sorted { (rank($0), started($0), $0) < (rank($1), started($1), $1) }
+        // A container comes after folders and apps: its row carries Docker's own start time, which says nothing
+        // about the container, and a compose service must not take a name from a project of mine on that account.
+        func late(_ k: String) -> Int { k.hasPrefix("docker/") ? 1 : 0 }
+        let order = groups.keys.sorted { (rank($0), late($0), started($0), $0) < (rank($1), late($1), started($1), $1) }
 
         var table = Table()
         var used = Set<String>()

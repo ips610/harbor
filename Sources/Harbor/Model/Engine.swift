@@ -75,6 +75,18 @@ enum Engine {
         pid <= 1 || pid == getpid() || LibProc.isSystemPath(path)
     }
 
+    /// Why harbor won't send this process a signal, or nil when it may: macOS's own, harbor
+    /// itself, or one of Docker's (a container's port is held by Docker's own process, and
+    /// stopping that would stop Docker and every container with it). The app, the page and
+    /// the command line all ask here.
+    nonisolated static func refusal(pid: pid_t, path: String?, name: String) -> ActionReport? {
+        if pid <= 1 || pid == getpid() || LibProc.isSystemPath(path) {
+            return ActionReport(result: .system, message: "\(name) is part of macOS, so \(AppInfo.name) leaves it alone.")
+        }
+        if Docker.owns(path: path) { return ActionReport(result: .system, message: Docker.noKill(nil)) }
+        return nil
+    }
+
     /// Is `pid` still the process the page showed? `expected` is the identity
     /// captured then; nil means we have nothing to compare, so allow it.
     nonisolated static func identityMatches(_ pid: pid_t, _ expected: String?) -> Bool {
@@ -90,9 +102,7 @@ enum Engine {
     /// socket get SIGTERM once the parent is gone, so the port is really freed.
     static func stop(pid: pid_t, workers: [pid_t] = [], name: String, path: String?, label: String,
                      expect: String? = nil, workerExpect: [pid_t: String] = [:]) async -> ActionReport {
-        if isProtected(pid, path) {
-            return ActionReport(result: .system, message: "\(name) is part of macOS, so \(AppInfo.name) leaves it alone.")
-        }
+        if let no = refusal(pid: pid, path: path, name: name) { return no }
         guard identityMatches(pid, expect) else { return changed(label) }
         let snapshot = restartSnapshot(pid: pid, path: path)
         switch ProcessControl.send(SIGTERM, to: pid) {
@@ -128,9 +138,7 @@ enum Engine {
     /// SIGKILL (or Force Quit for a GUI app), for when stop didn't work.
     static func force(pid: pid_t, workers: [pid_t] = [], name: String, path: String?, label: String,
                       expect: String? = nil, workerExpect: [pid_t: String] = [:]) async -> ActionReport {
-        if isProtected(pid, path) {
-            return ActionReport(result: .system, message: "\(name) is part of macOS, so \(AppInfo.name) leaves it alone.")
-        }
+        if let no = refusal(pid: pid, path: path, name: name) { return no }
         guard identityMatches(pid, expect) else { return changed(label) }
         let snapshot = restartSnapshot(pid: pid, path: path)
         for w in workers where ProcessControl.isAlive(w) && identityMatches(w, workerExpect[w]) { _ = ProcessControl.send(SIGKILL, to: w) }
@@ -176,9 +184,7 @@ enum Engine {
     /// Root-owned processes: macOS shows its own password dialog. harbor
     /// never sees the password.
     static func admin(pid: pid_t, name: String, path: String?, expect: String? = nil) async -> ActionReport {
-        if isProtected(pid, path) {
-            return ActionReport(result: .system, message: "\(name) is part of macOS, so \(AppInfo.name) leaves it alone.")
-        }
+        if let no = refusal(pid: pid, path: path, name: name) { return no }
         guard identityMatches(pid, expect) else { return changed(name) }
         let snapshot = restartSnapshot(pid: pid, path: path)
         NSApp.activate(ignoringOtherApps: true)

@@ -365,7 +365,7 @@ final class WebServer: @unchecked Sendable {
         /// from another website, which must not make harbor open anything.
         case page(look: Bool, crossNav: Bool)
         // Signed-in calls, answered by WebAPI on the main actor.
-        case state, qr(port: Int, kind: String), action(Data)
+        case state(see: [String]), qr(port: Int, kind: String), action(Data)
     }
 
     /// Runs on `queue` (it uses the login codes and the invite clock).
@@ -427,7 +427,8 @@ final class WebServer: @unchecked Sendable {
         guard cookieOK, keyOK else { return .reply(.json(403, ["error": "session"])) }
         switch (req.method, path) {
         case ("GET", "/api/state"):
-            return .state
+            // The rows the page has on screen right now ("pid-port", a few of them): only those are looked at (see Probe).
+            return .state(see: Probe.rows(in: Self.param("see", in: query) ?? ""))
         case ("GET", "/api/qr"):
             return .qr(port: Int(Self.param("port", in: query) ?? "") ?? 0, kind: Self.param("kind", in: query) ?? "")
         case ("POST", "/api/action"):
@@ -471,10 +472,10 @@ final class WebServer: @unchecked Sendable {
                                        nonce: nonce, crossNav: crossNav)
                 self.send(c, HTTPResponse(status: 200, contentType: "text/html; charset=utf-8", body: Data(page.utf8)))
             }
-        case .state:
+        case .state(let see):
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    WebAPI.state { data in self.send(c, HTTPResponse(status: 200, contentType: "application/json", body: data)) }
+                    WebAPI.state(see: see) { data in self.send(c, HTTPResponse(status: 200, contentType: "application/json", body: data)) }
                 }
             }
         case .qr(let port, let kind):

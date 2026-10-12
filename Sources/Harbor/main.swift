@@ -1,8 +1,13 @@
 import AppKit
 
-// The port-80 door (started by launchd): redirect and exit, no app, no menu bar.
-if CommandLine.arguments.contains("--door") {
-    Door.run()
+// What this start is, decided in one place (CLI.start): a command from Terminal (`harbor ls`,
+// `harbor kill 3000`, `harbor open storefront`), which runs here and exits and never starts
+// the app, a second menu bar icon, the page or a door; or the port-80 door (started by
+// launchd), which redirects and exits; or the app.
+switch CLI.start(CommandLine.arguments) {
+case .command(let call): exit(CLI.run(call))
+case .door: Door.run()
+case .app: break
 }
 
 // Debug/test commands (`--dump`, `--bench`, `--test-stop`, `--make-icon`) run

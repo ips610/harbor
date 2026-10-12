@@ -436,7 +436,7 @@ final class OnNetworkTests: XCTestCase {
         XCTAssertEqual(shared?["on"] as? Bool, true)
         XCTAssertEqual(shared?["link"] as? String, "http://\(m.lanShares.values.first?.name ?? "").local/")
         XCTAssertEqual(shared?["password"] as? Bool, true)
-        XCTAssertEqual(Set((shared ?? [:]).keys), ["name", "on", "link", "password", "trouble", "main", "several", "note", "help", "anyone"])
+        XCTAssertEqual(Set((shared ?? [:]).keys), ["name", "on", "link", "password", "trouble", "main", "several", "note", "help", "anyone", "left"])
         XCTAssertTrue(shared?["trouble"] is NSNull)                                       // announced: nothing to say
         XCTAssertEqual(shared?["main"] as? Bool, true)
         XCTAssertEqual(shared?["several"] as? Bool, true)                                // the storefront has a second server
