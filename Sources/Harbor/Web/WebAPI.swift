@@ -39,6 +39,17 @@ enum WebAPI {
 
     private static func n(_ v: Any?) -> Any { v ?? NSNull() }
 
+    /// A project's state on the network, for its main row: the name it has there, whether it
+    /// is on, its link, and whether it has a password. Never the password itself.
+    private static func lan(_ r: PortRow) -> [String: Any]? {
+        let m = Monitor.shared, key = Names.key(r)
+        guard m.isNetworkRow(r), let name = m.networkName(key) else { return nil }
+        let share = m.lanShares[key]
+        return ["name": share?.name ?? name, "on": share != nil, "link": n(m.networkLink(key)),
+                "password": share?.hasPassword ?? m.hasNetworkPassword(key),
+                "trouble": n(share?.isUnannounced == true ? Lan.notAnnounced(share?.name ?? name) : nil)]
+    }
+
     /// SMAppService.status is a blocking XPC call to the system: read it at most
     /// once a minute, and again right after either surface toggles it.
     static var loginItemCache: (on: Bool, at: Date)?
@@ -99,6 +110,8 @@ enum WebAPI {
                 "host": n(m.nameHost(r)),
                 "hostUrl": n(m.nameHost(r).map { "http://\($0)/" }),
                 "hostName": n(m.names.base[Names.key(r)]),
+                // On network: only on the row a project is shared through (its main server).
+                "local": n(lan(r)),
                 "uptime": n(r.started.map { max(0, now.timeIntervalSince($0)) }),
                 "memory": n(r.footprint.map { Double($0) }),
                 "workers": r.workers,
@@ -147,7 +160,7 @@ enum WebAPI {
                 "current": up.current, "latest": n(up.latest), "newer": up.newer, "url": up.url.absoluteString,
                 "checking": up.checking, "failed": up.failed,
             ],
-            "network": ["ip": n(lanIP), "name": n(bonjour), "firewall": LAN.firewallOn],
+            "network": ["ip": n(lanIP), "name": n(bonjour), "firewall": LAN.firewallOn, "asks": Lan.systemAsks(firewall: LAN.firewallOn), "plain": Lan.plainHttp],
             "portNotes": m.portNotes,
             "settings": [
                 "minPort": m.minPort, "maxPort": m.maxPort,
@@ -174,12 +187,14 @@ enum WebAPI {
     /// The QR code of a shared port's public link, as rows of 0/1.
     /// QR codes only for ports the page was shown: the public link, or (lan)
     /// the address other devices on this network would open.
-    static func qr(port: Int, lan: Bool, _ done: @escaping (Int, [String: Any]) -> Void) {
+    static func qr(port: Int, lan: Bool, name: Bool = false, _ done: @escaping (Int, [String: Any]) -> Void) {
         guard let p = UInt16(exactly: port), shownPorts.contains(p) else {
             return done(404, ["error": "That port isn't on the page any more."])
         }
         let url: String?
-        if lan {
+        if name {
+            url = Monitor.shared.ports.first { $0.port == p && Monitor.shared.isNetworkRow($0) }.flatMap { Monitor.shared.networkLink(Names.key($0)) }
+        } else if lan {
             url = Monitor.shared.ports.first { $0.port == p && $0.lanReachable }?.lanURL(ip: Monitor.shared.lanIP)
         } else if case .ready(let u)? = Tunnels.shared.active[p]?.phase {
             url = u
@@ -187,7 +202,7 @@ enum WebAPI {
             url = nil
         }
         guard let url, let rows = Tunnels.shared.qrRows(url) else {
-            return done(404, ["error": lan ? "No network address for that port." : "That port isn't shared."])
+            return done(404, ["error": name ? "That project isn't on the network." : lan ? "No network address for that port." : "That port isn't shared."])
         }
         done(200, ["url": url, "rows": rows])
     }
@@ -285,6 +300,38 @@ enum WebAPI {
             if let problem = m.rename(row, to: (obj["name"] as? String) ?? "") { return done(400, ["error": problem]) }
             logAction("rename", pid: Int(pid), name: row.processName, port: Int(row.port))
             return done(200, ["result": "ok", "message": m.nameHost(row).map { "It's \($0) now." } ?? "Renamed."])
+        case "lan-suggest":
+            return done(200, ["result": "ok", "password": Lan.randomPassword()])
+        case "lan-on":
+            // On the network as <name>.local: with the password sent, with none (open), or with the one it has.
+            // The page names the process; if it listens on several ports, its name's own row is the one meant.
+            guard let row = m.networkRow(forPid: pid) ?? row else { return done(400, ["error": "Not a port."]) }
+            if let problem = m.shareOnNetwork(row, password: obj["password"] as? String, open: (obj["open"] as? Bool) ?? false) {
+                return done(400, ["error": problem])
+            }
+            logAction("lan-on", pid: Int(pid), name: row.processName, port: Int(row.port))
+            return done(200, ["result": "ok", "message": (m.networkLink(Names.key(row)) ?? "It") + " is on your network."])
+        case "lan-off":
+            guard let row else { return done(400, ["error": "Not a port."]) }
+            m.stopSharing(Names.key(row))
+            logAction("lan-off", pid: Int(pid), name: row.processName, port: Int(row.port))
+            return done(200, ["result": "ok", "message": "\(row.title) is off the network."])
+        case "lan-rename":
+            guard let row else { return done(400, ["error": "Not a port."]) }
+            if let problem = m.renameOnNetwork(row, to: (obj["name"] as? String) ?? "") { return done(400, ["error": problem]) }
+            return done(200, ["result": "ok", "message": "On the network it is \(m.networkName(Names.key(row)) ?? "")\(Lan.suffix)."])
+        case "lan-password":
+            // A new one typed, a new random one, or none. Whoever was signed in signs in again.
+            guard let row else { return done(400, ["error": "Not a port."]) }
+            let random = (obj["random"] as? Bool) == true, off = (obj["off"] as? Bool) == true
+            let password = random ? Lan.randomPassword() : off ? nil : (obj["password"] as? String) ?? ""
+            if let problem = m.setNetworkPassword(row, password) { return done(400, ["error": problem]) }
+            logAction(off ? "lan-password-off" : "lan-password", pid: Int(pid), name: row.processName, port: Int(row.port))
+            return done(200, ["result": "ok", "message": off ? "No password any more." : "New password set.", "password": n(random ? password : nil)])
+        case "lan-show":
+            // The owner reads it out to a friend: only ever to the signed-in page, on this Mac.
+            guard let row else { return done(400, ["error": "Not a port."]) }
+            return done(200, ["result": "ok", "password": n(m.networkPassword(Names.key(row)))])
         case "stop", "quit", "force", "admin":
             break
         default:

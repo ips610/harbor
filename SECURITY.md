@@ -27,6 +27,48 @@ Only the latest release is supported. If you're on an older one, update first.
   `.localhost` name, forwards only to ports harbor lists itself (never to
   harbor's or headroom's own pages), and has no access to the session. Renames
   need the signed-in page.
+- On network (`<name>.local`) is off until you turn it on for a project, and it
+  never comes back on by itself. While something is on, one more listener is
+  open on port 80 of every interface (the only way to have port 80 without
+  root). It answers only connections that arrived on the address harbor
+  announced, only for a Host that is exactly a shared name, and it knows
+  nothing of harbor's page, the `.localhost` names or the projects that aren't
+  on. If another program already has port 80 there, nothing is shared. Without
+  root, no other program can bind the announced address on port 80. harbor
+  also holds port 80 on IPv6 while sharing, serves nothing there, and says so
+  if another program had it first.
+- A share is for one server: the process and the port it was turned on for.
+  When that server is gone, or another program listens on its port too, the
+  sharing stops. It never moves to another server.
+- With a password, harbor's own sign-in page comes before anything reaches the
+  project, WebSockets included. The visitor answers a challenge
+  (PBKDF2-HMAC-SHA256 with 50,000 rounds, then HMAC-SHA256 over the name and
+  the challenge), so the password itself is never sent. A challenge is signed
+  by harbor, lasts two minutes and signs in once. harbor keeps nothing for a
+  challenge that was only asked for, so asking for many is in nobody's way. The
+  two sign-in calls are taken only from the sign-in page itself (its exact
+  Origin, as JSON), so another website can't spend a visitor's tries.
+- A visitor's session is an HttpOnly cookie harbor keeps in memory for 12
+  hours, and the project never sees it. Turning sharing off, changing or
+  removing the password, renaming, or joining another network ends the
+  sessions and cuts every connection that was open for the name. A WebSocket with
+  nothing passing for 10 minutes is closed. The cookie belongs to the name,
+  not to a port (a cookie can't), so the visitor's browser also sends it to
+  anything else this Mac serves under that name.
+- Wrong passwords: five from one address lock that address for 5 minutes,
+  doubling up to an hour. More than 30 in 10 minutes for one name, from
+  anywhere: harbor tells you, and for 10 minutes every sign-in to that name
+  takes 2 seconds longer. Only a try with a good challenge and a wrong answer
+  counts. One address gets 24 connections at a time, everyone together 128,
+  and a request has 5 seconds to arrive.
+- Passwords are kept in the Keychain, never in settings or logs. One you type
+  needs 8 characters and can't be one of the obvious ones.
+- On network is plain http. The password keeps out people browsing the
+  network. Someone capturing its traffic can read the pages, reuse a signed-in
+  visitor's session, and try passwords against a captured sign-in at their own
+  pace. Someone who can change traffic can show a fake sign-in page and learn
+  the password. While a password is set, anyone on the network can get in the
+  way of sign-ins; they can't get in. For anything private, use share.
 - harbor only stops or shares a process it just showed you, and it re-checks the
   process is still the same one right before it acts, so a reused PID is safe.
 - Stopping a process owned by another user uses macOS's own password dialog,

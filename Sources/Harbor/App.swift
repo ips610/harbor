@@ -77,6 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         Tunnels.shared.stopAll()
+        OnNetwork.shared.stopAll()  // off the network (the system withdraws the names anyway when harbor is gone)
         // Remember the quit: a tab's later poll must not bring harbor back.
         if LaunchAgent.underLaunchd { LaunchAgent.setQuitMarker() }
     }

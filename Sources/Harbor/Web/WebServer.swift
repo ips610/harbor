@@ -365,7 +365,7 @@ final class WebServer: @unchecked Sendable {
         /// from another website, which must not make harbor open anything.
         case page(look: Bool, crossNav: Bool)
         // Signed-in calls, answered by WebAPI on the main actor.
-        case state, qr(port: Int, lan: Bool), action(Data)
+        case state, qr(port: Int, kind: String), action(Data)
     }
 
     /// Runs on `queue` (it uses the login codes and the invite clock).
@@ -429,7 +429,7 @@ final class WebServer: @unchecked Sendable {
         case ("GET", "/api/state"):
             return .state
         case ("GET", "/api/qr"):
-            return .qr(port: Int(Self.param("port", in: query) ?? "") ?? 0, lan: Self.param("kind", in: query) == "lan")
+            return .qr(port: Int(Self.param("port", in: query) ?? "") ?? 0, kind: Self.param("kind", in: query) ?? "")
         case ("POST", "/api/action"):
             return .action(req.body)
         default:
@@ -477,9 +477,11 @@ final class WebServer: @unchecked Sendable {
                     WebAPI.state { data in self.send(c, HTTPResponse(status: 200, contentType: "application/json", body: data)) }
                 }
             }
-        case .qr(let port, let lan):
+        case .qr(let port, let kind):
             DispatchQueue.main.async {
-                MainActor.assumeIsolated { WebAPI.qr(port: port, lan: lan) { status, json in self.send(c, .json(status, json)) } }
+                MainActor.assumeIsolated {
+                    WebAPI.qr(port: port, lan: kind == "lan", name: kind == "name") { status, json in self.send(c, .json(status, json)) }
+                }
             }
         case .action(let body):
             DispatchQueue.main.async {
@@ -619,6 +621,8 @@ struct HTTPResponse {
         case 200: return "OK"
         case 303: return "See Other"
         case 400: return "Bad Request"
+        case 401: return "Unauthorized"
+        case 429: return "Too Many Requests"
         case 403: return "Forbidden"
         case 404: return "Not Found"
         case 408: return "Request Timeout"

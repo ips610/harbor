@@ -402,6 +402,7 @@ private struct PortLine: View {
     @State private var shareNote: String?
     @State private var showQR = false
     @State private var showLAN = false
+    @State private var showPassword = false
 
     var body: some View {
         let tunnel = Tunnels.shared.active[row.port]
@@ -446,8 +447,22 @@ private struct PortLine: View {
                         }
                     }
                     HStack(spacing: 0) {
-                        // Where other devices reach it (click to copy), or "this Mac only".
-                        if let net = row.networkAddress(ip: monitor.lanIP) {
+                        // Where other devices reach it (click to copy), or "this Mac only". On the
+                        // network under its name: a tag in orange, like every other sign that the
+                        // network can reach something. It sits here because the line above has no room.
+                        if monitor.isNetworkRow(row), let link = monitor.networkLink(Names.key(row)) {
+                            Button { Engine.copy(link); monitor.flash("Copied \(link)") } label: {
+                                Text("on network")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1)
+                                    .foregroundStyle(.orange)
+                                    .background(RoundedRectangle(cornerRadius: 4).strokeBorder(Color.orange.opacity(0.5)))
+                            }
+                            .buttonStyle(.plain)
+                            .help("Copy \(link)")
+                            .fixedSize()
+                        } else if let net = row.networkAddress(ip: monitor.lanIP) {
                             Button {
                                 NSPasteboard.general.clearContents()
                                 NSPasteboard.general.setString("http://\(net)", forType: .string)
@@ -531,6 +546,7 @@ private struct PortLine: View {
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture { withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() } }
+        .onAppear { if DebugCLI.expandPort == row.port { expanded = true } }
         .contextMenu {
             Button("Open \(monitor.address(row).absoluteString)") { Engine.open(row) }
             Button("Copy URL") { Engine.copyURL(row); monitor.flash("Copied \(monitor.address(row).absoluteString)") }
@@ -540,6 +556,18 @@ private struct PortLine: View {
                     monitor.flash("Copied \(row.url.absoluteString)")
                 }
                 Button("Rename…") { askRename() }
+            }
+            if monitor.isNetworkRow(row), let name = monitor.networkName(Names.key(row)) {
+                Divider()
+                if let link = monitor.networkLink(Names.key(row)) {
+                    Button("Copy \(link)") { Engine.copy(link); monitor.flash("Copied \(link)") }
+                    Button("Network Password…") { askNetworkPassword() }
+                    Button("Turn Off \(name)\(Lan.suffix)") { monitor.stopSharing(Names.key(row)) }
+                } else {
+                    Button("Put on Network as \(name)\(Lan.suffix)…") { askShare() }
+                }
+                Button("Rename on Network…") { askNetworkName() }
+                Divider()
             }
             Button("Copy PID") {
                 NSPasteboard.general.clearContents()
@@ -552,6 +580,117 @@ private struct PortLine: View {
     }
 
     private var label: String { "\(row.processName) on :\(row.port)" }
+
+    /// On network: the project as `<name>.local` for other devices on this Wi-Fi. Off: the
+    /// switch and the name it would have. On: its link, its password, and a QR for a phone.
+    @ViewBuilder
+    private func network(_ name: String) -> some View {
+        let key = Names.key(row)
+        if let link = monitor.networkLink(key) {
+            DetailLine(label: Lan.suffix, value: link) {
+                Pill(title: "copy") { Engine.copy(link); monitor.flash("Copied \(link)") }
+            }
+            HStack(spacing: 6) {
+                Pill(title: "rename") { askNetworkName() }
+                Pill(title: "turn off", style: .danger) { monitor.stopSharing(key); showPassword = false }
+            }
+            .padding(.leading, 58)
+            DetailLine(label: "Password", value: monitor.lanShares[key]?.hasPassword == true
+                       ? (showPassword ? monitor.networkPassword(key) ?? "" : "••••••••") : "none: anyone on this Wi-Fi can open it") {
+                if monitor.lanShares[key]?.hasPassword == true { Pill(title: showPassword ? "hide" : "show") { showPassword.toggle() } }
+                Pill(title: "change") { askNetworkPassword() }
+            }
+            if let share = monitor.lanShares[key], share.isUnannounced {
+                Text(Lan.notAnnounced(share.name)).font(.system(size: 11)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
+            QRCode(text: link).padding(.leading, 58)
+            Text(Lan.plainHttp)
+                .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text(Lan.systemAsks(firewall: LAN.firewallOn))
+                .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        } else {
+            // Its name for other devices on this network, and the switch. The pills get their own
+            // line: beside a name they would squeeze it into two.
+            DetailLine(label: Lan.suffix, value: "\(name)\(Lan.suffix)  ·  off") { EmptyView() }
+            HStack(spacing: 6) {
+                Pill(title: "turn on", style: .open, help: "Other devices on this Wi-Fi open it at http://\(name)\(Lan.suffix)/") { askShare() }
+                Pill(title: "rename", help: "Change its name on the network") { askNetworkName() }
+            }
+            .padding(.leading, 58)
+        }
+    }
+
+    /// One question with a text field, in harbor's look. nil when cancelled.
+    private func ask(_ title: String, _ text: String, value: String, yes: String, other: String? = nil) -> (answer: String, other: Bool)? {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.window.appearance = monitor.appearance.nsAppearance
+        alert.messageText = title
+        alert.informativeText = text
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.stringValue = value
+        alert.accessoryView = field
+        alert.addButton(withTitle: yes)
+        alert.addButton(withTitle: "Cancel")
+        if let other { alert.addButton(withTitle: other) }
+        alert.window.initialFirstResponder = field
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: return (field.stringValue, false)
+        case .alertThirdButtonReturn: return (field.stringValue, true)
+        default: return nil
+        }
+    }
+
+    private func confirm(_ title: String, _ text: String, yes: String) -> Bool {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.window.appearance = monitor.appearance.nsAppearance
+        alert.messageText = title
+        alert.informativeText = text
+        alert.addButton(withTitle: yes)
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    /// Turning it on: with the password it has, or one suggested here to keep, change or do without.
+    private func askShare() {
+        let key = Names.key(row)
+        guard let name = monitor.networkName(key) else { return }
+        var problem: String?
+        if monitor.hasNetworkPassword(key) {
+            problem = monitor.shareOnNetwork(row)
+        } else if let choice = ask("Put \(name)\(Lan.suffix) on your network?",
+                                   "Other devices on this Wi-Fi open it with this password. Keep it, or type your own (at least \(Lan.minPassword) characters).",
+                                   value: Lan.randomPassword(), yes: "Share", other: "No Password…") {
+            if !choice.other {
+                problem = monitor.shareOnNetwork(row, password: choice.answer)
+            } else if confirm("Share without a password?", "Anyone on this Wi-Fi can open \(name).", yes: "Share") {
+                problem = monitor.shareOnNetwork(row, open: true)
+            } else {
+                return
+            }
+        } else {
+            return
+        }
+        monitor.flash(problem ?? "\(monitor.networkLink(key) ?? name) is on your network.")
+    }
+
+    private func askNetworkName() {
+        guard let name = monitor.networkName(Names.key(row)),
+              let typed = ask("Rename \(name)\(Lan.suffix)", "Its name for other devices on this network. Lowercase letters, numbers and hyphens, up to \(Names.maxLength). Leave it empty to use its .localhost name.",
+                              value: name, yes: "Rename") else { return }
+        if let problem = monitor.renameOnNetwork(row, to: typed.answer) { monitor.flash(problem) }
+    }
+
+    /// A new password, typed or random as offered; or none at all, after being asked.
+    private func askNetworkPassword() {
+        let key = Names.key(row)
+        guard let name = monitor.networkName(key),
+              let choice = ask("Password for \(name)\(Lan.suffix)", "At least \(Lan.minPassword) characters. Everyone who is signed in signs in again.",
+                               value: Lan.randomPassword(), yes: "Change", other: "No Password…") else { return }
+        if choice.other, !confirm("Remove the password?", "Anyone on this Wi-Fi can open \(name).", yes: "Remove") { return }
+        if let problem = monitor.setNetworkPassword(row, choice.other ? nil : choice.answer) { monitor.flash(problem) }
+    }
 
     /// A new name for the row's project, the part before .localhost. Empty goes back to the automatic one.
     private func askRename() {
@@ -646,8 +785,11 @@ private struct PortLine: View {
                     monitor.flash("Copied \(row.url.absoluteString)")
                 }
             }
+            let canShare = monitor.isNetworkRow(row), shared = monitor.lanShares[Names.key(row)] != nil
+            if canShare, let name = monitor.networkName(Names.key(row)) { network(name) }
             // The QR the row's button shows, here too: another device on this network scans it.
-            if let lan = row.lanURL(ip: monitor.lanIP) {
+            // Once the project is on the network under its name, that link and QR stand in for this one.
+            if !shared, let lan = row.lanURL(ip: monitor.lanIP) {
                 DetailLine(label: "Network", value: lan) {
                     Pill(title: "copy") {
                         NSPasteboard.general.clearContents()
@@ -660,8 +802,9 @@ private struct PortLine: View {
             if let hint = row.hint {
                 Text(hint).font(.system(size: 11)).foregroundStyle(.secondary)
             }
-            if row.scope == .loopback {
-                Text("Only this Mac can reach it. Start it on 0.0.0.0 to open it from your phone, or use share for a public link.")
+            if row.scope == .loopback, !shared {
+                Text(canShare ? "Only this Mac can reach it. Turn on network to open it from your phone, or use share for a public link."
+                     : "Only this Mac can reach it. Start it on 0.0.0.0 to open it from your phone, or use share for a public link.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

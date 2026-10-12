@@ -14,6 +14,13 @@ import SwiftUI
 ///   --serve                start the page server, print its URL, open nothing
 ///       --proxy-port N         the port for names in a debug run (default: any free one)
 ///       --bare-names           show names as if the port-80 door were harbor's (for snapshots)
+///       --lan-port N           the port a debug run serves shared projects on (never 80)
+///       --lan-suffix S         added to the names a debug run announces on the network
+///       --lan-address A        answer shared names on this address (127.0.0.1) instead of the
+///                              network's, and announce nothing: the listener, checked on this Mac
+///       --expand PORT          with --demo-menu: that row starts with its details open
+///       --fixture [shared]     made-up ports instead of this Mac's, for snapshots; "shared"
+///                              also shows one of them as on the network (nothing is opened)
 ///       --port-notes           show the "moved off 8470" and "port 80 is taken" lines (for snapshots)
 ///   --door --door-port N   a door on port N instead of launchd's port 80 (see Door.swift)
 ///   --check-door N         does a door answer on port N of 127.0.0.1 and ::1?
@@ -53,6 +60,29 @@ enum DebugCLI {
         if let label = value(after: "--test-door") { testDoor(label); return true }
         if args.contains("--may-manage") { out("may manage agents: \(LaunchAgent.mayManage) (\(Bundle.main.executablePath ?? "?"))"); return true }
         return false
+    }
+
+    // MARK: Made-up ports for snapshots
+
+    /// A small made-up Mac: two projects and two apps. Snapshots of real ports must not leave this one.
+    @MainActor
+    private static func useFixture(shared: Bool) {
+        func row(_ port: UInt16, _ process: String, folder: String? = nil, app: String? = nil, framework: String? = nil,
+                 category: PortCategory = .dev, scope: AddressScope = .loopback, pid: pid_t, minutes: Double) -> PortRow {
+            PortRow(port: port, addresses: scope == .all ? ["all interfaces"] : ["127.0.0.1"], scope: scope, pid: pid, ppid: 1,
+                    processName: process, path: nil, cwd: folder, projectRoot: folder, command: folder == nil ? nil : "\(process) dev",
+                    started: Date().addingTimeInterval(-minutes * 60), footprint: UInt64(40 + Int(port) % 200) << 20, workers: 0, workerPids: [],
+                    isSystem: false, appBundle: app.map { "/Applications/\($0).app" }, appName: app, framework: framework,
+                    category: category, isSelf: false)
+        }
+        let rows = [
+            row(3000, "node", folder: "/Users/sam/code/storefront", framework: "Next.js", scope: .all, pid: 4101, minutes: 42),
+            row(3001, "node", folder: "/Users/sam/code/storefront", framework: "Node.js", pid: 4102, minutes: 42),
+            row(8000, "python3", folder: "/Users/sam/code/notes-api", framework: "Uvicorn", pid: 4188, minutes: 7),
+            row(5432, "postgres", app: "Postgres", framework: "PostgreSQL", category: .database, pid: 612, minutes: 3000),
+            row(11434, "ollama", app: "Ollama", framework: "Ollama", category: .appHelper, pid: 733, minutes: 900),
+        ]
+        Monitor.shared.useFixture(rows, shared: shared ? "/Users/sam/code/storefront" : nil)
     }
 
     // MARK: Agent on a test port
@@ -222,6 +252,7 @@ enum DebugCLI {
     static func afterLaunch() -> Bool {
         let snapshotPath = value(after: "--snapshot")
         if args.contains("--bare-names") { Monitor.shared.doorIsOurs = true }  // not the real door: for looking only
+        if args.contains("--fixture") { useFixture(shared: value(after: "--fixture") == "shared") }
         if args.contains("--port-notes") { Monitor.shared.pagePort = 8471; Monitor.shared.port80Taken = true }
         if args.contains("--serve") {
             // Start the page server and print its URL without opening a browser.
@@ -331,6 +362,25 @@ enum DebugCLI {
 
     /// --proxy-port N: where a debug run's proxy listens. 0 lets the system pick.
     static var proxyPort: UInt16 { UInt16(value(after: "--proxy-port") ?? "") ?? 0 }
+
+    /// --lan-address A: the address a debug run answers shared names on, instead of the one
+    /// it would announce. With 127.0.0.1 everything about the listener can be checked from
+    /// this Mac, where a firewall would hold connections through the network address.
+    static var lanAddress: String? { isDebugRun ? value(after: "--lan-address") : nil }
+
+    /// --expand PORT: the menu row that starts with its details open, for snapshots.
+    static var expandPort: UInt16? { UInt16(value(after: "--expand") ?? "") }
+
+    /// --lan-port N: where a debug run serves projects to the network (never 80). 0 lets the system pick.
+    static var lanPort: UInt16 { UInt16(value(after: "--lan-port") ?? "") ?? 0 }
+
+    /// --lan-suffix S: added to every name a debug run announces ("storefront" + "-t1" + ".local"),
+    /// so a test can't collide with a real name on the network.
+    static var lanSuffix: String {
+        guard isDebugRun else { return "" }
+        let given = value(after: "--lan-suffix") ?? "-debug"
+        return Names.isLabel("x" + given) ? given : "-debug"
+    }
 
     /// --no-open (or --serve): never open the browser, only log the page URL.
     static var noOpen: Bool { args.contains("--no-open") || args.contains("--serve") }

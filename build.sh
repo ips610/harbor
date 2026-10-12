@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 ROOT="$PWD"
 source "$ROOT/app.conf"
 APP="$ROOT/build/$APP_NAME.app"
-VERSION="1.3.0"
+VERSION="1.4.0"
 
 # Call Xcode's toolchain directly when it exists: on some Macs the /usr/bin
 # xcrun shims stall for minutes.
@@ -53,6 +53,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
+  <key>NSLocalNetworkUsageDescription</key><string>$APP_NAME announces the projects you put on your network as name.local, so other devices on your Wi-Fi can open them.</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSAppleEventsUsageDescription</key><string>$APP_NAME asks an app to quit when you click Quit.</string>

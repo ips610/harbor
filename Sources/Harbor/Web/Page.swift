@@ -351,7 +351,7 @@ function qrSvg(rows, label) {
   .pl.admin:hover { background: var(--text); color: var(--bg); }
   .pline { padding: 0 18px 12px 128px; font-size: 13px; color: var(--danger); }
   .pline.share { color: var(--warn); }
-  .pline code { font: 12px var(--f-mono); background: var(--panel-2); padding: 2px 6px; border-radius: 5px; color: var(--text-2); }
+  .pline code, .ptunnel code { font: 12px var(--f-mono); background: var(--panel-2); padding: 2px 6px; border-radius: 5px; color: var(--text-2); }
   .pl.go { background: var(--shared); color: var(--shared-ink); }
   .pl.icon { padding: 5px 8px; display: inline-flex; align-items: center; }
   .pl.icon.on { background: var(--open-bg); color: var(--open-ink); }
@@ -630,6 +630,8 @@ const sig = {};
 const sharing = new Map();  // row id -> { kind: confirm|hint, text, command }
 const qrShown = new Set();  // ports showing a QR code
 const lanShown = new Set(); // rows showing "open on another device"
+const lanAsk = new Map();   // row id -> the password suggested while "on network" is being turned on
+const lanSeen = new Map();  // row id -> the network password, while "show" is on
 const swapHist = [];        // swap in use, one sample per poll, only while the page is open
 const qrCache = new Map();
 
@@ -888,7 +890,7 @@ function renderPorts(ports, all) {
   const shape = model.map((g) => [g.key, g.rows.map((p) => [p.id, p.title, p.name, p.framework, p.command, p.address,
     uptime(p.uptime), bytes(p.memory), p.workers, p.busy, p.system, p.hint, phase.get(p.id), opened.has(p.id),
     p.tunnel, sharing.get(p.id), qrShown.has(p.port), state.share.available, lanShown.has(p.id), p.lan, p.lanBonjour, p.net,
-    p.lanReachable, p.loopbackOnly, p.macos, state.network, p.host])]);
+    p.lanReachable, p.loopbackOnly, p.macos, state.network, p.host, p.local, lanAsk.get(p.id), lanSeen.get(p.id)])]);
   swap('cards', group + query + JSON.stringify(shape), () => {
     $('cards').className = group === 'project' ? 'cards' : 'stack-list';
     if (!ports.length) {
@@ -902,12 +904,14 @@ function renderPorts(ports, all) {
 function card(g) {
   const mac = g.rows.every((p) => p.macos);
   const frameworks = [...new Set(g.rows.map((p) => p.framework).filter(Boolean))];
+  const onNetwork = g.rows.find((p) => p.local && p.local.on);
   const head = el('div', { class: 'card-head' },
     el('div', { class: 'card-title' },
       el('h3', { text: g.title }),
       mac ? el('p', { class: 'card-badge' }, macGlyph(), 'macOS service')
         : el('p', { class: 'card-path mono', text: g.path || 'App or service' }),
-      frameworks.length ? el('div', { class: 'chips' }, frameworks.map((f) => el('span', { class: 'chip', text: f }))) : null),
+      frameworks.length || onNetwork ? el('div', { class: 'chips' }, frameworks.map((f) => el('span', { class: 'chip', text: f })),
+        onNetwork ? el('span', { class: 'chip warn', text: 'on network', title: onNetwork.local.link }) : null) : null),
     el('span', { class: 'card-acts' },
       g.rows[0].hostName ? el('button', { class: 'btn quiet', text: 'Rename', title: `Change ${g.rows[0].hostName}.localhost`, onclick: () => rename(g.rows[0]) }) : null,
       g.folder ? el('button', { class: 'btn quiet', text: 'Reveal', title: 'Show this folder in Finder', onclick: () => act('reveal', g.rows[0].pid) }) : null));
@@ -959,6 +963,7 @@ function row(p, showProject) {
             p.framework && p.framework !== title ? el('span', { class: 'tag', text: p.framework }) : null,
             p.macos ? el('span', { class: 'tag macos', title: 'A macOS service' }, macGlyph(), 'macOS') : null,
             p.exposed ? el('span', { class: 'tag warn', text: p.address, title: 'Other devices on your network can reach this port.' }) : null,
+            p.local && p.local.on ? el('span', { class: 'tag warn', text: 'on network', title: 'Other devices on this network open it at ' + p.local.link }) : null,
             live ? el('span', { class: 'tag shared', text: 'shared', title: 'Public link: ' + live.url }) : null),
           el('div', { class: 'psub' }, netAddress(p), ' · ' + facts))),
       el('div', { class: 'pacts' }, acts),
@@ -972,7 +977,10 @@ function row(p, showProject) {
     tunnelLine(p, pill),
     live && qrShown.has(p.port) && !(area && !p.lanReachable) ? qrBox(p.port) : null,
     // The QR area: open from the QR pill, and always part of the details.
-    area ? (p.lanReachable ? lanBox(p, pill) : loopBox(p, pill, live)) : null,
+    // On the network as <name>.local: that link, its password and its QR. Otherwise the
+    // plain address (or why a phone can't reach it), with the switch under it.
+    area ? (p.local && p.local.on ? networkBox(p, pill)
+      : [p.lanReachable ? lanBox(p, pill) : loopBox(p, pill, live), p.local ? networkOffer(p, pill) : null]) : null,
     isOpen ? details(p) : null);
   return li;
 }
@@ -1096,12 +1104,88 @@ function lanBox(p, pill) {
 }
 function safeLan(u) { return /^http:\/\/[a-z0-9.\-]+:\d+\/?$/i.test(u) ? u : '#'; }
 
+// ---------- on network: <name>.local for other devices on this Wi-Fi ----------
+function safeLocal(u) { return /^http:\/\/[a-z0-9-]+\.local(:\d+)?\/$/.test(u) ? u : '#'; }
+function setLanAsk(id, v) { if (v) lanAsk.set(id, v); else lanAsk.delete(id); render(); }
+// Not on the network yet: the switch, and the name it would have there.
+function networkOffer(p, pill) {
+  const suggested = lanAsk.get(p.id);
+  if (suggested) return el('div', { class: 'ptunnel' }, 'Password', el('code', { text: suggested }),
+    pill('use it', 'go', () => lanTurnOn(p, { password: suggested })),
+    pill('type my own', '', async () => {
+      const typed = await askText(`Password for ${p.local.name}.local`, 'At least 8 characters.', '', 'Turn on');
+      if (typed != null) lanTurnOn(p, { password: typed });
+    }),
+    pill('no password', '', async () => {
+      if (await ask('Share without a password?', `Anyone on this Wi-Fi can open ${p.local.name}.`, 'Share')) lanTurnOn(p, { open: true });
+    }),
+    pill('cancel', '', () => setLanAsk(p.id, null)));
+  return el('div', { class: 'ptunnel' }, 'On network as', el('code', { text: p.local.name + '.local' }),
+    pill('turn on', 'open', () => lanStart(p), { title: 'Other devices on this Wi-Fi open it at http://' + p.local.name + '.local/' }),
+    pill('rename', '', () => renameOnNetwork(p), { title: 'Change its name on the network' }));
+}
+// On the network: its link, its password, a QR for a phone, and what a password does and doesn't do.
+function networkBox(p, pill) {
+  const shown = lanSeen.get(p.id);
+  return el('div', {},
+    el('div', { class: 'ptunnel' }, 'On network',
+      el('a', { href: safeLocal(p.local.link), target: '_blank', rel: 'noopener noreferrer', text: p.local.link, onclick: (e) => e.stopPropagation() }),
+      pill('copy', '', () => copyText(p.local.link)), pill('rename', '', () => renameOnNetwork(p)),
+      pill('turn off', 'kill', async () => { const r = await act('lan-off', p.pid); if (r) toast(r.message); lanSeen.delete(p.id); qrCache.delete('name' + p.port); poll(); })),
+    el('div', { class: 'ptunnel' }, 'Password', p.local.password
+      ? [el('code', { text: shown || '••••••••' }),
+        pill(shown ? 'hide' : 'show', '', async () => {
+          if (shown) lanSeen.delete(p.id); else { const r = await act('lan-show', p.pid); if (r && r.password) lanSeen.set(p.id, r.password); }
+          render();
+        }),
+        pill('change', '', () => lanChange(p)),
+        pill('new random one', '', () => lanPassword(p, { random: true })),
+        pill('remove', '', async () => {
+          if (await ask('Remove the password?', `Anyone on this Wi-Fi can open ${p.local.name}.`, 'Remove')) lanPassword(p, { off: true });
+        })]
+      : ['none: anyone on this Wi-Fi can open it', pill('set one', '', () => lanPassword(p, { random: true }))]),
+    p.local.trouble ? el('p', { class: 'pline share', text: p.local.trouble }) : null,
+    qrBox(p.port, 'name'),
+    el('p', { class: 'pline info', text: state.network.plain }),
+    el('p', { class: 'pline info', text: state.network.asks }));
+}
+// Turning it on: with the password it already has, or with a suggested one to accept or decline.
+async function lanStart(p) {
+  if (p.local.password) return lanTurnOn(p, {});
+  const r = await act('lan-suggest', p.pid);
+  if (r) setLanAsk(p.id, r.password);
+}
+async function lanTurnOn(p, extra) {
+  lanAsk.delete(p.id);
+  const r = await act('lan-on', p.pid, extra);
+  if (r) { toast(r.message); if (extra.password) lanSeen.set(p.id, extra.password); }
+  poll();
+}
+async function lanPassword(p, change) {
+  const r = await act('lan-password', p.pid, change);
+  if (r) { toast(r.message); if (r.password) lanSeen.set(p.id, r.password); else lanSeen.delete(p.id); }
+  poll();
+}
+async function lanChange(p) {
+  const typed = await askText(`Password for ${p.local.name}.local`, 'At least 8 characters. Everyone who is signed in signs in again.', '', 'Change');
+  if (typed != null) lanPassword(p, { password: typed });
+}
+async function renameOnNetwork(p) {
+  const name = await askText(`Rename ${p.local.name}.local`,
+    'Its name for other devices on this network. Lowercase letters, numbers and hyphens, up to 40. Leave it empty to use its .localhost name.', p.local.name, 'Rename');
+  if (name == null) return;
+  const r = await act('lan-rename', p.pid, { name });
+  if (r) toast(r.message);
+  qrCache.delete('name' + p.port);
+  poll();
+}
+
 function qrBox(port, kind) {
   const box = el('div', { class: 'qr', title: 'Scan with your phone camera' });
-  const draw = (rows) => box.replaceChildren(qrSvg(rows, kind === 'lan' ? 'QR code of the network link' : 'QR code of the public link'));
+  const draw = (rows) => box.replaceChildren(qrSvg(rows, kind === 'name' ? 'QR code of its name on the network' : kind === 'lan' ? 'QR code of the network link' : 'QR code of the public link'));
   const key = (kind || 'public') + port;
   if (qrCache.has(key)) draw(qrCache.get(key));
-  else api('/api/qr?port=' + port + (kind === 'lan' ? '&kind=lan' : '')).then((d) => { qrCache.set(key, d.rows); draw(d.rows); }).catch((e) => toast(e.message));
+  else api('/api/qr?port=' + port + (kind ? '&kind=' + kind : '')).then((d) => { qrCache.set(key, d.rows); draw(d.rows); }).catch((e) => toast(e.message));
   return box;
 }
 function setShare(id, v) { if (v) sharing.set(id, v); else sharing.delete(id); render(); }

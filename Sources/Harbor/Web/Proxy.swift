@@ -267,6 +267,9 @@ struct ProxyHead {
 
     private func value(_ name: String) -> String? { headers.first { $0.name.lowercased() == name }?.value }
 
+    /// Every value given for a header (a Cookie header may come more than once).
+    func values(_ name: String) -> [String] { headers.filter { $0.name.lowercased() == name }.map(\.value) }
+
     var host: String { value("host") ?? "" }
 
     /// The Host as it is passed on: the name in lowercase without a trailing dot, and the port
@@ -293,11 +296,17 @@ struct ProxyHead {
     /// name), so the app sees its real origin: its redirects, cookies and CSRF checks all
     /// agree. Dev servers accept `.localhost` names. The connection is closed after this one
     /// request unless it asks for a WebSocket.
-    func forwarded(client: String) -> Data {
+    /// `dropCookie` (for a name shared on the network): harbor's visitor cookie is taken out
+    /// of what the project gets.
+    func forwarded(client: String, dropCookie: Bool = false) -> Data {
         var out = "\(method) \(target) \(version)\r\nHost: \(forwardHost)\r\n"
         for (name, value) in headers {
             let n = name.lowercased()
             if Self.replaced.contains(n) || (n == "upgrade" && !isWebSocket) { continue }
+            if dropCookie, n == "cookie" {
+                if let rest = Lan.strip(value) { out += "\(name): \(rest)\r\n" }
+                continue
+            }
             out += "\(name): \(value)\r\n"
         }
         out += "X-Forwarded-Host: \(forwardHost)\r\nX-Forwarded-Proto: http\r\nX-Forwarded-For: \(client)\r\n"
@@ -505,12 +514,17 @@ enum Sock {
     }
 
     /// The other end's address ("127.0.0.1", "::1"), for X-Forwarded-For.
-    static func peer(_ fd: Int32) -> String {
+    static func peer(_ fd: Int32) -> String { address(fd, getpeername) }
+
+    /// The address on this Mac a connection arrived on.
+    static func local(_ fd: Int32) -> String { address(fd, getsockname) }
+
+    private static func address(_ fd: Int32, _ which: (Int32, UnsafeMutablePointer<sockaddr>?, UnsafeMutablePointer<socklen_t>?) -> Int32) -> String {
         var storage = sockaddr_storage()
         var size = socklen_t(MemoryLayout<sockaddr_storage>.size)
         var text = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
         let ok = withUnsafeMutablePointer(to: &storage) { p -> Bool in
-            guard p.withMemoryRebound(to: sockaddr.self, capacity: 1, { getpeername(fd, $0, &size) }) == 0 else { return false }
+            guard p.withMemoryRebound(to: sockaddr.self, capacity: 1, { which(fd, $0, &size) }) == 0 else { return false }
             if p.pointee.ss_family == sa_family_t(AF_INET6) {
                 return p.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { inet_ntop(AF_INET6, &$0.pointee.sin6_addr, &text, socklen_t(text.count)) != nil }
             }
@@ -798,12 +812,13 @@ final class Proxy: @unchecked Sendable {
     /// - Server to client: the answer as it comes, streamed, with `Connection: close` in its
     ///   head so the browser opens a new connection for its next request.
     /// - Only when the server answers 101 to a request for a WebSocket does this become a plain
-    ///   pipe both ways with no idle limit (hot reload). Asking for one isn't enough.
+    ///   pipe both ways (hot reload), with no idle limit unless `quietSocket` gives one.
+    ///   Asking for one isn't enough.
     ///
     /// At most 64 KB waits in each direction, so a slow reader slows its sender down.
     static func exchange(client: Int32, server: Int32, request: ProxyHead, rest: Data, clientAddress: String,
-                         idle: Double = idleTimeout) {
-        var toServer = [UInt8](request.forwarded(client: clientAddress)), toClient: [UInt8] = []
+                         idle: Double = idleTimeout, quietSocket: Double? = nil, dropCookie: Bool = false) {
+        var toServer = [UInt8](request.forwarded(client: clientAddress, dropCookie: dropCookie)), toClient: [UInt8] = []
         var chunk = [UInt8](repeating: 0, count: 65_536)
         var body = BodyScanner(request.body)
         var answer = Data()        // the server's head, until its blank line has arrived
@@ -875,7 +890,7 @@ final class Proxy: @unchecked Sendable {
             let fromServer = !ending && toClient.isEmpty
             var p = [pollfd(fd: client, events: events(read: fromClient, write: !toClient.isEmpty), revents: 0),
                      pollfd(fd: server, events: events(read: fromServer, write: !toServer.isEmpty), revents: 0)]
-            let limit: Double? = ending ? 5 : tunnel ? nil : idle
+            let limit: Double? = ending ? 5 : tunnel ? quietSocket : idle
             let n = poll(&p, 2, limit.map { Int32(Swift.min($0, 86_400) * 1000) } ?? -1)
             if n < 0 && errno == EINTR { continue }
             guard n > 0 else { return }  // nothing moved in time

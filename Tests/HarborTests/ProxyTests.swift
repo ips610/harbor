@@ -62,7 +62,7 @@ final class ProxyTests: XCTestCase {
     }
 
     /// Runs `Proxy.exchange` on its own thread between two socket pairs and hands back the far ends.
-    private func exchange(_ request: String, rest: String = "", idle: Double = 5) throws -> Wire {
+    private func exchange(_ request: String, rest: String = "", idle: Double = 5, quietSocket: Double? = nil) throws -> Wire {
         var c: [Int32] = [0, 0], s: [Int32] = [0, 0]
         XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &c), 0)
         XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &s), 0)
@@ -71,7 +71,7 @@ final class ProxyTests: XCTestCase {
         let head = try XCTUnwrap(ProxyHead(Data(request.utf8)))
         let done = expectation(description: "exchange ends")
         Thread.detachNewThread {
-            Proxy.exchange(client: c[1], server: s[1], request: head, rest: Data(rest.utf8), clientAddress: "127.0.0.1", idle: idle)
+            Proxy.exchange(client: c[1], server: s[1], request: head, rest: Data(rest.utf8), clientAddress: "127.0.0.1", idle: idle, quietSocket: quietSocket)
             close(c[1]); close(s[1])
             done.fulfill()
         }
@@ -180,6 +180,20 @@ final class ProxyTests: XCTestCase {
         close(wire.client)
         wait(for: [wire.done], timeout: 5)
         close(wire.server)
+    }
+
+    func testAQuietWebSocketIsClosedWhenTheCallerSaysSo() throws {
+        // On the network a WebSocket with nothing passing either way is closed after a while (ten minutes there).
+        XCTAssertEqual(OnNetwork(announces: false).quietSocket, 600)
+        let wire = try exchange("GET /hmr HTTP/1.1\r\nHost: storefront.local\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n", quietSocket: 0.4)
+        _ = read(wire.server, until: "\r\n\r\n")
+        send(wire.server, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+        XCTAssertTrue(read(wire.client, until: "\r\n\r\n").hasPrefix("HTTP/1.1 101 "))
+        // While something passes it stays open; then nothing does.
+        send(wire.client, "ping")
+        XCTAssertEqual(read(wire.server, until: "ping"), "ping")
+        wait(for: [wire.done], timeout: 2)
+        close(wire.client); close(wire.server)
     }
 
     func testAnEarlyAnswerAndAServerThatSaysNothing() throws {

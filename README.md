@@ -82,6 +82,57 @@ Only harbor's door on port 80 knows the names, so harbor takes the door over whe
 below), and headroom leaves it alone after that. If port 80 isn't harbor's, the names still work
 with harbor's own port on the end, `storefront.localhost:8490`, and harbor shows them that way.
 
+## On your network
+
+A project can also get a name for the other devices on my Wi-Fi: `storefront.local`. It's off
+until I turn it on for that project: **turn on** in the row's details, in the menu or on the
+page, or right-click the row in the menu and choose **Put on Network as…**. Then my phone opens
+`http://storefront.local/`, and the details show that link with copy and a QR code. It works for
+a server that only listens on `127.0.0.1` too, because harbor passes the requests on.
+
+- harbor suggests a password when I turn it on. I can keep it, type my own (8 characters or
+  more; `12345678`, `password`, the project's name and the like are refused), or share without
+  one, and then it asks first: "Anyone on this Wi-Fi can open storefront." The password is kept
+  in my Keychain. In the details I can show it, change it, get a new random one or remove it.
+  A visitor gets harbor's sign-in page first, and the password itself is never sent over the
+  network.
+- After 5 wrong passwords a device waits 5 minutes, and twice as long each time, up to an hour.
+  If wrong ones keep coming from many devices, harbor tells me, and for 10 minutes every sign-in
+  to that project takes two seconds longer.
+- It's shared from one server, the one its name opened when I turned it on. If that server
+  stops or is started again, or another program starts listening on its port, the project comes
+  off the network and I turn it on again. It never moves to another server by itself. While
+  something is on the network harbor keeps scanning, with the menu and the page closed too.
+- The name on the network starts as the `.localhost` name. **Rename on Network…** (the same
+  right-click menu, or **rename** beside the link) changes only that one. If another device
+  already has the name, harbor takes the next free one, like `storefront-2.local`, and says so.
+- It stops by itself when that server stops, when harbor quits, and when the Mac joins another
+  network. Turning it off, changing the password or renaming it also cuts whatever visitors
+  still had open, WebSockets too. After a restart nothing is on until I turn it on again. Names
+  and passwords are kept.
+- A row that is on the network says so in orange, and the menu's header and the top of the page
+  count them: "1 project on your network".
+- It needs port 80 on the Mac's network address. If another program already has it there (a
+  web server), harbor says so and shares nothing.
+
+The first time, macOS asks whether harbor may find devices on local networks. If the firewall is
+on, it asks once more when the first device connects: may harbor accept incoming connections.
+Both need Allow, and until then the other device waits or can't find the name. If I said no:
+System Settings → Privacy & Security → Local Network, and Network → Firewall → Options.
+
+It's plain http on my network, so this is what a password does and doesn't do:
+
+- It keeps out people browsing the Wi-Fi.
+- Someone who captures the Wi-Fi's traffic can read the pages and reuse a signed-in visitor's
+  session.
+- Someone who can change the traffic can show a fake sign-in page and learn the password.
+- While a password is set, anyone on the Wi-Fi can get in the way of sign-ins. They can't get in.
+
+For anything private I use share instead.
+
+The dev server sees `storefront.local` as its host. Vite answers "This host is not allowed"
+until I add it in `vite.config.js`: `server: { allowedHosts: ['.local'] }`.
+
 ## Getting started
 
 You need macOS 14 or newer.
@@ -225,6 +276,13 @@ names, so another website can't reach my dev servers through it, it only passes 
 servers harbor lists itself, never to harbor's or headroom's own pages, and it has nothing to do
 with the sign-in above. Renaming goes through the signed-in page.
 
+On network is the one thing that listens beyond this Mac, and only while a project is on. That
+listener answers only what arrives on the address harbor announced, only for a Host that is
+exactly a shared name. It never serves harbor's page, a `.localhost` name or a project I didn't
+turn on. With a password, nothing reaches the project before the visitor has signed in on
+harbor's own page, and only that page may send a try. Turning it off or changing the password
+cuts every connection that was open for it.
+
 harbor can only stop or share a process it just showed you, and it checks the process is still the
 same one right before it acts, so a reused PID is safe. Stop sends a normal quit first and offers
 force kill only if that didn't work. For a process owned by another user, like an antivirus, macOS
@@ -236,12 +294,14 @@ processes are never offered.
 Ports opened by other users (root) don't show up, the same as `lsof` without sudo. CPU % takes a
 second to appear after you open the menu or the page.
 
-A name is plain http and only works on this Mac.
+A `.localhost` name is plain http and only works on this Mac. A `.local` name is plain http too,
+IPv4 only, and lasts for the network the Mac was on when I turned it on.
 
 ## Debugging
 
 The app binary has a few flags for testing: `--dump`, `--bench N`, `--serve`, `--no-open`,
-`--proxy-port N`, `--demo-menu --snapshot PATH`, `--demo-lan PORT`, `--theme light|dark`,
+`--proxy-port N`, `--lan-port N`, `--lan-suffix S`, `--lan-address A`, `--fixture [shared]`,
+`--demo-menu --snapshot PATH`, `--expand PORT`, `--demo-lan PORT`, `--theme light|dark`,
 `--show-system`, `--check-update`, `--door --door-port N` and `--test-stop PORT` (see
 `Sources/Harbor/DebugCLI.swift`). Test runs never add a menu bar or Dock
 icon, never take the keyboard, don't save settings, and use the next free port, so they can run

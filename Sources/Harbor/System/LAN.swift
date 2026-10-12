@@ -18,9 +18,33 @@ enum LAN {
         return parts.count == 4 && parts[0] == "172" && (16...31).contains(Int(parts[1]) ?? 0)
     }
 
+    /// The network this Mac is on: the default route's interface, this Mac's address on it,
+    /// the router, and the router's hardware address once macOS has it. Sharing on the
+    /// network is tied to it. Two networks often have the same router address (192.168.1.1 at
+    /// home and in the café), so the hardware address is what tells them apart.
+    struct Network: Equatable {
+        let interface: String
+        let address: String
+        let router: String?
+        var routerHardware: String? = nil
+    }
+
+    static func current() -> Network? {
+        guard let store = SCDynamicStoreCreate(nil, "harbor" as CFString, nil, nil),
+              let global = SCDynamicStoreCopyValue(store, "State:/Network/Global/IPv4" as CFString) as? [String: Any],
+              let interface = global["PrimaryInterface"] as? String, let address = ipv4(on: interface) else { return nil }
+        let service = (global["PrimaryService"] as? String).flatMap {
+            SCDynamicStoreCopyValue(store, "State:/Network/Service/\($0)/IPv4" as CFString) as? [String: Any]
+        }
+        return Network(interface: interface, address: address, router: global["Router"] as? String,
+                       routerHardware: service?["ARPResolvedHardwareAddress"] as? String)
+    }
+
     /// An IPv4 address other devices can use: up, running, not loopback, not
     /// link-local; the default route's interface first, private ranges first.
-    static func ipv4() -> String? {
+    static func ipv4() -> String? { ipv4(on: nil) }
+
+    private static func ipv4(on only: String?) -> String? {
         var list: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&list) == 0, let first = list else { return nil }
         defer { freeifaddrs(list) }
@@ -38,6 +62,7 @@ enum LAN {
             let ip = buf.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
             if ip.hasPrefix("169.254.") { continue }
             let name = String(cString: item.pointee.ifa_name)
+            if let only, name != only { continue }
             found.append(((name == primary ? 0 : 1, isPrivate(ip) ? 0 : 1), ip))
         }
         return found.min { $0.rank < $1.rank }?.ip
