@@ -40,7 +40,8 @@ Only the latest release is supported. If you're on an older one, update first.
   root, no other program can bind the announced address on port 80. harbor
   also holds port 80 on IPv6 while sharing, serves nothing there, and says so
   if another program had it first.
-- A share is for one server: the process and the port it was turned on for.
+- Any server of a project can go on the network, each under its own name and
+  each for one server: the process and the port it was turned on for.
   When that server is gone, or another program listens on its port too, the
   sharing stops. It never moves to another server.
 - With a password, harbor's own sign-in page comes before anything reaches the
@@ -51,6 +52,16 @@ Only the latest release is supported. If you're on an older one, update first.
   challenge that was only asked for, so asking for many is in nobody's way. The
   two sign-in calls are taken only from the sign-in page itself (its exact
   Origin, as JSON), so another website can't spend a visitor's tries.
+- One password per project, and one sign-in: a session remembers the project
+  and the address it was signed in from, and from that address the project's
+  other shared names open without a cookie (a page calling its own back end is
+  another site to the browser, which sends no cookie and asks first without
+  one). Only the connection's own address counts, never a header; only within
+  one project; and only while that session lasts. The name that was signed in
+  on still wants its cookie. Devices that reach harbor from one address (behind
+  a hotspot, or a router doing NAT) count as one device for this. Someone who
+  can forge addresses on the Wi-Fi can already capture its traffic, which is
+  the plain-http limit below.
 - A visitor's session is an HttpOnly cookie harbor keeps in memory for 12
   hours, and the project never sees it. Turning sharing off, changing or
   removing the password, renaming, or joining another network ends the
@@ -64,8 +75,13 @@ Only the latest release is supported. If you're on an older one, update first.
   takes 2 seconds longer. Only a try with a good challenge and a wrong answer
   counts. One address gets 24 connections at a time, everyone together 128,
   and a request has 5 seconds to arrive.
-- Passwords are kept in the Keychain, never in settings or logs. One you type
-  needs 8 characters and can't be one of the obvious ones.
+- Network passwords are kept in a file only your account can read
+  (`~/Library/Application Support/local.harbor/network-passwords`, mode 0600),
+  like the sign-in session, never in settings or logs. The Keychain would ask
+  for your login password after every update, because harbor isn't signed with
+  an Apple Developer ID. A password that can't be read is never treated as no
+  password: the project stays off the network until you set a new one. One you
+  type needs 8 characters and can't be one of the obvious ones.
 - On network is plain http. The password keeps out people browsing the
   network. Someone capturing its traffic can read the pages, reuse a signed-in
   visitor's session, and try passwords against a captured sign-in at their own

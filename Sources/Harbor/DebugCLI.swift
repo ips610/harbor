@@ -21,8 +21,11 @@ import SwiftUI
 ///       --lan-door LABEL PLIST the door that steps aside when the listener opens on a port
 ///                              under 1024: a throwaway one (never the real label)
 ///       --expand PORT          with --demo-menu: that row starts with its details open
-///       --fixture [shared]     made-up ports instead of this Mac's, for snapshots; "shared"
-///                              also shows one of them as on the network (nothing is opened)
+///       --menu-height N        with --demo-menu: the list may grow that tall, to show a whole open row
+///       --fixture [shared|both|servers] made-up ports instead of this Mac's, for snapshots; "shared"
+///                              also shows one of them as on the network (nothing is opened), "both"
+///                              adds a public link to it, "servers" has both of a project's servers
+///                              on the network and two made-up devices signed in
 ///       --port-notes           show the "moved off 8470" and "port 80 is taken" lines (for snapshots)
 ///   --door --door-port N   a door on port N instead of launchd's port 80 (see Door.swift)
 ///   --check-door N         does a door answer on port N of 127.0.0.1 and ::1?
@@ -68,7 +71,7 @@ enum DebugCLI {
 
     /// A small made-up Mac: two projects and two apps. Snapshots of real ports must not leave this one.
     @MainActor
-    private static func useFixture(shared: Bool) {
+    private static func useFixture(shared: Bool, servers: Bool = false) {
         func row(_ port: UInt16, _ process: String, folder: String? = nil, app: String? = nil, framework: String? = nil,
                  category: PortCategory = .dev, scope: AddressScope = .loopback, pid: pid_t, minutes: Double) -> PortRow {
             PortRow(port: port, addresses: scope == .all ? ["all interfaces"] : ["127.0.0.1"], scope: scope, pid: pid, ppid: 1,
@@ -84,7 +87,11 @@ enum DebugCLI {
             row(5432, "postgres", app: "Postgres", framework: "PostgreSQL", category: .database, pid: 612, minutes: 3000),
             row(11434, "ollama", app: "Ollama", framework: "Ollama", category: .appHelper, pid: 733, minutes: 900),
         ]
-        Monitor.shared.useFixture(rows, shared: shared ? "/Users/sam/code/storefront" : nil)
+        let project = "/Users/sam/code/storefront"
+        Monitor.shared.useFixture(rows, shared: shared || servers ? project : nil, every: servers)
+        if servers {
+            OnNetwork.shared.withVisitors { v in for device in ["192.168.1.31", "192.168.1.47"] { _ = v.signIn(to: "storefront", project: project, from: device, now: Date()) } }
+        }
     }
 
     // MARK: Agent on a test port
@@ -254,7 +261,12 @@ enum DebugCLI {
     static func afterLaunch() -> Bool {
         let snapshotPath = value(after: "--snapshot")
         if args.contains("--bare-names") { Monitor.shared.doorIsOurs = true }  // not the real door: for looking only
-        if args.contains("--fixture") { useFixture(shared: value(after: "--fixture") == "shared") }
+        if args.contains("--fixture") {
+            let how = value(after: "--fixture")
+            useFixture(shared: how == "shared" || how == "both", servers: how == "servers")
+            // "both": on the network, and with a (made-up) public link that is ready.
+            if how == "both" { Tunnels.shared.useFixture(port: 3000, title: "storefront", url: "https://quiet-harbor-demo.trycloudflare.com") }
+        }
         if args.contains("--port-notes") { Monitor.shared.pagePort = 8471; Monitor.shared.port80Taken = true }
         if args.contains("--serve") {
             // Start the page server and print its URL without opening a browser.
@@ -372,6 +384,8 @@ enum DebugCLI {
 
     /// --expand PORT: the menu row that starts with its details open, for snapshots.
     static var expandPort: UInt16? { UInt16(value(after: "--expand") ?? "") }
+    /// --menu-height N: how tall the menu's list may grow in a snapshot (the menu's own limit otherwise).
+    static var menuHeight: CGFloat? { Double(value(after: "--menu-height") ?? "").map { CGFloat($0) } }
 
     /// --lan-door LABEL PLIST: a throwaway door, loaded on the debug run's own low `--lan-port`,
     /// to go through the real sequence (door out, listener bound, door back) without the real door.

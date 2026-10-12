@@ -395,9 +395,18 @@ final class OnNetworkTests: XCTestCase {
         XCTAssertEqual(shared?["on"] as? Bool, true)
         XCTAssertEqual(shared?["link"] as? String, "http://\(m.lanShares.values.first?.name ?? "").local/")
         XCTAssertEqual(shared?["password"] as? Bool, true)
-        XCTAssertEqual(Set((shared ?? [:]).keys), ["name", "on", "link", "password", "trouble"])
+        XCTAssertEqual(Set((shared ?? [:]).keys), ["name", "on", "link", "password", "trouble", "main", "several", "note", "help"])
         XCTAssertTrue(shared?["trouble"] is NSNull)                                       // announced: nothing to say
-        XCTAssertTrue(rows.first { ($0["port"] as? Int) == 3001 }?["local"] is NSNull)       // only the project's main server carries it
+        XCTAssertEqual(shared?["main"] as? Bool, true)
+        XCTAssertEqual(shared?["several"] as? Bool, true)                                // the storefront has a second server
+        XCTAssertEqual(shared?["note"] as? String, "One password for all of storefront's servers on the network: a visitor signs in once.")
+        XCTAssertTrue(shared?["help"] is NSNull)                                         // only one of them is on the network
+        // The project's other server has a switch of its own, and its own name there.
+        let second = rows.first { ($0["port"] as? Int) == 3001 }?["local"] as? [String: Any]
+        XCTAssertEqual(second?["on"] as? Bool, false)
+        XCTAssertEqual(second?["main"] as? Bool, false)
+        XCTAssertEqual((second?["name"] as? String)?.hasPrefix("storefront-3001"), true)
+        XCTAssertEqual(second?["password"] as? Bool, shared?["password"] as? Bool)        // the project's one
         XCTAssertTrue(rows.first { ($0["port"] as? Int) == 5432 }?["local"] is NSNull)       // a database has no name at all
         var home = LAN.Network(interface: "en0", address: "192.168.1.24", router: "192.168.1.1")
         m.checkNetwork(now: home)
@@ -495,16 +504,10 @@ final class OnNetworkTests: XCTestCase {
         // And only the row its name goes to can be put on the network at all.
         (m, name, rows) = sharedFixture()
         let second = rows.first { $0.port == 3001 }!
-        XCTAssertEqual(m.shareOnNetwork(second, open: true), "Only the server storefront.localhost opens can go on the network.")
         XCTAssertEqual(m.lanShares.count, 1)
         m.stopAllSharing()
-        // One process on both ports, listed the other way round: the page's "turn on" names the process, and means the name's row.
-        m.useFixture([restarted(second, pid: 4101)] + rows.filter { $0.port != 3001 }, shared: nil)
-        XCTAssertEqual(m.ports.first { $0.pid == 4101 }?.port, 3001)
-        XCTAssertEqual(m.networkRow(forPid: 4101)?.port, 3000)
-        XCTAssertNil(m.networkRow(forPid: 612))                                          // a database has no name, so no such row
-        m.useFixture(rows, shared: nil)
-        // Nor a row whose process isn't there (any more): the made-up Mac's servers don't exist on this one.
+        // A row whose process isn't there (any more) can't go on the network: the made-up Mac's servers don't exist on this one.
+        XCTAssertEqual(m.shareOnNetwork(second, open: true), "storefront on port 3001 isn't running any more.")
         let main = rows.first { $0.port == 3000 }!
         XCTAssertEqual(m.shareOnNetwork(main, open: true), "storefront on port 3000 isn't running any more.")
         XCTAssertTrue(m.lanShares.isEmpty)
@@ -589,33 +592,323 @@ final class OnNetworkTests: XCTestCase {
         XCTAssertTrue(made.allSatisfy { $0.count == 8 && $0.allSatisfy { "abcdefghjkmnpqrstuvwxyz23456789".contains($0) } })
         XCTAssertGreaterThan(Set(made).count, 195)
         XCTAssertTrue(made.allSatisfy { Lan.passwordProblem($0) == nil })
-        // Tests never touch the Keychain.
+        // Tests keep them in memory, like debug runs.
         XCTAssertTrue(Passwords.inMemory)
         XCTAssertTrue(Passwords.set("test-key", "k7mqx2hw"))
-        XCTAssertEqual(Passwords.get("test-key"), "k7mqx2hw")
+        XCTAssertEqual(Passwords.read("test-key"), .password("k7mqx2hw"))
         Passwords.set("test-key", nil)
-        XCTAssertNil(Passwords.get("test-key"))
+        XCTAssertEqual(Passwords.read("test-key"), .none)
     }
 
-    /// Except this one, asked for by name: the real Keychain, under a throwaway service it cleans up.
-    func testTheKeychainKeepsAPassword() throws {
-        guard ProcessInfo.processInfo.environment["HARBOR_KEYCHAIN_TEST"] != nil else { throw XCTSkip("set HARBOR_KEYCHAIN_TEST=1 to check the Keychain itself") }
-        let service = "local.harbor.test-" + Lan.token(4), key = "/tmp/storefront"
-        Passwords.inMemory = false
-        defer {
-            Passwords.set(key, nil, service: service)
-            Passwords.inMemory = true
+    func testWhichCodesARowShows() {
+        func codes(onNetwork: Bool = false, reachable: Bool = false, shared: Bool = false) -> [QR.Code] { QR.codes(onNetwork: onNetwork, reachable: reachable, shared: shared) }
+        XCTAssertEqual(codes(), [])                                                       // this Mac only, not shared: none
+        XCTAssertEqual(codes(reachable: true), [.lan])                                    // its plain address, as ever
+        XCTAssertEqual(codes(shared: true), [.share])
+        XCTAssertEqual(codes(onNetwork: true), [.name])
+        XCTAssertEqual(codes(onNetwork: true, shared: true), [.name, .share])             // both ways: both codes
+        XCTAssertEqual(codes(reachable: true, shared: true), [.lan, .share])
+        // Never three: on the network, its name stands in for the plain address.
+        XCTAssertEqual(codes(onNetwork: true, reachable: true), [.name])
+        XCTAssertEqual(codes(onNetwork: true, reachable: true, shared: true), [.name, .share])
+    }
+
+    @MainActor
+    func testBothCodesAndTheNamesAsThePageIsTold() {
+        // The made-up storefront: on every interface, on the network, and with a public link that is ready.
+        let (m, name, rows) = sharedFixture()
+        Tunnels.shared.useFixture(port: 3000, title: "storefront", url: "https://quiet-harbor-demo.trycloudflare.com")
+        defer { Tunnels.shared.stop(3000) }
+        let main = rows.first { $0.port == 3000 }!
+        XCTAssertEqual(m.codes(main).map(\.code), [.name, .share])
+        XCTAssertEqual(m.codes(main).map(\.label), ["On your network", "Public link"])
+        XCTAssertEqual(m.codes(main).map(\.link), ["http://\(name).local/", "https://quiet-harbor-demo.trycloudflare.com"])
+        var state: [String: Any] = [:]
+        WebAPI.state { state = ((try? JSONSerialization.jsonObject(with: $0)) as? [String: Any]) ?? [:] }
+        let told = ((state["ports"] as? [[String: Any]]) ?? []).first { ($0["port"] as? Int) == 3000 }?["qrs"] as? [[String: String]]
+        XCTAssertEqual(told?.map { $0["kind"] }, ["name", "share"])
+        XCTAssertEqual(told?.map { $0["link"] }, ["http://\(name).local/", "https://quiet-harbor-demo.trycloudflare.com"])
+        // Off the network it is back to its plain address, beside the public link.
+        m.stopAllSharing()
+        XCTAssertEqual(m.codes(main).map(\.code), [.lan, .share])
+        XCTAssertEqual(m.codes(main).first?.link, "http://192.168.1.24:3000/")
+        // A server only this Mac reaches, not shared: nothing to scan.
+        XCTAssertTrue(m.codes(rows.first { $0.port == 8000 }!).isEmpty)
+    }
+
+    @MainActor
+    func testRenamingOnThisMacLeavesTheNetworkAlone() {
+        // On the network under the name it got from its .localhost name; then that one is renamed.
+        let (m, name, rows) = sharedFixture()
+        let main = rows.first { $0.port == 3000 }!, key = Names.key(main)
+        let notices = m.notices.last?.id
+        XCTAssertNil(m.rename(main, to: "shop"))
+        defer { _ = m.rename(main, to: "") }
+        XCTAssertEqual(m.names.base[key], "shop")
+        // What is on the network stays exactly as it was: same name, same link, nothing dropped, nothing said.
+        XCTAssertEqual(m.lanShares[main.id]?.name, name)
+        XCTAssertEqual(m.networkLink(main), "http://\(name).local/")
+        XCTAssertEqual(m.notices.last?.id, notices)
+        // The next time it is turned on it would take the new name, unless it has one of its own there.
+        m.stopAllSharing()
+        XCTAssertEqual(m.networkName(main)?.hasPrefix("shop"), true)
+    }
+
+    // MARK: Several servers of one project
+
+    @MainActor
+    func testTheMainServerCanBeChosen() {
+        var (m, _, rows) = sharedFixture()
+        let front = rows.first { $0.port == 3000 }!, back = rows.first { $0.port == 3001 }!, project = Names.key(front)
+        m.stopAllSharing()
+        _ = m.makeMain(front)                                                            // whatever an earlier run chose
+        // By the usual rule the plain name goes to the dev server on the lowest port; the other goes by its port.
+        XCTAssertTrue(m.isMain(front) && !m.isMain(back))
+        XCTAssertEqual(m.names.byRow[back.id], "storefront-3001")
+        XCTAssertEqual(m.networkName(back)?.hasPrefix("storefront-3001"), true)
+        // The rule itself: a chosen main takes the name outright, even from the server that has it; the one that had it goes by its port.
+        var table = Names.assign(rows, previous: m.names, mains: [project: 3001])
+        XCTAssertEqual(table.byRow[back.id], "storefront")
+        XCTAssertEqual(table.byRow[front.id], "storefront-3000")
+        XCTAssertEqual(table.targets["storefront"]?.port, 3001)
+        XCTAssertNil(table.targets["storefront-3001"])
+        XCTAssertEqual(table.base[project], "storefront")
+        // The chosen server isn't running: the usual rule decides, and nothing else changes.
+        table = Names.assign(rows.filter { $0.port != 3001 }, previous: m.names, mains: [project: 3001])
+        XCTAssertEqual(table.byRow[front.id], "storefront")
+        table = Names.assign(rows, previous: m.names, mains: [project: 9999])
+        XCTAssertEqual(table.byRow[front.id], "storefront")
+        XCTAssertEqual(table.byRow[back.id], "storefront-3001")
+        // Another project's choice is nobody else's.
+        XCTAssertEqual(Names.assign(rows, previous: m.names, mains: ["/Users/sam/code/notes-api": 3001]).byRow[front.id], "storefront")
+
+        // In the app, with the project on the network: choosing the other server takes what is on the network off it
+        // (said in a notice), so no name there starts opening another server by itself.
+        (m, _, rows) = sharedFixture()
+        XCTAssertEqual(m.lanShares.count, 1)
+        let before = m.notices.last?.id
+        XCTAssertNil(m.makeMain(back))
+        XCTAssertTrue(m.lanShares.isEmpty)
+        XCTAssertNotEqual(m.notices.last?.id, before)
+        XCTAssertEqual(m.notices.last?.text.hasPrefix("The main server of storefront changed, so "), true)
+        XCTAssertEqual(m.notices.last?.text.hasSuffix(" is off the network. Turn it on again."), true)
+        XCTAssertTrue(m.isMain(back) && !m.isMain(front))
+        XCTAssertEqual(m.names.byRow[front.id], "storefront-3000")
+        XCTAssertEqual(m.networkName(back)?.hasPrefix("storefront"), true)
+        XCTAssertEqual(m.networkName(front)?.hasPrefix("storefront-3000"), true)
+        // The chosen one stops: the usual rule again. It comes back: it is the main one again, without being chosen twice.
+        m.useFixture(rows.filter { $0.port != 3001 }, shared: nil)
+        XCTAssertTrue(m.isMain(front))
+        m.useFixture(rows, shared: nil)
+        XCTAssertTrue(m.isMain(back))
+        XCTAssertNil(m.makeMain(back))                                                   // already is: nothing happens
+        XCTAssertNil(m.makeMain(front))                                                  // and back, for the tests after this one
+        XCTAssertTrue(m.isMain(front))
+        XCTAssertNotNil(m.makeMain(rows.first { $0.port == 5432 }!))                     // a database has no name to be main of
+    }
+
+    @MainActor
+    func testEveryServerHasItsOwnSwitchAndTheHeaderCountsThem() {
+        let (m, name, rows) = sharedFixture()
+        let front = rows.first { $0.port == 3000 }!, back = rows.first { $0.port == 3001 }!
+        // Any server with a name can go on the network; one without (a database) can't.
+        XCTAssertTrue(m.isNetworkRow(front) && m.isNetworkRow(back) && m.isNetworkRow(rows.first { $0.port == 8000 }!))
+        XCTAssertFalse(m.isNetworkRow(rows.first { $0.port == 5432 }!))
+        XCTAssertTrue(m.hasSiblings(front) && m.hasSiblings(back))
+        XCTAssertFalse(m.hasSiblings(rows.first { $0.port == 8000 }!))
+        // Only the front one is on: the back one has its own name ready, and isn't on because its sibling is.
+        XCTAssertEqual(m.networkLink(front), "http://\(name).local/")
+        XCTAssertNil(m.networkLink(back))
+        XCTAssertEqual(m.codes(back).map(\.code), [])
+        XCTAssertEqual(m.portNotes.first, "1 project on your network")
+        // Renaming one on the network is that server's alone.
+        XCTAssertNil(m.renameOnNetwork(back, to: "api"))
+        XCTAssertEqual(m.networkName(back)?.hasPrefix("api"), true)
+        XCTAssertEqual(m.lanShares[front.id]?.name, name)
+        XCTAssertNotNil(m.renameOnNetwork(back, to: "storefront"))                        // its sibling's name
+        XCTAssertNil(m.renameOnNetwork(back, to: ""))
+        XCTAssertEqual(m.networkName(back)?.hasPrefix("storefront-3001"), true)
+        // What the header says, by what is on the network.
+        XCTAssertEqual(Lan.passwordNote(project: "storefront", several: false, devices: 0), nil)
+        XCTAssertEqual(Lan.passwordNote(project: "storefront", several: true, devices: 0), "One password for all of storefront's servers on the network: a visitor signs in once.")
+        XCTAssertEqual(Lan.passwordNote(project: "storefront", several: false, devices: 1), "1 device signed in. A new password signs it out.")
+        XCTAssertEqual(Lan.passwordNote(project: "storefront", several: true, devices: 2)?.hasSuffix("2 devices signed in. A new password signs them out."), true)
+    }
+
+    func testOneSignInForAProjectsServers() {
+        var visitors = Visitors()
+        let phone = "192.168.1.30", project = "/Users/sam/code/storefront"
+        // Nobody signed in: no name of the project opens for anybody.
+        XCTAssertNil(visitors.sibling(of: "storefront-8000", project: project, address: phone, now: t0))
+        let token = visitors.signIn(to: "storefront", project: project, from: phone, now: t0)
+        // The phone signed in on the front end: from its address the project's other names open without a cookie…
+        XCTAssertEqual(visitors.sibling(of: "storefront-8000", project: project, address: phone, now: t0), "storefront")
+        XCTAssertEqual(visitors.sibling(of: "api", project: project, address: phone, now: t0), "storefront")
+        // …the name it signed in on still wants its cookie…
+        XCTAssertNil(visitors.sibling(of: "storefront", project: project, address: phone, now: t0))
+        XCTAssertTrue(visitors.isSignedIn(token, to: "storefront", now: t0))
+        XCTAssertFalse(visitors.isSignedIn(token, to: "storefront-8000", now: t0))        // and the cookie is for that name only
+        // …another device gets nothing from it, and neither does another project, at the same address or not.
+        XCTAssertNil(visitors.sibling(of: "storefront-8000", project: project, address: "192.168.1.31", now: t0))
+        XCTAssertNil(visitors.sibling(of: "notes-api", project: "/Users/sam/code/notes-api", address: phone, now: t0))
+        XCTAssertNil(visitors.sibling(of: "storefront-8000", project: "/Users/sam/code/storefront-2", address: phone, now: t0))
+        XCTAssertNil(visitors.sibling(of: "storefront-8000", project: "", address: phone, now: t0))
+        XCTAssertNil(visitors.sibling(of: "storefront-8000", project: project, address: "", now: t0))
+        // It lasts as long as the session, and not a second longer.
+        XCTAssertNotNil(visitors.sibling(of: "storefront-8000", project: project, address: phone, now: t0.addingTimeInterval(12 * 3600 - 1)))
+        XCTAssertNil(visitors.sibling(of: "storefront-8000", project: project, address: phone, now: t0.addingTimeInterval(12 * 3600)))
+        // How many devices are in: by address, however often each signed in.
+        _ = visitors.signIn(to: "storefront-8000", project: project, from: phone, now: t0)
+        _ = visitors.signIn(to: "storefront", project: project, from: "192.168.1.31", now: t0)
+        _ = visitors.signIn(to: "notes-api", project: "/Users/sam/code/notes-api", from: "192.168.1.40", now: t0)
+        XCTAssertEqual(visitors.devices(project: project, now: t0), 2)
+        XCTAssertEqual(visitors.devices(project: project, now: t0.addingTimeInterval(12 * 3600)), 0)
+        // The session ends (sharing of that name stopped, or the password changed): what rested on it is gone with it.
+        visitors.forget("storefront-8000")
+        XCTAssertEqual(visitors.sibling(of: "storefront-8000", project: project, address: phone, now: t0), "storefront")   // the other session still stands
+        visitors.forget("storefront")
+        XCTAssertNil(visitors.sibling(of: "storefront-8000", project: project, address: phone, now: t0))
+        XCTAssertNil(visitors.sibling(of: "storefront-8000", project: project, address: "192.168.1.31", now: t0))
+        XCTAssertEqual(visitors.devices(project: project, now: t0), 0)
+        // Nothing here grows without bound: it is the sessions, and those are counted.
+        for i in 0..<3000 { _ = visitors.signIn(to: "storefront", project: project, from: "10.0.\(i / 256).\(i % 256)", now: t0) }
+        XCTAssertLessThanOrEqual(visitors.counts.sessions, Visitors.maxSessions)
+    }
+
+    /// A folder of its own for one test's password file.
+    private func scratch() throws -> URL {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("harbor-test-\(Lan.token(6))")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+        return folder
+    }
+    private func mode(_ file: URL) -> Int { ((try? FileManager.default.attributesOfItem(atPath: file.path))?[.posixPermissions] as? NSNumber)?.intValue ?? -1 }
+
+    func testThePasswordFile() throws {
+        let file = try scratch().appendingPathComponent("support/network-passwords")
+        // No file: nobody has a password. The first one makes it, for this account's eyes only.
+        XCTAssertEqual(Passwords.read("/Users/sam/code/storefront", in: file), .none)
+        XCTAssertTrue(Passwords.store("/Users/sam/code/storefront", "k7mqx2hw", in: file))
+        XCTAssertEqual(mode(file), 0o600)
+        XCTAssertEqual(Passwords.read("/Users/sam/code/storefront", in: file), .password("k7mqx2hw"))
+        XCTAssertEqual(Passwords.read("/Users/sam/code/notes", in: file), .none)                  // one per project
+        // More of them, a changed one, a removed one.
+        XCTAssertTrue(Passwords.store("/Users/sam/code/notes", "pässwörd ✓ two", in: file))
+        XCTAssertTrue(Passwords.store("/Users/sam/code/storefront", "another-one", in: file))
+        XCTAssertEqual(Passwords.load(file), ["/Users/sam/code/storefront": "another-one", "/Users/sam/code/notes": "pässwörd ✓ two"])
+        XCTAssertTrue(Passwords.store("/Users/sam/code/storefront", nil, in: file))
+        XCTAssertEqual(Passwords.read("/Users/sam/code/storefront", in: file), .none)
+        XCTAssertEqual(Passwords.read("/Users/sam/code/notes", in: file), .password("pässwörd ✓ two"))
+        XCTAssertTrue(Passwords.store("/Users/sam/code/storefront", nil, in: file))                // removing what isn't there is fine
+        // Replaced in one step: a new file put in the old one's place (another inode), 0600 whatever the old one was,
+        // nothing left beside it, and a link somebody put where the new file is written isn't followed.
+        chmod(file.path, 0o644)
+        let before = try FileManager.default.attributesOfItem(atPath: file.path)[.systemFileNumber] as? Int
+        let elsewhere = file.deletingLastPathComponent().appendingPathComponent("elsewhere")
+        try Data("untouched".utf8).write(to: elsewhere)
+        XCTAssertEqual(symlink(elsewhere.path, file.path + ".new"), 0)
+        XCTAssertTrue(Passwords.store("/Users/sam/code/blog", "k7mqx2hw", in: file))
+        XCTAssertEqual(mode(file), 0o600)
+        XCTAssertNotEqual(try FileManager.default.attributesOfItem(atPath: file.path)[.systemFileNumber] as? Int, before)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path + ".new"))
+        XCTAssertEqual(try String(contentsOf: elsewhere, encoding: .utf8), "untouched")
+        XCTAssertEqual(Passwords.load(file)?.count, 2)
+    }
+
+    @MainActor
+    func testAPasswordThatCantBeReadIsNotNoPassword() throws {
+        let folder = try scratch()
+        let file = folder.appendingPathComponent("network-passwords")
+        let key = "/Users/sam/code/storefront"
+        // Whatever is wrong with the file, the answer is "can't be read", never "has none".
+        for (what, make) in [("not JSON", { try Data("{\"/Users/sam".utf8).write(to: file) }), ("empty", { try Data().write(to: file) }),
+                             ("JSON of another shape", { try Data("[\"k7mqx2hw\"]".utf8).write(to: file) }),
+                             ("a password that isn't text", { try Data("{\"/Users/sam/code/storefront\": 12345678}".utf8).write(to: file) }),
+                             ("a folder", { try FileManager.default.createDirectory(at: file, withIntermediateDirectories: false) }),
+                             ("a link to a good file", {
+                                 XCTAssertTrue(Passwords.store(key, "k7mqx2hw", in: folder.appendingPathComponent("good")))
+                                 XCTAssertEqual(symlink(folder.appendingPathComponent("good").path, file.path), 0)
+                             })] as [(String, () throws -> Void)] {
+            try? FileManager.default.removeItem(at: file)
+            try make()
+            XCTAssertNil(Passwords.load(file), what)
+            XCTAssertEqual(Passwords.read(key, in: file), .unreadable, what)
+            XCTAssertEqual(Passwords.read("/Users/sam/code/notes", in: file), .unreadable, what)
         }
-        XCTAssertNil(Passwords.get(key, service: service))
-        XCTAssertTrue(Passwords.set(key, "k7mqx2hw", service: service))
-        XCTAssertEqual(Passwords.get(key, service: service), "k7mqx2hw")
-        XCTAssertTrue(Passwords.set(key, "pässwörd ✓ two", service: service))             // a second one replaces the first
-        XCTAssertEqual(Passwords.get(key, service: service), "pässwörd ✓ two")
-        XCTAssertNil(Passwords.get("/tmp/notes", service: service))                       // one per project
-        XCTAssertNil(Passwords.get(key, service: service + "-other"))
-        XCTAssertTrue(Passwords.set(key, nil, service: service))
-        XCTAssertNil(Passwords.get(key, service: service))
-        XCTAssertTrue(Passwords.set(key, nil, service: service))                          // removing what isn't there is fine
+        // And the rule that follows from it: a share starts with its password, or with none only when the owner
+        // has just said so, or not at all. "Can't be read" never opens it, whatever else is true.
+        let cant = "The saved password for storefront.local can't be read. Set a new password to put it on the network."
+        XCTAssertEqual(Monitor.gate(.unreadable, open: false, name: "storefront").problem, cant)
+        XCTAssertEqual(Monitor.gate(.unreadable, open: true, name: "storefront").problem, cant)
+        XCTAssertNil(Monitor.gate(.unreadable, open: true, name: "storefront").password)
+        XCTAssertEqual(Monitor.gate(.none, open: false, name: "storefront").problem, "Choose a password first, or share it without one.")
+        XCTAssertTrue(Monitor.gate(.none, open: true, name: "storefront") == (nil, nil))
+        XCTAssertTrue(Monitor.gate(.password("k7mqx2hw"), open: false, name: "storefront") == ("k7mqx2hw", nil))
+        XCTAssertTrue(Monitor.gate(.password("k7mqx2hw"), open: true, name: "storefront") == ("k7mqx2hw", nil))      // a password that is there is never dropped by a flag
+        // The owner sets a new one: that is written over the file that couldn't be read, and reads back.
+        try? FileManager.default.removeItem(at: file)
+        try Data("garbage".utf8).write(to: file)
+        XCTAssertTrue(Passwords.store(key, "a-new-one-9", in: file))
+        XCTAssertEqual(Passwords.read(key, in: file), .password("a-new-one-9"))
+
+        // The app itself, with a file that can't be read: the project isn't put on the network, its panel says it
+        // has no saved password (so it offers a new one), and "show" has nothing to show.
+        try Data("garbage".utf8).write(to: file)
+        let kept = (Passwords.inMemory, Passwords.file)
+        Passwords.inMemory = false
+        Passwords.file = file
+        defer { (Passwords.inMemory, Passwords.file) = kept }
+        let (m, _, rows) = sharedFixture()
+        m.stopAllSharing()
+        let main = rows.first { $0.port == 3000 }!
+        XCTAssertFalse(m.hasNetworkPassword(Names.key(main)))
+        XCTAssertNil(m.networkPassword(Names.key(main)))
+        if LAN.current() != nil {
+            XCTAssertEqual(m.shareOnNetwork(main), "The saved password for \(m.networkName(main) ?? "").local can't be read. Set a new password to put it on the network.")
+            XCTAssertTrue(m.lanShares.isEmpty)
+        }
+        // On the network with a password, then the file goes bad and the project is renamed there: it comes off
+        // the network with that said, rather than going on under the new name with no password.
+        m.useFixture(rows, shared: Names.key(main))
+        XCTAssertEqual(m.lanShares.count, 1)
+        let problem = m.renameOnNetwork(main, to: "shop")
+        XCTAssertEqual(problem?.hasSuffix("can't be read. Set a new password to put it on the network."), true)
+        XCTAssertTrue(m.lanShares.isEmpty)
+        XCTAssertEqual(m.notices.last?.text, problem)
+        _ = m.renameOnNetwork(main, to: "")
+    }
+
+    func testTheKeychainIsEmptiedOnceAndNeverAsked() throws {
+        let file = try scratch().appendingPathComponent("network-passwords")
+        // What 1.4.0 left in the Keychain: one item this build can read, one that would need the owner's login
+        // password (read: nil, because asking is forbidden), and one for a project that has a newer password in the file.
+        var items: [String: String?] = ["/Users/sam/code/storefront": "k7mqx2hw", "/Users/sam/code/notes": nil, "/Users/sam/code/blog": "old-one-77"]
+        var asked: [String] = []
+        let keychain = Passwords.Keychain(accounts: { items.keys.sorted() }, read: { asked.append($0); return items[$0] ?? nil }, delete: { items[$0] = nil })
+        XCTAssertTrue(Passwords.store("/Users/sam/code/blog", "newer-one-88", in: file))
+        XCTAssertEqual(Passwords.move(from: keychain, into: file), 2)
+        XCTAssertEqual(asked, ["/Users/sam/code/blog", "/Users/sam/code/notes", "/Users/sam/code/storefront"])
+        // The readable one is in the file and out of the Keychain.
+        XCTAssertEqual(Passwords.read("/Users/sam/code/storefront", in: file), .password("k7mqx2hw"))
+        // The one that would have needed a prompt is left where it is, and its project has no saved password.
+        XCTAssertEqual(Passwords.read("/Users/sam/code/notes", in: file), .none)
+        XCTAssertEqual(Array(items.keys), ["/Users/sam/code/notes"])
+        // The newer password in the file won.
+        XCTAssertEqual(Passwords.read("/Users/sam/code/blog", in: file), .password("newer-one-88"))
+        XCTAssertEqual(mode(file), 0o600)
+        // A file that can't be read: nothing is moved and nothing is deleted from the Keychain.
+        items = ["/Users/sam/code/storefront": "k7mqx2hw"]
+        try Data("garbage".utf8).write(to: file)
+        XCTAssertEqual(Passwords.move(from: keychain, into: file), 0)
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "garbage")
+        // A file that can't be written (there is none yet, and its folder takes no new files): the item stays in the Keychain.
+        let locked = try scratch().appendingPathComponent("locked")
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o555])
+        defer { chmod(locked.path, 0o755) }
+        XCTAssertEqual(Passwords.load(locked.appendingPathComponent("network-passwords")), [:])
+        XCTAssertEqual(Passwords.move(from: keychain, into: locked.appendingPathComponent("network-passwords")), 0)
+        XCTAssertEqual(items.count, 1, "not deleted from the Keychain before it is safely in the file")
     }
 
     func testTheSignInPageHoldsNothingButTheName() {
@@ -920,6 +1213,66 @@ final class OnNetworkTests: XCTestCase {
         }
         XCTAssertEqual(project.seen.count, before)
         XCTAssertTrue(project.server.isStillThere)
+    }
+
+    func testAPageCallsItsProjectsOtherServer() throws {
+        let project = try XCTUnwrap(Project())
+        defer { project.stop() }
+        let net = OnNetwork(announces: false)
+        defer { net.stopAll() }
+        let here = "127.0.0.1", loopback = LAN.Network(interface: "lo0", address: here, router: nil), password = "k7mqx2hw"
+        // One project with a front end and a back end on the network, one password; and another project beside them.
+        let port = try XCTUnwrap(net.start(name: "storefront", project: "/code/storefront", server: project.server, password: password, on: loopback, port: 0))
+        XCTAssertEqual(net.start(name: "storefront-8000", project: "/code/storefront", server: project.server, password: password, on: loopback, port: port), port)
+        XCTAssertEqual(net.start(name: "notes", project: "/code/notes", server: project.server, password: password, on: loopback, port: port), port)
+        func request(_ method: String, _ name: String, _ path: String, _ extra: String = "") throws -> String {
+            try ask(here, port, "\(method) \(path) HTTP/1.1\r\nHost: \(name).local:\(port)\r\n\(extra)\r\n") ?? ""
+        }
+        // What a page on the front end's name sends when it calls the back end: first the browser's own question, with no cookie.
+        let preflight = "Origin: http://storefront.local:\(port)\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: content-type\r\n"
+        // Before anybody has signed in: the sign-in page for all of it, and nothing reaches the project.
+        XCTAssertTrue(try request("OPTIONS", "storefront-8000", "/api/items", preflight).hasPrefix("HTTP/1.1 401 "))
+        XCTAssertTrue(try request("GET", "storefront-8000", "/api/items").hasPrefix("HTTP/1.1 401 "))
+        XCTAssertTrue(project.seen.isEmpty)
+        // A session from another address is nobody's here, whatever a header says about where the request comes from.
+        _ = net.withVisitors { $0.signIn(to: "storefront", project: "/code/storefront", from: "10.0.0.5", now: Date()) }
+        XCTAssertEqual(net.devices(project: "/code/storefront"), 1)
+        for forged in ["X-Forwarded-For: 10.0.0.5\r\n", "Forwarded: for=10.0.0.5\r\n", "X-Real-IP: 10.0.0.5\r\n", "X-Forwarded-For: 10.0.0.5\r\nX-Real-IP: 10.0.0.5\r\n"] {
+            XCTAssertTrue(try request("GET", "storefront-8000", "/api/items", forged).hasPrefix("HTTP/1.1 401 "), forged)
+        }
+        XCTAssertTrue(project.seen.isEmpty)
+        // The visitor signs in, once, on the front end's name.
+        let own = "Origin: http://storefront.local:\(port)\r\nContent-Type: application/json\r\n"
+        let c = json(try ask(here, port, "POST /__harbor/challenge HTTP/1.1\r\nHost: storefront.local:\(port)\r\n\(own)Content-Length: 2\r\n\r\n{}"))
+        let nonce = try XCTUnwrap(c["nonce"] as? String), body = "{\"nonce\":\"\(nonce)\",\"proof\":\"\(answer(password, salt: try XCTUnwrap(c["salt"] as? String), name: "storefront", nonce: nonce))\"}"
+        XCTAssertTrue((try ask(here, port, "POST /__harbor/enter HTTP/1.1\r\nHost: storefront.local:\(port)\r\n\(own)Content-Length: \(body.utf8.count)\r\n\r\n\(body)") ?? "").hasPrefix("HTTP/1.1 200 "))
+        XCTAssertEqual(net.devices(project: "/code/storefront"), 2)
+        // Now its address is known for the project: the back end answers the question and the call, with no cookie.
+        XCTAssertTrue(try request("OPTIONS", "storefront-8000", "/api/items", preflight).hasSuffix("\r\n\r\nok"))
+        XCTAssertTrue(try request("POST", "storefront-8000", "/api/items", "Origin: http://storefront.local:\(port)\r\nContent-Type: application/json\r\nContent-Length: 0\r\n").hasSuffix("\r\n\r\nok"))
+        XCTAssertEqual(project.seen.count, 2)
+        // The name it signed in on still wants its cookie, and another project stays shut, same address or not.
+        XCTAssertTrue(try request("GET", "storefront", "/").hasPrefix("HTTP/1.1 401 "))
+        XCTAssertTrue(try request("GET", "notes", "/").hasPrefix("HTTP/1.1 401 "))
+        XCTAssertEqual(project.seen.count, 2)
+        // Something is open to the back end that way (a stream, a socket). The owner changes the password: every name of
+        // the project gets it (Monitor does that), the sessions are gone, and what they let in is cut on the other name too.
+        let socket = try begin(here, port, "GET /live HTTP/1.1\r\nHost: storefront-8000.local:\(port)\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+        defer { close(socket.fd) }
+        XCTAssertTrue(socket.head.hasPrefix("HTTP/1.1 101 "), socket.head)
+        net.setPassword("another-one", for: "storefront")
+        XCTAssertTrue(Self.ended(socket.fd, within: 1), "what the front end's session let in on the back end is cut with it")
+        XCTAssertTrue(try request("GET", "storefront-8000", "/api/items").hasPrefix("HTTP/1.1 401 "))
+        XCTAssertEqual(net.devices(project: "/code/storefront"), 0)
+        // Signed in again; then the front end goes off the network: its session goes, and the back end is shut again.
+        _ = net.withVisitors { $0.signIn(to: "storefront", project: "/code/storefront", from: here, now: Date()) }
+        XCTAssertTrue(try request("GET", "storefront-8000", "/api/items").hasSuffix("\r\n\r\nok"))
+        net.stop("storefront")
+        XCTAssertTrue(try request("GET", "storefront-8000", "/api/items").hasPrefix("HTTP/1.1 401 "))
+        // With no password there is no gate and nothing to remember: every shared server is open, as before.
+        net.setPassword(nil, for: "storefront-8000")
+        XCTAssertTrue(try request("GET", "storefront-8000", "/api/items").hasSuffix("\r\n\r\nok"))
+        XCTAssertTrue(try request("GET", "notes", "/").hasPrefix("HTTP/1.1 401 "))
     }
 
     func testAFewSilentConnectionsKeepNobodyOut() throws {

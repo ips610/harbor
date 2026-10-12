@@ -90,6 +90,17 @@ final class WebServerTests: XCTestCase {
         }
     }
 
+    /// Beside the name: one link to the project, the same place the menu's item opens, in a
+    /// new tab that learns nothing about this one. Plain markup, so the script rules cover it.
+    func testThePageLinksToTheProject() {
+        let name = AppInfo.name.lowercased()
+        let link = "<a class=\"gh\" href=\"\(Updates.home.absoluteString)\" target=\"_blank\" rel=\"noopener noreferrer\" aria-label=\"\(name) on GitHub\" title=\"\(name) on GitHub\">"
+        XCTAssertEqual(Updates.home.absoluteString, "https://github.com/ips610/harbor")
+        XCTAssertEqual(Page.html.components(separatedBy: link).count, 2)
+        XCTAssertEqual(Page.html.components(separatedBy: "class=\"gh\"").count, 2)
+        for handler in [" onclick=", " onload=", " onerror=", "javascript:"] { XCTAssertFalse(Page.html.contains(handler), handler) }
+    }
+
     func testCrossSiteVisitIsMarkedSoThePageWontAskForATab() {
         guard case .page(_, let crossNav) = server.route(request("GET", "/", ["Sec-Fetch-Site": "cross-site"])) else {
             return XCTFail("GET / should be the page")

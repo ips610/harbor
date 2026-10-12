@@ -33,6 +33,8 @@ new Wi-Fi shows up on the next refresh.
 Every row has a QR button, and the QR is also in a row's details. A server on all interfaces gets
 its network address as a QR for your phone on the same Wi-Fi. One bound to `127.0.0.1` can't be
 reached from a phone, so it says so and offers share; once shared, the QR opens the public link.
+A project that is on my network and shared at once shows both codes, each with what it is, its
+link and its own copy.
 The codes are drawn with soft squares and harbor's waves in the middle, and they stay dark on
 white in dark mode too, because phones don't always read an inverted one.
 
@@ -72,9 +74,13 @@ in its settings.
   parent folder in front, like `blog-web.localhost`. A name doesn't change while its server runs.
 - Apps without a folder get one too (`ollama.localhost`). `harbor` and `headroom` are taken.
   Databases don't get one, and neither does anything on a port browsers refuse to open.
-- To rename one, right-click its row in the menu and choose **Rename…**, or click **Rename** on
-  its card on the page. The name is saved for that folder. Leave it empty to go back to the
-  automatic one.
+- To rename one, open its row and click **rename** beside its `.localhost` link ("On this
+  Mac", right above its name on the network), or right-click the row in the menu and choose
+  **Rename…**. The name is saved for that folder. Leave it empty to go back to the automatic one.
+- If a project has a front end and a back end, I can say which one its plain name opens:
+  **make main** on the other server's row. The one that had the name goes by its port from then
+  on (`storefront-3000.localhost`). The choice is kept; while that server isn't running, the
+  usual rule decides.
 
 The menu and the page show the name beside `localhost:3000`, and open and copy use the name.
 
@@ -93,16 +99,25 @@ a server that only listens on `127.0.0.1` too, because harbor passes the request
 - harbor suggests a password when I turn it on. I can keep it, type my own (8 characters or
   more; `12345678`, `password`, the project's name and the like are refused), or share without
   one, and then it asks first: "Anyone on this Wi-Fi can open storefront." The password is kept
-  in my Keychain. In the details I can show it, change it, get a new random one or remove it.
+  in a file only my account can read, like the sign-in session. (The Keychain would ask for my
+  login password after every update, because harbor isn't signed with an Apple Developer ID.)
+  In the details I can show it, change it, get a new random one or remove it.
   A visitor gets harbor's sign-in page first, and the password itself is never sent over the
   network.
 - After 5 wrong passwords a device waits 5 minutes, and twice as long each time, up to an hour.
   If wrong ones keep coming from many devices, harbor tells me, and for 10 minutes every sign-in
   to that project takes two seconds longer.
-- It's shared from one server, the one its name opened when I turned it on. If that server
-  stops or is started again, or another program starts listening on its port, the project comes
-  off the network and I turn it on again. It never moves to another server by itself. While
-  something is on the network harbor keeps scanning, with the menu and the page closed too.
+- Every server of a project has its own switch. The main one is `storefront.local`, another is
+  `storefront-8000.local`, and each can be renamed there. A share is for one server: if it stops
+  or is started again, or another program starts listening on its port, it comes off the network
+  and I turn it on again. It never moves to another server by itself, and choosing another main
+  server takes the project off the network first. While something is on the network harbor
+  keeps scanning, with the menu and the page closed too.
+- The password is the project's: one for all its servers, and a visitor signs in once. A page
+  on `storefront.local` can then call `storefront-8000.local`, because harbor knows the visitor's
+  device by its address for that project. It has to call it by that name: a phone can't reach
+  `localhost`. (The front end's own dev proxy is the simple way round that.) Devices behind one
+  address, like a hotspot's, count as one device here.
 - The name on the network starts as the `.localhost` name. **Rename on Network…** (the same
   right-click menu, or **rename** beside the link) changes only that one. If another device
   already has the name, harbor takes the next free one, like `storefront-2.local`, and says so.

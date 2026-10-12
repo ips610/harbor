@@ -231,6 +231,10 @@ function qrSvg(rows, label) {
   .nav { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-block: 18px; }
   .logo { display: inline-flex; align-items: center; gap: 10px; font: 800 19px/1 var(--f-display); letter-spacing: -.04em; }
   .logo svg { width: 26px; height: 18px; color: var(--signal); }
+  .brand { display: inline-flex; align-items: center; gap: 12px; }
+  .gh { display: inline-flex; padding: 7px; margin: -7px; border-radius: 999px; color: var(--on-ink-2); transition: color .2s; }
+  .gh:hover { color: var(--on-ink); }
+  .gh svg { width: 18px; height: 18px; fill: currentColor; }
   .nav-end { display: flex; align-items: center; gap: 18px; }
   .nav .seg { background: var(--ink-line); }
   .nav .seg button { color: var(--on-ink-2); }
@@ -359,8 +363,15 @@ function qrSvg(rows, label) {
   .pl.go:hover { background: var(--shared); color: var(--shared-ink); filter: brightness(1.08); }
   .ptunnel { padding: 0 18px 12px 128px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); }
   .ptunnel a { font: 12.5px/1.4 var(--f-mono); color: var(--c-mac); overflow-wrap: anywhere; }
-  .qr { margin: 0 18px 12px 128px; width: max-content; }
+  /* A code sits in the middle of the details, and so do two: one centre line, however many there are. */
+  .qr { margin: 0 18px 12px 128px; display: flex; justify-content: center; }
   .qr svg { display: block; }
+  /* Two codes: side by side, each under what it is and its link; one under the other when there's no room. */
+  .qrs { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 28px; padding: 0 18px 0 128px; }
+  .qrc { margin: 0; max-width: 100%; display: flex; flex-direction: column; align-items: center; }
+  .qrc figcaption { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px 8px; margin-bottom: 8px; font-size: 13px; color: var(--text-2); text-align: center; }
+  .qrc figcaption a { font: 12.5px/1.4 var(--f-mono); color: var(--c-mac); overflow-wrap: anywhere; }
+  .qrc .qr { margin: 0 0 12px; }
   .pline.info { color: var(--text-2); }
   .pdetails { display: grid; grid-template-columns: 6.5em minmax(0, 1fr) auto; gap: 7px 12px; padding: 2px 18px 14px 128px; align-items: baseline; margin: 0; }
   .pdetails dt { color: var(--muted); font: 11px/1.4 var(--f-mono); text-transform: uppercase; letter-spacing: .06em; }
@@ -490,8 +501,9 @@ function qrSvg(rows, label) {
     .pname { padding-left: 90px; margin-top: 0; }
     .pport { font-size: 19px; }
     .pacts { justify-content: flex-end; }
-    .pline, .pdetails, .ptunnel { padding-left: 18px; }
+    .pline, .pdetails, .ptunnel, .qrs { padding-left: 18px; }
     .qr { margin-left: 18px; }
+    .qrc .qr { margin-left: 0; }
     .pdetails { grid-template-columns: 5.5em minmax(0, 1fr) auto; }
     .apps li { grid-template-columns: minmax(0, 1fr) auto 5em; grid-template-areas: "nm val slot" "bar bar bar"; row-gap: 6px; padding: 6px 0; }
     .apps .nm { grid-area: nm; } .apps .val { grid-area: val; } .apps .slot { grid-area: slot; } .apps .track { grid-area: bar; }
@@ -504,9 +516,12 @@ function qrSvg(rows, label) {
 <header class="top">
   <div class="wrap">
     <nav class="nav">
-      <span class="logo">
-        <svg viewBox="0 0 26 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 6c2.5-2.4 4.5-2.4 7 0s4.5 2.4 7 0 4.5-2.4 7 0"/><path d="M1 13c2.5-2.4 4.5-2.4 7 0s4.5 2.4 7 0 4.5-2.4 7 0"/></svg>
-        __app__
+      <span class="brand">
+        <span class="logo">
+          <svg viewBox="0 0 26 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 6c2.5-2.4 4.5-2.4 7 0s4.5 2.4 7 0 4.5-2.4 7 0"/><path d="M1 13c2.5-2.4 4.5-2.4 7 0s4.5 2.4 7 0 4.5-2.4 7 0"/></svg>
+          __app__
+        </span>
+        <a class="gh" href="https://github.com/ips610/harbor" target="_blank" rel="noopener noreferrer" aria-label="__app__ on GitHub" title="__app__ on GitHub"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg></a>
       </span>
       <span class="nav-end">
         <span class="nav-meta mono">Ports on this Mac</span>
@@ -913,7 +928,6 @@ function card(g) {
       frameworks.length || onNetwork ? el('div', { class: 'chips' }, frameworks.map((f) => el('span', { class: 'chip', text: f })),
         onNetwork ? el('span', { class: 'chip warn', text: 'on network', title: onNetwork.local.link }) : null) : null),
     el('span', { class: 'card-acts' },
-      g.rows[0].hostName ? el('button', { class: 'btn quiet', text: 'Rename', title: `Change ${g.rows[0].hostName}.localhost`, onclick: () => rename(g.rows[0]) }) : null,
       g.folder ? el('button', { class: 'btn quiet', text: 'Reveal', title: 'Show this folder in Finder', onclick: () => act('reveal', g.rows[0].pid) }) : null));
   return el('article', { class: 'card' + (mac ? ' mac-svc' : ''), style: { '--pc': g.rows[0].color } },
     head, el('ul', { class: 'rows' }, g.rows.map((p) => row(p, false))));
@@ -974,13 +988,15 @@ function row(p, showProject) {
     sh && sh.kind === 'confirm' ? el('p', { class: 'pline share', text: sh.text }) : null,
     sh && sh.kind === 'hint' ? el('p', { class: 'pline info' }, sh.text + ' ', el('code', { text: sh.command }), ' ',
       pill('copy command', '', () => copyText(sh.command))) : null,
-    tunnelLine(p, pill),
-    live && qrShown.has(p.port) && !(area && !p.lanReachable) ? qrBox(p.port) : null,
-    // The QR area: open from the QR pill, and always part of the details.
+    tunnelLine(p, pill, area),
+    live && qrShown.has(p.port) && !area ? qrBox(p.port) : null,
+    // The QR area: open from the QR pill, and always part of the details. It holds every
+    // code the row has (two when it is on the network and has a public link as well).
     // On the network as <name>.local: that link, its password and its QR. Otherwise the
-    // plain address (or why a phone can't reach it), with the switch under it.
-    area ? (p.local && p.local.on ? networkBox(p, pill)
-      : [p.lanReachable ? lanBox(p, pill) : loopBox(p, pill, live), p.local ? networkOffer(p, pill) : null]) : null,
+    // plain address (or why a phone can't reach it), with the switch under it. Its name on
+    // this Mac sits right above its name on the network: a pair, each with its own rename.
+    area ? (p.local && p.local.on ? [thisMac(p, pill), networkBox(p, pill)]
+      : [p.lanReachable ? lanBox(p, pill) : loopBox(p, pill, live), thisMac(p, pill), p.local ? networkOffer(p, pill) : null]) : null,
     isOpen ? details(p) : null);
   return li;
 }
@@ -991,7 +1007,6 @@ function details(p) {
   if (p.folder) add('Folder', p.folder, el('button', { class: 'pl', text: 'reveal', onclick: () => act('reveal', p.pid) }));
   if (p.command) add('Command', p.command);
   add('Address', p.address);
-  if (p.host) add('Name', p.hostUrl, el('button', { class: 'pl', text: 'rename', onclick: () => rename(p) }));
   add('URL', p.url, el('button', { class: 'pl', text: 'copy', onclick: () => copyText(p.url) }));
   if (p.memory != null) add('Memory', bytes(p.memory));
   if (p.hint) add('Note', p.hint);
@@ -1035,7 +1050,7 @@ function shareAction(p, pill) {
   if (p.tunnel) return pill('unshare', 'kill', () => stopShare(p), { title: 'Stop sharing :' + p.port });
   return pill('share', 'share', () => askShare(p), { title: 'Get a public link for :' + p.port });
 }
-function tunnelLine(p, pill) {
+function tunnelLine(p, pill, area) {
   if (!p.tunnel) return null;
   if (p.tunnel.state === 'starting') return el('p', { class: 'ptunnel', text: `Opening a public link with ${p.tunnel.provider}…` });
   if (p.tunnel.state !== 'ready') return el('p', { class: 'pline', text: p.tunnel.message || 'Sharing failed.' });
@@ -1043,7 +1058,36 @@ function tunnelLine(p, pill) {
   return el('div', { class: 'ptunnel' }, 'Public link',
     el('a', { href: safePublic(url), target: '_blank', rel: 'noopener noreferrer', text: url, onclick: (e) => e.stopPropagation() }),
     pill('copy', '', () => copyText(url)),
-    pill(qrShown.has(p.port) ? 'hide qr' : 'qr', '', () => { if (qrShown.has(p.port)) qrShown.delete(p.port); else qrShown.add(p.port); render(); }));
+    // With the row's panel open its code is there already, beside the others.
+    area ? null : pill(qrShown.has(p.port) ? 'hide qr' : 'qr', '', () => { if (qrShown.has(p.port)) qrShown.delete(p.port); else qrShown.add(p.port); render(); }));
+}
+// Its name on this Mac, shaped like the network line under it.
+function thisMac(p, pill) {
+  if (!p.host) return null;
+  return el('div', { class: 'ptunnel' }, 'On this Mac',
+    el('a', { href: safeUrl(p.hostUrl), target: '_blank', rel: 'noopener noreferrer', text: p.hostUrl, onclick: (e) => e.stopPropagation() }),
+    pill('copy', '', () => copyText(p.hostUrl)), pill('rename', '', () => rename(p), { title: 'Change its .localhost name' }),
+    // Another of the project's servers can be made the one its plain name opens.
+    p.local && p.local.several && !p.local.main
+      ? pill('make main', '', () => makeMain(p), { title: 'The project\'s plain name would open this server. What it has on the network comes off it.' }) : null);
+}
+async function makeMain(p) {
+  const r = await act('main', p.pid, { port: p.port });
+  if (r) toast(r.message);
+  qrCache.clear();
+  poll();
+}
+// The codes a row has (the server says which): one, as ever; or two side by side, each
+// saying what it is, with its link and its own copy.
+function codes(p, pill) {
+  const box = (q) => qrBox(p.port, q.kind === 'share' ? undefined : q.kind);
+  if (p.qrs.length < 2) return p.qrs.length ? box(p.qrs[0]) : null;
+  const safe = (q) => q.kind === 'share' ? safePublic(q.link) : q.kind === 'name' ? safeLocal(q.link) : safeLan(q.link);
+  return el('div', { class: 'qrs' }, p.qrs.map((q) => el('figure', { class: 'qrc' },
+    el('figcaption', {}, q.label + ' ·',
+      el('a', { href: safe(q), target: '_blank', rel: 'noopener noreferrer', text: q.link, onclick: (e) => e.stopPropagation() }),
+      pill('copy', '', () => copyText(q.link))),
+    box(q))));
 }
 // A compact QR glyph: "open it on another device on this network".
 function qrButton(p) {
@@ -1069,6 +1113,8 @@ function qrButton(p) {
 // Where other devices reach a row (click copies the URL), or why they can't.
 function netAddress(p) {
   if (p.net) return el('button', { class: 'netaddr', text: p.net, title: 'Copy http://' + p.net, onclick: (e) => { e.stopPropagation(); copyText('http://' + p.net); } });
+  // Its own port is closed to them, but harbor answers for it under its name: say the name.
+  if (p.local && p.local.on) return el('button', { class: 'netaddr', text: p.local.link.replace(/^http:\/\/|\/$/g, ''), title: 'Copy ' + p.local.link, onclick: (e) => { e.stopPropagation(); copyText(p.local.link); } });
   return el('span', { class: 'netaddr local', text: p.loopbackOnly ? 'this Mac only' : 'not on a network' });
 }
 // Loopback-only: phones can't reach it, so offer share; once shared, the public link's QR.
@@ -1099,7 +1145,7 @@ function lanBox(p, pill) {
       el('a', { href: safeLan(p.lan), target: '_blank', rel: 'noopener noreferrer', text: p.lan, onclick: (e) => e.stopPropagation() }),
       pill('copy', '', () => copyText(p.lan))),
     p.lanBonjour ? el('p', { class: 'pline info', text: 'Or ' + p.lanBonjour }) : null,
-    qrBox(p.port, 'lan'),
+    codes(p, pill),
     state.network.firewall ? el('p', { class: 'pline info', text: 'The macOS firewall is on, so macOS may ask to allow incoming connections for this server.' }) : null);
 }
 function safeLan(u) { return /^http:\/\/[a-z0-9.\-]+:\d+\/?$/i.test(u) ? u : '#'; }
@@ -1131,11 +1177,11 @@ function networkBox(p, pill) {
     el('div', { class: 'ptunnel' }, 'On network',
       el('a', { href: safeLocal(p.local.link), target: '_blank', rel: 'noopener noreferrer', text: p.local.link, onclick: (e) => e.stopPropagation() }),
       pill('copy', '', () => copyText(p.local.link)), pill('rename', '', () => renameOnNetwork(p)),
-      pill('turn off', 'kill', async () => { const r = await act('lan-off', p.pid); if (r) toast(r.message); lanSeen.delete(p.id); qrCache.delete('name' + p.port); poll(); })),
+      pill('turn off', 'kill', async () => { const r = await act('lan-off', p.pid, { port: p.port }); if (r) toast(r.message); lanSeen.delete(p.id); qrCache.delete('name' + p.port); poll(); })),
     el('div', { class: 'ptunnel' }, 'Password', p.local.password
       ? [el('code', { text: shown || '••••••••' }),
         pill(shown ? 'hide' : 'show', '', async () => {
-          if (shown) lanSeen.delete(p.id); else { const r = await act('lan-show', p.pid); if (r && r.password) lanSeen.set(p.id, r.password); }
+          if (shown) lanSeen.delete(p.id); else { const r = await act('lan-show', p.pid, { port: p.port }); if (r && r.password) lanSeen.set(p.id, r.password); }
           render();
         }),
         pill('change', '', () => lanChange(p)),
@@ -1144,25 +1190,27 @@ function networkBox(p, pill) {
           if (await ask('Remove the password?', `Anyone on this Wi-Fi can open ${p.local.name}.`, 'Remove')) lanPassword(p, { off: true });
         })]
       : ['none: anyone on this Wi-Fi can open it', pill('set one', '', () => lanPassword(p, { random: true }))]),
+    p.local.note ? el('p', { class: 'pline info', text: p.local.note }) : null,
+    p.local.help ? el('p', { class: 'pline info', text: p.local.help }) : null,
     p.local.trouble ? el('p', { class: 'pline share', text: p.local.trouble }) : null,
-    qrBox(p.port, 'name'),
+    codes(p, pill),
     el('p', { class: 'pline info', text: state.network.plain }),
     el('p', { class: 'pline info', text: state.network.asks }));
 }
 // Turning it on: with the password it already has, or with a suggested one to accept or decline.
 async function lanStart(p) {
   if (p.local.password) return lanTurnOn(p, {});
-  const r = await act('lan-suggest', p.pid);
+  const r = await act('lan-suggest', p.pid, { port: p.port });
   if (r) setLanAsk(p.id, r.password);
 }
 async function lanTurnOn(p, extra) {
   lanAsk.delete(p.id);
-  const r = await act('lan-on', p.pid, extra);
+  const r = await act('lan-on', p.pid, { port: p.port, ...extra });
   if (r) { toast(r.message); if (extra.password) lanSeen.set(p.id, extra.password); }
   poll();
 }
 async function lanPassword(p, change) {
-  const r = await act('lan-password', p.pid, change);
+  const r = await act('lan-password', p.pid, { port: p.port, ...change });
   if (r) { toast(r.message); if (r.password) lanSeen.set(p.id, r.password); else lanSeen.delete(p.id); }
   poll();
 }
@@ -1174,7 +1222,7 @@ async function renameOnNetwork(p) {
   const name = await askText(`Rename ${p.local.name}.local`,
     'Its name for other devices on this network. Lowercase letters, numbers and hyphens, up to 40. Leave it empty to use its .localhost name.', p.local.name, 'Rename');
   if (name == null) return;
-  const r = await act('lan-rename', p.pid, { name });
+  const r = await act('lan-rename', p.pid, { port: p.port, name });
   if (r) toast(r.message);
   qrCache.delete('name' + p.port);
   poll();

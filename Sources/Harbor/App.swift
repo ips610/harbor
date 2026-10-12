@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !DebugCLI.isDebugRun {
             Monitor.shared.applyDockPolicy()
             NSApp.mainMenu = mainMenu()
+            Passwords.moveOutOfKeychain()   // once, and never with a prompt
         }
         let atLogin = launchedAtLogin()
         // Debug runs share no state with the installed copy, so they must not

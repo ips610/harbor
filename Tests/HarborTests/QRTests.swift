@@ -32,6 +32,28 @@ final class QRTests: XCTestCase {
         }
     }
 
+    /// A project shared both ways shows two codes at once, one under the other in the menu.
+    /// Whoever points a camera at them has both in the picture: each must still read whole.
+    func testTwoCodesInOnePictureBothScan() throws {
+        let links = ["http://storefront.local/", "https://quiet-harbor-demo.trycloudflare.com"]
+        let detector = try XCTUnwrap(CIDetector(ofType: CIDetectorTypeQRCode, context: nil, options: [CIDetectorAccuracy: CIDetectorAccuracyHigh]))
+        for points in [132, 150] {
+            for scale in [1, 2] {
+                // As the card stacks them: a code, a line with its link, the next code; on the menu's dark backdrop.
+                let side = points * scale, gap = 28 * scale
+                let codes = try links.map { try XCTUnwrap(QR.image($0, pixels: side)) }
+                let picture = try XCTUnwrap(CGContext(data: nil, width: side + 2 * gap, height: 2 * side + 3 * gap, bitsPerComponent: 8, bytesPerRow: 0,
+                                                      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+                picture.setFillColor(CGColor(gray: 0.16, alpha: 1))
+                picture.fill(CGRect(x: 0, y: 0, width: picture.width, height: picture.height))
+                picture.draw(codes[0], in: CGRect(x: gap, y: 2 * gap + side, width: side, height: side))
+                picture.draw(codes[1], in: CGRect(x: gap, y: gap, width: side, height: side))
+                let found = detector.features(in: CIImage(cgImage: try XCTUnwrap(picture.makeImage()))).compactMap { ($0 as? CIQRCodeFeature)?.messageString }
+                XCTAssertEqual(found.sorted(), links.sorted(), "\(points) pt at \(scale)x")
+            }
+        }
+    }
+
     func testMatrixHasNoQuietZoneAndTheThreeEyes() throws {
         for url in urls {
             let m = try XCTUnwrap(QR.matrix(url))

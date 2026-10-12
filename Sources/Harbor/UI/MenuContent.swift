@@ -104,7 +104,7 @@ struct MenuContent: View {
                     .padding(.vertical, 4)
                 }
                 .defaultScrollAnchor(.top)
-                .frame(maxHeight: 430)
+                .frame(maxHeight: DebugCLI.menuHeight ?? 430)
                 .fixedSize(horizontal: false, vertical: true)
             }
             Divider()
@@ -218,6 +218,7 @@ struct MenuContent: View {
             }
             .disabled(updates.checking)
             Text("\(AppInfo.name) \(updates.current)")
+            Button("\(AppInfo.name) on GitHub") { NSWorkspace.shared.open(Updates.home) }
             Divider()
             Button("Open \(AppInfo.name) page") { WebServer.shared.openInBrowser() }
             Button("Quit \(AppInfo.name)") { NSApp.terminate(nil) }
@@ -438,6 +439,7 @@ private struct PortLine: View {
                                 .padding(.vertical, 1)
                                 .foregroundStyle(Tone.sharedInk)
                                 .background(RoundedRectangle(cornerRadius: 4).fill(Tone.shared))
+                                .fixedSize()
                         }
                         if row.scope == .all {
                             Image(systemName: "dot.radiowaves.up.forward")
@@ -450,7 +452,7 @@ private struct PortLine: View {
                         // Where other devices reach it (click to copy), or "this Mac only". On the
                         // network under its name: a tag in orange, like every other sign that the
                         // network can reach something. It sits here because the line above has no room.
-                        if monitor.isNetworkRow(row), let link = monitor.networkLink(Names.key(row)) {
+                        if let link = monitor.networkLink(row) {
                             Button { Engine.copy(link); monitor.flash("Copied \(link)") } label: {
                                 Text("on network")
                                     .font(.system(size: 10, weight: .semibold))
@@ -557,16 +559,17 @@ private struct PortLine: View {
                 }
                 Button("Rename…") { askRename() }
             }
-            if monitor.isNetworkRow(row), let name = monitor.networkName(Names.key(row)) {
+            if monitor.isNetworkRow(row), let name = monitor.networkName(row) {
                 Divider()
-                if let link = monitor.networkLink(Names.key(row)) {
+                if let link = monitor.networkLink(row) {
                     Button("Copy \(link)") { Engine.copy(link); monitor.flash("Copied \(link)") }
                     Button("Network Password…") { askNetworkPassword() }
-                    Button("Turn Off \(name)\(Lan.suffix)") { monitor.stopSharing(Names.key(row)) }
+                    Button("Turn Off \(name)\(Lan.suffix)") { monitor.stopSharing(row.id) }
                 } else {
                     Button("Put on Network as \(name)\(Lan.suffix)…") { askShare() }
                 }
                 Button("Rename on Network…") { askNetworkName() }
+                if monitor.hasSiblings(row), !monitor.isMain(row) { Button("Make This the Main Server") { makeMain() } }
                 Divider()
             }
             Button("Copy PID") {
@@ -586,24 +589,33 @@ private struct PortLine: View {
     @ViewBuilder
     private func network(_ name: String) -> some View {
         let key = Names.key(row)
-        if let link = monitor.networkLink(key) {
+        if let link = monitor.networkLink(row) {
             DetailLine(label: Lan.suffix, value: link) {
                 Pill(title: "copy") { Engine.copy(link); monitor.flash("Copied \(link)") }
             }
             HStack(spacing: 6) {
                 Pill(title: "rename") { askNetworkName() }
-                Pill(title: "turn off", style: .danger) { monitor.stopSharing(key); showPassword = false }
+                Pill(title: "turn off", style: .danger) { monitor.stopSharing(row.id); showPassword = false }
             }
             .padding(.leading, 58)
-            DetailLine(label: "Password", value: monitor.lanShares[key]?.hasPassword == true
+            DetailLine(label: "Password", value: monitor.lanShares[row.id]?.hasPassword == true
                        ? (showPassword ? monitor.networkPassword(key) ?? "" : "••••••••") : "none: anyone on this Wi-Fi can open it") {
-                if monitor.lanShares[key]?.hasPassword == true { Pill(title: showPassword ? "hide" : "show") { showPassword.toggle() } }
+                if monitor.lanShares[row.id]?.hasPassword == true { Pill(title: showPassword ? "hide" : "show") { showPassword.toggle() } }
                 Pill(title: "change") { askNetworkPassword() }
             }
-            if let share = monitor.lanShares[key], share.isUnannounced {
+            if let share = monitor.lanShares[row.id] {
+                // Whose password it is and who is in; and, with another of the project's servers on the network, how a page reaches this one.
+                if share.hasPassword, let note = Lan.passwordNote(project: monitor.names.base[key] ?? row.title, several: monitor.hasSiblings(row), devices: monitor.devices(row)) {
+                    Text(note).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                if monitor.lanShares.contains(where: { $0.key != row.id && $0.value.project == key }) {
+                    Text(Lan.callByName).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            if let share = monitor.lanShares[row.id], share.isUnannounced {
                 Text(Lan.notAnnounced(share.name)).font(.system(size: 11)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
-            QRCode(text: link).padding(.leading, 58)
+            codeStack
             Text(Lan.plainHttp)
                 .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Text(Lan.systemAsks(firewall: LAN.firewallOn))
@@ -655,7 +667,7 @@ private struct PortLine: View {
     /// Turning it on: with the password it has, or one suggested here to keep, change or do without.
     private func askShare() {
         let key = Names.key(row)
-        guard let name = monitor.networkName(key) else { return }
+        guard let name = monitor.networkName(row) else { return }
         var problem: String?
         if monitor.hasNetworkPassword(key) {
             problem = monitor.shareOnNetwork(row)
@@ -672,11 +684,11 @@ private struct PortLine: View {
         } else {
             return
         }
-        monitor.flash(problem ?? "\(monitor.networkLink(key) ?? name) is on your network.")
+        monitor.flash(problem ?? "\(monitor.networkLink(row) ?? name) is on your network.")
     }
 
     private func askNetworkName() {
-        guard let name = monitor.networkName(Names.key(row)),
+        guard let name = monitor.networkName(row),
               let typed = ask("Rename \(name)\(Lan.suffix)", "Its name for other devices on this network. Lowercase letters, numbers and hyphens, up to \(Names.maxLength). Leave it empty to use its .localhost name.",
                               value: name, yes: "Rename") else { return }
         if let problem = monitor.renameOnNetwork(row, to: typed.answer) { monitor.flash(problem) }
@@ -684,12 +696,17 @@ private struct PortLine: View {
 
     /// A new password, typed or random as offered; or none at all, after being asked.
     private func askNetworkPassword() {
-        let key = Names.key(row)
-        guard let name = monitor.networkName(key),
+        guard let name = monitor.networkName(row),
               let choice = ask("Password for \(name)\(Lan.suffix)", "At least \(Lan.minPassword) characters. Everyone who is signed in signs in again.",
                                value: Lan.randomPassword(), yes: "Change", other: "No Password…") else { return }
         if choice.other, !confirm("Remove the password?", "Anyone on this Wi-Fi can open \(name).", yes: "Remove") { return }
         if let problem = monitor.setNetworkPassword(row, choice.other ? nil : choice.answer) { monitor.flash(problem) }
+    }
+
+    /// This server becomes the one its project's plain name opens. What the project has on the network comes off it (said in a notice).
+    private func makeMain() {
+        if let problem = monitor.makeMain(row) { monitor.flash(problem) }
+        else { monitor.flash("\(monitor.names.base[Names.key(row)] ?? row.title)\(Names.suffix) opens port \(row.port) now.") }
     }
 
     /// A new name for the row's project, the part before .localhost. Empty goes back to the automatic one.
@@ -713,6 +730,7 @@ private struct PortLine: View {
 
     @ViewBuilder
     private func tunnelLine(_ t: Tunnels.Tunnel) -> some View {
+        let both = expanded && monitor.codes(row).count == 2
         switch t.phase {
         case .starting:
             HStack(spacing: 6) {
@@ -736,11 +754,25 @@ private struct PortLine: View {
                         NSPasteboard.general.setString(url, forType: .string)
                         monitor.flash("Copied \(url)")
                     }
-                    Pill(title: showQR ? "hide qr" : "qr") { showQR.toggle() }
+                    // With the details open and another code in them, this one is there too, beside it: both at once.
+                    if !both { Pill(title: showQR ? "hide qr" : "qr") { showQR.toggle() } }
                 }
-                if showQR { QRCode(text: url) }
+                if showQR, !both { QRCode(text: url).frame(maxWidth: .infinity) }
             }
         }
+    }
+
+    /// The row's codes, together in the middle of its details: one under the other on one
+    /// centre line, each named above when there are two. One alone sits on the same line.
+    private var codeStack: some View {
+        let codes = monitor.codes(row)
+        return VStack(spacing: 6) {
+            ForEach(codes, id: \.link) { code in
+                if codes.count > 1 { Text(code.label).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary) }
+                QRCode(text: code.link)
+            }
+        }
+        .frame(maxWidth: .infinity)
     }
 
     private var question: String {
@@ -774,19 +806,26 @@ private struct PortLine: View {
             if let m = row.footprint {
                 DetailLine(label: "Memory", value: Fmt.bytes(m)) { EmptyView() }
             }
-            if let host = monitor.nameHost(row) {
-                DetailLine(label: "Name", value: "http://\(host)/") {
-                    Pill(title: "rename") { askRename() }
-                }
-            }
             DetailLine(label: "URL", value: row.url.absoluteString) {
                 Pill(title: "copy") {
                     Engine.copy(row.url.absoluteString)
                     monitor.flash("Copied \(row.url.absoluteString)")
                 }
             }
-            let canShare = monitor.isNetworkRow(row), shared = monitor.lanShares[Names.key(row)] != nil
-            if canShare, let name = monitor.networkName(Names.key(row)) { network(name) }
+            let canShare = monitor.isNetworkRow(row), shared = monitor.lanShares[row.id] != nil
+            // Its two names, one above the other, each with its own rename: on this Mac, and on the network.
+            if let host = monitor.nameHost(row) {
+                DetailLine(label: Names.suffix, value: host) {
+                    Pill(title: "rename", help: "Change its .localhost name") { askRename() }
+                }
+                // Another of the project's servers can be made the one its plain name opens. On its
+                // own line: two pills beside a name squeeze it into two.
+                if monitor.hasSiblings(row), !monitor.isMain(row) {
+                    Pill(title: "make main", help: "\(monitor.names.base[Names.key(row)] ?? "The project's name")\(Names.suffix) would open this server. What the project has on the network comes off it.") { makeMain() }
+                        .padding(.leading, 58)
+                }
+            }
+            if canShare, let name = monitor.networkName(row) { network(name) }
             // The QR the row's button shows, here too: another device on this network scans it.
             // Once the project is on the network under its name, that link and QR stand in for this one.
             if !shared, let lan = row.lanURL(ip: monitor.lanIP) {
@@ -797,7 +836,7 @@ private struct PortLine: View {
                         monitor.flash("Copied \(lan)")
                     }
                 }
-                QRCode(text: lan).padding(.leading, 58)  // under the values: the 52 pt label column and its gap
+                codeStack
             }
             if let hint = row.hint {
                 Text(hint).font(.system(size: 11)).foregroundStyle(.secondary)
@@ -867,7 +906,19 @@ struct LANCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Open on another device").font(.system(size: 12, weight: .semibold))
-            if row.lanReachable { network } else { loopback }
+            let codes = monitor.codes(row)
+            if codes.isEmpty {
+                if row.lanReachable { network } else { loopback }
+            } else {
+                // Every code the row has, one under the other, each with what it is and its link.
+                if codes.count == 1, codes[0].code == .share { small("Phones can't reach 127.0.0.1, so this opens the public link.") }
+                ForEach(codes, id: \.link) { code in
+                    if codes.count > 1 { Text(code.label).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary).frame(maxWidth: .infinity) }
+                    QRCode(text: code.link, size: 150).frame(maxWidth: .infinity)
+                    link(code.link)
+                }
+                if codes.contains(where: { $0.code == .lan }) { network }
+            }
         }
         .padding(12)
         .frame(width: 250)
@@ -875,9 +926,7 @@ struct LANCard: View {
     }
 
     @ViewBuilder private var network: some View {
-        if let url = row.lanURL(ip: monitor.lanIP) {
-            QRCode(text: url, size: 150)
-            link(url)
+        if row.lanURL(ip: monitor.lanIP) != nil {
             if let bonjour = row.bonjourURL(monitor.lanName) {
                 Text("Or \(bonjour)").font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled)
             }
@@ -891,10 +940,8 @@ struct LANCard: View {
 
     @ViewBuilder private var loopback: some View {
         switch Tunnels.shared.active[row.port]?.phase {
-        case .ready(let url)?:
-            small("Phones can't reach 127.0.0.1, so this opens the public link.")
-            QRCode(text: url, size: 150)
-            link(url)
+        case .ready?:
+            EmptyView()     // its code is drawn with the others
         case .starting?:
             HStack(spacing: 6) { ProgressView().controlSize(.mini); small("Opening a public link…") }
         default:

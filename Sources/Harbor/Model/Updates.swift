@@ -10,6 +10,8 @@ import Observation
 final class Updates {
     static let shared = Updates()
     nonisolated static let releases = URL(string: "https://github.com/ips610/harbor/releases")!
+    /// Where the project lives: the page's header links there too.
+    nonisolated static let home = URL(string: "https://github.com/ips610/harbor")!
 
     let current = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
     private(set) var latest = DebugCLI.defaults.string(forKey: "update.latest")

@@ -82,9 +82,11 @@ enum Names {
     ///   is the table from the last scan): a project's name, and an extra port's name too.
     /// - Two folders with the same name: the one that started first keeps the plain name, the
     ///   later one gets its parent folder in front (shop-web), then a number (web-2).
-    /// - Several ports: the name goes to a dev server first, then to the lowest port.
+    /// - Several ports: the name goes to the server its owner chose as the main one (`mains`,
+    ///   by project, a port) while that one runs; else to a dev server first, then to the
+    ///   lowest port. The choice is kept while its server is away.
     /// - Some rows get no name at all (see `named`).
-    static func assign(_ rows: [PortRow], saved: [String: String] = [:], previous: Table = Table()) -> Table {
+    static func assign(_ rows: [PortRow], saved: [String: String] = [:], previous: Table = Table(), mains: [String: Int] = [:]) -> Table {
         let never = reservedPorts
         let groups = Dictionary(grouping: rows.filter { named($0, never: never) }, by: key)
         // Names that servers still running go by: nobody else is given one of those.
@@ -124,13 +126,17 @@ enum Names {
         for k in order {
             let name = pick(k)
             used.insert(name)
-            // The server that has the name keeps it; else a dev server first, then the lowest port.
-            func place(_ r: PortRow) -> (Int, Int, UInt16, pid_t) { (previous.byRow[r.id] == name ? 0 : 1, r.category == .dev ? 0 : 1, r.port, r.pid) }
+            // The chosen main server first; else the server that has the name keeps it; else a
+            // dev server first, then the lowest port.
+            func chosen(_ r: PortRow) -> Bool { mains[k] == Int(r.port) }
+            func place(_ r: PortRow) -> (Int, Int, Int, UInt16, pid_t) { (chosen(r) ? 0 : 1, previous.byRow[r.id] == name ? 0 : 1, r.category == .dev ? 0 : 1, r.port, r.pid) }
             let rs = (groups[k] ?? []).sorted { place($0) < place($1) }
             table.base[k] = name
             table.targets[name] = target(rs[0])
             for (i, r) in rs.enumerated() {
-                if let had = previous.byRow[r.id], had != name { kept.append((had, r)) }
+                // A chosen main takes the name outright; the one that had it goes by its port from here on.
+                if i == 0, chosen(r) { table.byRow[r.id] = name }
+                else if let had = previous.byRow[r.id], had != name { kept.append((had, r)) }
                 else if i == 0 { table.byRow[r.id] = name }
                 else { extra.append(("\(name)-\(r.port)", r)) }
             }

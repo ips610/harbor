@@ -27,6 +27,11 @@ final class Tunnels {
     }
 
     private(set) var active: [UInt16: Tunnel] = [:]
+
+    /// A made-up public link that is "ready", for snapshots (`--fixture both`). Nothing is started.
+    func useFixture(port: UInt16, title: String, url: String) {
+        active[port] = Tunnel(port: port, title: title, provider: "cloudflared", phase: .ready(url))
+    }
     @ObservationIgnored private var processes: [UInt16: Process] = [:]
     @ObservationIgnored private var qrCache: [String: CGImage] = [:]
 
@@ -210,6 +215,16 @@ final class Tunnels {
 /// white card. Always dark on white, in dark mode too: inverted codes fail on some phones.
 /// The page draws the same thing from `matrix` (Page.qrScript); keep the two alike.
 enum QR {
+    /// A code a row can show: its name on the network, its plain network address, its public link.
+    enum Code: String { case name, lan, share }
+
+    /// Which codes a row shows. On the network under its name: that one, and it stands in
+    /// for the plain address. Otherwise the plain address, when other devices can reach it.
+    /// And the public link when there is one. So one or two, never three.
+    static func codes(onNetwork: Bool, reachable: Bool, shared: Bool) -> [Code] {
+        (onNetwork ? [.name] : reachable ? [.lan] : []) + (shared ? [.share] : [])
+    }
+
     /// Modules of white around the code, inside the card (the standard quiet zone).
     static let quiet = 4
     static let ink = "#0b0b0c"

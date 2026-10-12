@@ -174,6 +174,18 @@ enum Lan {
             .map { String(format: "%02x", $0) }.joined()
     }
 
+    /// Under a password in the panel: whose it is when the project has several servers, and
+    /// how many devices are signed in. nil when there is nothing to say.
+    static func passwordNote(project: String, several: Bool, devices: Int) -> String? {
+        let whose = several ? "One password for all of \(project)'s servers on the network: a visitor signs in once." : nil
+        let who = devices > 0 ? "\(devices) device\(devices == 1 ? "" : "s") signed in. A new password signs \(devices == 1 ? "it" : "them") out." : nil
+        let both = [whose, who].compactMap { $0 }
+        return both.isEmpty ? nil : both.joined(separator: " ")
+    }
+
+    /// When a second server of a project is on the network: how a page reaches it.
+    static let callByName = "A page can only call this one by its .local name, not localhost."
+
     /// What macOS itself asks the first time something goes on the network, and where to put
     /// a No right. Harbor can't answer for the user, and can't see the firewall's answer.
     static func systemAsks(firewall: Bool) -> String {
@@ -251,7 +263,10 @@ struct Visitors {
     /// Made when harbor starts and never stored: what it marks its challenges with.
     private let key = SymmetricKey(size: .bits256)
     private var used: [String: Date] = [:]            // challenges that let someone in, until they'd end anyway
-    private var sessions: [String: (name: String, until: Date)] = [:]
+    /// A session is for one name, and remembers the project that name belongs to and the
+    /// address it was signed in from: from that address the project's other names open too
+    /// (see `sibling`). There is no second table to fall out of step with this one.
+    private var sessions: [String: (name: String, project: String, address: String, until: Date)] = [:]
     private struct Tries {
         var wrong = 0
         var locks = 0
@@ -301,12 +316,33 @@ struct Visitors {
 
     // Sessions: twelve hours, for one name.
 
-    mutating func signIn(to name: String, now: Date) -> String {
+    mutating func signIn(to name: String, project: String = "", from address: String = "", now: Date) -> String {
         sessions = sessions.filter { $0.value.until > now }
         if sessions.count >= Self.maxSessions, let oldest = sessions.min(by: { $0.value.until < $1.value.until }) { sessions[oldest.key] = nil }
         let token = Lan.token()
-        sessions[token] = (name, now.addingTimeInterval(Self.sessionLife))
+        sessions[token] = (name, project, address, now.addingTimeInterval(Self.sessionLife))
         return token
+    }
+
+    /// A page on one of a project's names calls another of its servers by that server's
+    /// name. To the browser that is another site: it sends no cookie, and the question it
+    /// asks first (the preflight) never carries one. So a device that has signed in to a
+    /// project is known by its address for that project's other names, for as long as its
+    /// session lasts. This is that session's name, when `address` has one on another name of
+    /// `project`; nil otherwise.
+    ///
+    /// - `address` is the connection's own other end, never a header.
+    /// - Only within one project. The name that was signed in on still wants its cookie.
+    /// - It ends with the session it rests on, every way a session ends.
+    /// - Devices behind one address (a hotspot, a router doing NAT) count as one here.
+    func sibling(of name: String, project: String, address: String, now: Date) -> String? {
+        guard !project.isEmpty, !address.isEmpty else { return nil }
+        return sessions.values.first { $0.project == project && $0.address == address && $0.name != name && now < $0.until }?.name
+    }
+
+    /// How many devices (addresses) are signed in to a project right now.
+    func devices(project: String, now: Date) -> Int {
+        Set(sessions.values.filter { $0.project == project && now < $0.until }.map(\.address)).count
     }
 
     func isSignedIn(_ token: String?, to name: String, now: Date) -> Bool {
@@ -381,57 +417,144 @@ struct Visitors {
 
 // MARK: - Passwords
 
-/// A project's network password, by project folder. In the Keychain (a generic password
-/// item harbor can read back, because the owner has to be able to read it out); never in
-/// defaults or a log. Debug runs and tests keep them in memory instead.
+/// A project's network password, by project folder. Kept in a file only this account can
+/// read, beside the sign-in session. The owner has to be able to read it out to a friend,
+/// and the Keychain would ask for the login password after every update: harbor isn't
+/// signed with an Apple Developer ID, so to the Keychain each build is a different app.
+/// Never in defaults or a log. Debug runs and tests keep them in memory.
+///
+/// A password that can't be read is never "no password": `read` says `.unreadable`, and a
+/// project that had one isn't shared until its owner sets a new one.
 enum Passwords {
+    enum Read: Equatable { case none, password(String), unreadable }
+
     private static let lock = NSLock()
     private static var memory: [String: String] = [:]
     static var inMemory = DebugCLI.isDebugRun || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
         || NSClassFromString("XCTestCase") != nil
-    static var service: String { LaunchAgent.label + ".on-network" }
+    /// Where they are kept (a test points this at a file of its own).
+    static var file = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/\(LaunchAgent.label)/network-passwords")
 
-    private static func query(_ key: String, service: String) -> [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: key]
+    static func read(_ key: String) -> Read {
+        lock.lock()
+        defer { lock.unlock() }
+        if inMemory { return memory[key].map(Read.password) ?? .none }
+        return read(key, in: file)
     }
 
-    static func get(_ key: String, service: String = service) -> String? {
-        if inMemory {
-            lock.lock()
-            defer { lock.unlock() }
-            return memory[key]
-        }
-        var found: CFTypeRef?
-        var q = query(key, service: service)
-        q[kSecReturnData as String] = true
-        q[kSecMatchLimit as String] = kSecMatchLimitOne
-        guard SecItemCopyMatching(q as CFDictionary, &found) == errSecSuccess, let data = found as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+    static func read(_ key: String, in file: URL) -> Read {
+        guard let all = load(file) else { return .unreadable }
+        return all[key].map(Read.password) ?? .none
     }
 
-    /// Saves the password, or removes it (nil). False when the Keychain refused.
+    /// Saves the password, or removes it (nil). False when it couldn't be written.
     @discardableResult
-    static func set(_ key: String, _ password: String?, service: String = service) -> Bool {
+    static func set(_ key: String, _ password: String?) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
         if inMemory {
-            lock.lock()
-            defer { lock.unlock() }
             memory[key] = password
             return true
         }
-        let q = query(key, service: service)
-        guard let password else {
-            let status = SecItemDelete(q as CFDictionary)
-            return status == errSecSuccess || status == errSecItemNotFound
+        return store(key, password, in: file)
+    }
+
+    /// What the file holds: nothing when there is no file, nil when there is one and it
+    /// can't be read as what it should be (then nobody's password is known, which is not
+    /// the same as nobody having one).
+    static func load(_ file: URL) -> [String: String]? {
+        let fd = open(file.path, O_RDONLY | O_NOFOLLOW)
+        guard fd >= 0 else { return errno == ENOENT ? [:] : nil }
+        defer { close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_uid == getuid(), info.st_size <= 1 << 20 else { return nil }
+        var bytes = [UInt8](repeating: 0, count: Int(info.st_size))
+        guard Darwin.read(fd, &bytes, bytes.count) == bytes.count else { return nil }
+        return (try? JSONSerialization.jsonObject(with: Data(bytes))) as? [String: String]
+    }
+
+    /// One project's password into the file (nil: out of it). A file that can't be read is
+    /// not carried over: whoever is writing is setting a password anew.
+    static func store(_ key: String, _ password: String?, in file: URL) -> Bool {
+        var all = load(file) ?? [:]
+        all[key] = password
+        guard let data = try? JSONSerialization.data(withJSONObject: all, options: [.sortedKeys]) else { return false }
+        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        // A new file, 0600 from the moment it exists (O_EXCL, and no following of a link put
+        // in its place), then put where the old one was in one step.
+        let new = file.path + ".new"
+        unlink(new)
+        let fd = open(new, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+        guard fd >= 0 else { return false }
+        let written = data.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) } == data.count
+        close(fd)
+        guard written, rename(new, file.path) == 0 else {
+            unlink(new)
+            return false
         }
-        let data = Data(password.utf8)
-        let status = SecItemUpdate(q as CFDictionary, [kSecValueData as String: data] as CFDictionary)
-        if status == errSecItemNotFound {
-            var add = q
-            add[kSecValueData as String] = data
-            add[kSecAttrLabel as String] = "\(AppInfo.name): network password"
-            return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
+        return true
+    }
+
+    // MARK: Out of the Keychain, once
+
+    /// The Keychain as the move needs it. `read` is nil for an item that can't be read
+    /// without asking the owner.
+    struct Keychain {
+        var accounts: () -> [String]
+        var read: (String) -> String?
+        var delete: (String) -> Void
+    }
+
+    /// Moves what 1.4.0 kept in the Keychain into the file. Never with a prompt: an item
+    /// that would need one stays where it is, and its project has no saved password until
+    /// the owner sets one. A password already in the file wins, and an item is deleted only
+    /// once its password is safely in the file.
+    @discardableResult
+    static func move(from keychain: Keychain, into file: URL) -> Int {
+        var moved = 0
+        for account in keychain.accounts() {
+            guard let password = keychain.read(account), let all = load(file) else { continue }
+            guard all[account] != nil || store(account, password, in: file) else { continue }
+            keychain.delete(account)
+            moved += 1
         }
-        return status == errSecSuccess
+        return moved
+    }
+
+    /// The one place harbor still calls into the Keychain: once, at the first launch of a
+    /// build that keeps passwords in the file, and with every kind of asking forbidden.
+    static func moveOutOfKeychain() {
+        guard !inMemory, !DebugCLI.defaults.bool(forKey: "lanPasswordsMoved") else { return }
+        DebugCLI.defaults.set(true, forKey: "lanPasswordsMoved")
+        let service = LaunchAgent.label + ".on-network"
+        func query(_ account: String?) -> [CFString: Any] {
+            var q: [CFString: Any] = [kSecClass: kSecClassGenericPassword, kSecAttrService: service, kSecUseAuthenticationUI: kSecUseAuthenticationUIFail]
+            if let account { q[kSecAttrAccount] = account }
+            return q
+        }
+        SecKeychainSetUserInteractionAllowed(false)
+        defer { SecKeychainSetUserInteractionAllowed(true) }
+        lock.lock()
+        defer { lock.unlock() }
+        move(from: Keychain(
+            accounts: {
+                var found: CFTypeRef?
+                var q = query(nil)
+                q[kSecMatchLimit] = kSecMatchLimitAll
+                q[kSecReturnAttributes] = true
+                guard SecItemCopyMatching(q as CFDictionary, &found) == errSecSuccess else { return [] }
+                return ((found as? [[String: Any]]) ?? []).compactMap { $0[kSecAttrAccount as String] as? String }
+            },
+            read: { account in
+                var found: CFTypeRef?
+                var q = query(account)
+                q[kSecReturnData] = true
+                q[kSecMatchLimit] = kSecMatchLimitOne
+                guard SecItemCopyMatching(q as CFDictionary, &found) == errSecSuccess, let data = found as? Data else { return nil }
+                return String(data: data, encoding: .utf8)
+            },
+            delete: { _ = SecItemDelete(query($0) as CFDictionary) }), into: file)
     }
 }
 
@@ -526,6 +649,7 @@ final class OnNetwork: @unchecked Sendable {
     }
 
     struct Share {
+        var project = ""                     // its folder: the password and the sign-in are the project's
         let server: Server
         var salt = Lan.token(16)             // new with every password, so it also tells one sharing from the next
         var secret: Data?                    // the derived key; nil when there is no password
@@ -562,7 +686,9 @@ final class OnNetwork: @unchecked Sendable {
     private var announced: LAN.Network?
     private var boundPort: UInt16 = 0
     private var held6 = false
-    private var live: [String: [Int32: Int32]] = [:]    // per name, what is being passed on right now: the visitor's socket and the server's
+    // Per name, what is being passed on right now: the visitor's socket, the server's, and
+    // the name whose session let it in when it came without a cookie of its own (`sibling`).
+    private var live: [String: [Int32: (server: Int32, via: String?)]] = [:]
     // On `queue`.
     private var source: DispatchSourceRead?
     private var source6: DispatchSourceRead?
@@ -604,14 +730,17 @@ final class OnNetwork: @unchecked Sendable {
         var doorBack = true
     }
 
-    func start(name: String, server: Server, password: String?, on network: LAN.Network, port wanted: UInt16) -> UInt16? {
-        begin(name: name, server: server, password: password, on: network, port: wanted).port
+    func start(name: String, project: String = "", server: Server, password: String?, on network: LAN.Network, port wanted: UInt16) -> UInt16? {
+        begin(name: name, project: project, server: server, password: password, on: network, port: wanted).port
     }
+
+    /// Devices signed in to a project right now, for its owner's panel.
+    func devices(project: String) -> Int { locked { visitors.devices(project: project, now: Date()) } }
 
     /// Starts serving `name` from `server` on `network`, opening the listener if this is the
     /// first one; later names use the listener that is there. One at a time: two started at
     /// once take their turns on `queue`, and only the first opens anything.
-    func begin(name: String, server: Server, password: String?, on network: LAN.Network, port wanted: UInt16) -> Begun {
+    func begin(name: String, project: String = "", server: Server, password: String?, on network: LAN.Network, port wanted: UInt16) -> Begun {
         queue.sync { () -> Begun in
             var begun = Begun()
             if source == nil {
@@ -659,7 +788,7 @@ final class OnNetwork: @unchecked Sendable {
                 locked { held6 = source6 != nil }
                 watch()
             }
-            var share = Share(server: server)
+            var share = Share(project: project, server: server)
             if let password { share.secret = Lan.key(password: password, salt: share.salt) }
             locked {
                 cut(name)                           // the same name shared again: nothing of before stays open
@@ -717,12 +846,16 @@ final class OnNetwork: @unchecked Sendable {
         }
     }
 
-    /// Ends everything that is being passed on for `name`, both ends of each. Under `lock`.
-    /// The sockets are only shut down here; each connection's own thread closes them.
+    /// Ends everything that is being passed on for `name`, both ends of each, and whatever
+    /// its sessions let in on the project's other names. Under `lock`, and always beside
+    /// `visitors.forget(name)`. The sockets are only shut down here; each connection's own
+    /// thread closes them.
     private func cut(_ name: String) {
-        for (visitor, server) in live[name] ?? [:] {
-            shutdown(visitor, SHUT_RDWR)
-            shutdown(server, SHUT_RDWR)
+        for (other, open) in live {
+            for (visitor, end) in open where other == name || end.via == name {
+                shutdown(visitor, SHUT_RDWR)
+                shutdown(end.server, SHUT_RDWR)
+            }
         }
     }
 
@@ -734,6 +867,8 @@ final class OnNetwork: @unchecked Sendable {
         queue.sync {
             let names = locked { () -> [String] in
                 announced = network
+                // Everyone signs in again: a device is known by its address here, and addresses have just been dealt anew.
+                shares.keys.forEach { visitors.forget($0) }
                 live.keys.forEach(cut)
                 return Array(shares.keys)
             }
@@ -892,9 +1027,12 @@ final class OnNetwork: @unchecked Sendable {
         guard let request = ProxyHead(head) else { return Sock.reply(fd, Lan.bare(400)) }
         let now = Date()
         // By Host, and only for a name that is shared right now. No hint of what else exists.
-        let found = locked { () -> (name: String, share: Share, session: Bool, port: UInt16)? in
+        let found = locked { () -> (name: String, share: Share, session: Bool, via: String?, port: UInt16)? in
             guard let name = Lan.name(forHost: request.host, port: boundPort, isShared: { shares[$0] != nil }), let share = shares[name] else { return nil }
-            return (name, share, visitors.isSignedIn(Lan.visitor(in: request.values("cookie")), to: name, now: now), boundPort)
+            // Its own cookie; or, without one, a session this address has on another name of the same project.
+            let own = visitors.isSignedIn(Lan.visitor(in: request.values("cookie")), to: name, now: now)
+            let via = own || share.secret == nil ? nil : visitors.sibling(of: name, project: share.project, address: address, now: now)
+            return (name, share, own || via != nil, via, boundPort)
         }
         guard let found else { return Sock.reply(fd, Lan.bare(404)) }
         let name = found.name
@@ -927,7 +1065,7 @@ final class OnNetwork: @unchecked Sendable {
             // If that has just happened, nothing is passed on at all.
             let current = locked { () -> Bool in
                 guard shares[name]?.salt == found.share.salt else { return false }
-                live[name, default: [:]][fd] = up
+                live[name, default: [:]][fd] = (up, found.via)
                 return true
             }
             defer {
@@ -957,7 +1095,7 @@ final class OnNetwork: @unchecked Sendable {
     /// Checks a visitor's answer to a challenge. A wrong try is counted only when the
     /// challenge was good and the proof didn't match it; the proof is compared in constant
     /// time, and a challenge lets one visitor in, once.
-    static func check(proof: String?, nonce: String, name: String, secret: Data, address: String, visitors: inout Visitors, now: Date) -> Entry {
+    static func check(proof: String?, nonce: String, name: String, project: String = "", secret: Data, address: String, visitors: inout Visitors, now: Date) -> Entry {
         if let wait = visitors.wait(address: address, name: name, now: now) { return .locked(wait: wait) }
         guard let end = visitors.end(of: nonce, for: name, now: now) else { return .again }
         guard WebServer.constantEquals(proof, Lan.proof(key: secret, name: name, nonce: nonce)) else {
@@ -966,7 +1104,7 @@ final class OnNetwork: @unchecked Sendable {
         }
         guard visitors.use(nonce, until: end, now: now) else { return .again }
         visitors.right(address: address, name: name)
-        return .signedIn(token: visitors.signIn(to: name, now: now))
+        return .signedIn(token: visitors.signIn(to: name, project: project, from: address, now: now))
     }
 
     /// The answer to a challenge: `{nonce, proof}`. A right one gets the visitor's cookie.
@@ -989,8 +1127,8 @@ final class OnNetwork: @unchecked Sendable {
         if hold > 0 { Thread.sleep(forTimeInterval: hold) }
         let now = Date()
         let (answer, wrong, many) = locked { () -> (Data, Bool, Bool) in
-            guard let secret = shares[name]?.secret else { return (Lan.bare(404), false, false) }
-            switch Self.check(proof: sent?["proof"] as? String, nonce: nonce, name: name, secret: secret, address: address, visitors: &visitors, now: now) {
+            guard let share = shares[name], let secret = share.secret else { return (Lan.bare(404), false, false) }
+            switch Self.check(proof: sent?["proof"] as? String, nonce: nonce, name: name, project: share.project, secret: secret, address: address, visitors: &visitors, now: now) {
             case .locked(let wait):
                 return (Lan.json(429, ["wait": wait]), false, false)
             case .again:

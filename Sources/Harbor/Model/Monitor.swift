@@ -339,14 +339,19 @@ final class Monitor {
     /// Made-up ports for snapshots (`--fixture`): shown instead of this Mac's, and never scanned over.
     @ObservationIgnored private var fixture: [PortRow]?
 
-    func useFixture(_ rows: [PortRow], shared key: String?) {
+    func useFixture(_ rows: [PortRow], shared key: String?, every: Bool = false) {
         fixture = rows
         requestFullScan()
-        if let key, let name = networkName(key) {
-            let main = rows.first { isNetworkRow($0) && Names.key($0) == key }
-            lanShares[key] = LanShare(name: name, port: 80, hasPassword: true, pid: main?.pid ?? 0, serverPort: main?.port ?? 0, started: main?.started, announced: true)
-            lanNetwork = LAN.Network(interface: "en0", address: "192.168.1.24", router: "192.168.1.1")
+        guard let key else { return }
+        // The project's main server; or, for the look of several, each of its servers under its own name.
+        for row in rows where Names.key(row) == key && (every || isMain(row)) {
+            guard let name = networkName(row) else { continue }
+            lanShares[row.id] = LanShare(name: name, project: key, port: 80, hasPassword: true, pid: row.pid, serverPort: row.port, started: row.started, announced: true)
         }
+        guard lanShares.values.contains(where: { $0.project == key }) else { return }
+        // The made-up project has a made-up password, so every row of it says the same.
+        if Passwords.inMemory { Passwords.set(key, "k7mqx2hw"); passwordKnown[key] = nil }
+        lanNetwork = LAN.Network(interface: "en0", address: "192.168.1.24", router: "192.168.1.1")
     }
 
     func requestFullScan() {
@@ -382,7 +387,7 @@ final class Monitor {
 
     private func apply(_ scan: FullScan, memory m: MemorySnapshot) {
         if ports != scan.ports { ports = scan.ports }
-        let table = Names.assign(scan.ports, saved: savedNames, previous: names)
+        let table = Names.assign(scan.ports, saved: savedNames, previous: names, mains: savedMains)
         if table != names { names = table }
         // A share is for one server: that process, on that port. When it is gone the project
         // comes off the network, whatever else of it still runs or has started since. And when
@@ -458,7 +463,11 @@ final class Monitor {
     /// port, or the bare name can't work.
     var portNotes: [String] {
         var notes: [String] = []
-        if !lanShares.isEmpty { notes.append(lanShares.count == 1 ? "1 project on your network" : "\(lanShares.count) projects on your network") }
+        if !lanShares.isEmpty {
+            // Projects, as long as each has one server there; servers once one has several.
+            let projects = Set(lanShares.values.map(\.project)).count, servers = lanShares.count
+            notes.append(servers > projects ? "\(servers) servers on your network" : projects == 1 ? "1 project on your network" : "\(projects) projects on your network")
+        }
         if !lanShares.isEmpty, lanIPv6Taken, let port = lanShares.values.first?.port { notes.append("Another program has port \(port) on IPv6") }
         guard let port = pagePort else { return notes }
         if port != Ports.harbor.usual { notes.append("On port \(port): \(Ports.harbor.usual) was in use") }
@@ -472,6 +481,7 @@ final class Monitor {
 
     struct LanShare: Equatable {
         var name: String        // on the network, without ".local"
+        var project = ""        // its folder: the password, and the sign-in, are the project's
         var port: UInt16        // 80, or the listener's high port (then it is part of the link)
         var hasPassword: Bool
         /// The server it is shared for: its process, its port, and when that process started.
@@ -487,8 +497,8 @@ final class Monitor {
         var isUnannounced: Bool { announced == false || (announced == nil && Date().timeIntervalSince(since) > 4) }
     }
 
-    /// The projects that are on the network right now, by project. Never remembered across
-    /// launches; the names and passwords are.
+    /// The servers that are on the network right now, by row ("pid-port": a share is for one
+    /// server and stays with it). Never remembered across launches; names and passwords are.
     private(set) var lanShares: [String: LanShare] = [:] {
         // While something is on the network harbor keeps looking, with everything closed too.
         didSet { if oldValue.isEmpty != lanShares.isEmpty { updateBadgeTimer() } }
@@ -510,66 +520,123 @@ final class Monitor {
     static func otherListener(on port: UInt16, than pid: pid_t, in rows: [PortRow]) -> PortRow? {
         rows.first { $0.port == port && $0.pid != pid && $0.ppid != pid }
     }
+    /// Names on the network, saved by project folder for its main server, and by folder and
+    /// port (`nameKey`) for another of its servers.
     @ObservationIgnored private var savedLanNames = (DebugCLI.defaults.dictionary(forKey: "lanNames") as? [String: String]) ?? [:]
     @ObservationIgnored private var lanNetwork: LAN.Network?
 
-    /// What a project is (or would be) called on the network: the name saved for it there,
-    /// else its `.localhost` name. Debug runs add a suffix, so a test collides with nothing real.
-    func networkName(_ key: String) -> String? {
-        (savedLanNames[key] ?? names.base[key]).map { $0 + DebugCLI.lanSuffix }
+    /// Is this the server its project's plain name opens (`storefront.localhost`, `storefront.local`)?
+    func isMain(_ row: PortRow) -> Bool {
+        guard names.byRow[row.id] != nil, let name = names.base[Names.key(row)] else { return false }
+        return names.targets[name]?.port == row.port
     }
 
-    /// Is this the row a project is shared through (its main server)? Its panel has the controls.
-    func isNetworkRow(_ row: PortRow) -> Bool {
+    /// Does this row's project have more than one server with a name?
+    func hasSiblings(_ row: PortRow) -> Bool {
         let key = Names.key(row)
-        guard let name = names.base[key], let target = names.targets[name] else { return false }
-        return target.port == row.port
+        return ports.contains { $0.id != row.id && Names.key($0) == key && names.byRow[$0.id] != nil }
     }
 
-    /// One process can listen on several ports. Of its rows, the one a project is shared through.
-    func networkRow(forPid pid: pid_t) -> PortRow? {
-        ports.first { $0.pid == pid && isNetworkRow($0) }
+    private func nameKey(_ row: PortRow) -> String { isMain(row) ? Names.key(row) : "\(Names.key(row))\t\(row.port)" }
+
+    /// What a server is called on the network while it is on it, or would be: the name saved
+    /// for it there, else its `.localhost` name (`storefront`, `storefront-8000`). Debug runs
+    /// add a suffix, so a test collides with nothing real.
+    func networkName(_ row: PortRow) -> String? {
+        if let share = lanShares[row.id] { return share.name }
+        return (savedLanNames[nameKey(row)] ?? names.byRow[row.id]).map { $0 + DebugCLI.lanSuffix }
     }
 
-    /// "http://storefront.local/" while the project is on the network.
-    func networkLink(_ key: String) -> String? {
-        lanShares[key].map { "http://\($0.name)\(Lan.suffix)\($0.port == 80 ? "" : ":\($0.port)")/" }
+    /// Can this row go on the network? Any server with a name can, each with its own switch.
+    func isNetworkRow(_ row: PortRow) -> Bool { names.byRow[row.id] != nil }
+
+    /// The codes a row shows, each with what it is and the link it holds (see QR.codes).
+    func codes(_ row: PortRow) -> [(code: QR.Code, label: String, link: String)] {
+        let name = networkLink(row)
+        let lan = row.lanURL(ip: lanIP)
+        var share: String?
+        if case .ready(let url)? = Tunnels.shared.active[row.port]?.phase { share = url }
+        return QR.codes(onNetwork: name != nil, reachable: lan != nil, shared: share != nil).compactMap { code in
+            switch code {
+            case .name: return name.map { (code, "On your network", $0) }
+            case .lan: return lan.map { (code, "On your network", $0) }
+            case .share: return share.map { (code, "Public link", $0) }
+            }
+        }
     }
 
-    func networkPassword(_ key: String) -> String? { Passwords.get(key) }
+    /// "http://storefront.local/" while that server is on the network.
+    func networkLink(_ row: PortRow) -> String? {
+        lanShares[row.id].map { "http://\($0.name)\(Lan.suffix)\($0.port == 80 ? "" : ":\($0.port)")/" }
+    }
 
-    /// Does the project have a password saved? Remembered, so the page's polls don't ask the Keychain each time.
-    func hasNetworkPassword(_ key: String) -> Bool {
-        if let known = passwordKnown[key] { return known }
-        let has = Passwords.get(key) != nil
-        passwordKnown[key] = has
+    /// A project's password (by its folder): one for all of its servers on the network.
+    func networkPassword(_ project: String) -> String? {
+        if case .password(let saved) = Passwords.read(project) { return saved }
+        return nil
+    }
+
+    /// What a share may start with: its saved password; none, but only when the owner has
+    /// just said so; or nothing at all. A password that can't be read is never "none".
+    nonisolated static func gate(_ saved: Passwords.Read, open: Bool, name: String) -> (password: String?, problem: String?) {
+        switch saved {
+        case .password(let password): return (password, nil)
+        case .none: return (nil, open ? nil : "Choose a password first, or share it without one.")
+        case .unreadable: return (nil, "The saved password for \(name)\(Lan.suffix) can't be read. Set a new password to put it on the network.")
+        }
+    }
+
+    /// Does the project have a password saved? Remembered, so the page's polls don't read the file each time.
+    func hasNetworkPassword(_ project: String) -> Bool {
+        if let known = passwordKnown[project] { return known }
+        // One that can't be read is not one harbor can use: the panel offers to set a new one.
+        var has = false
+        if case .password = Passwords.read(project) { has = true }
+        passwordKnown[project] = has
         return has
     }
     @ObservationIgnored private var passwordKnown: [String: Bool] = [:]
 
-    /// Puts a row's project on the network. With `password` that becomes its password first;
-    /// `open` shares it with none; neither uses the one it has. Returns what is wrong, or nil.
+    /// Devices signed in to this row's project right now.
+    func devices(_ row: PortRow) -> Int { OnNetwork.shared.devices(project: Names.key(row)) }
+
+    /// Saves a project's password (nil: none) and gives it to every server of the project
+    /// that is on the network: there is one per project. Everyone signs in again.
+    private func keep(_ password: String?, for project: String) -> Bool {
+        guard Passwords.set(project, password) else { return false }
+        passwordKnown[project] = password != nil
+        for (id, share) in lanShares where share.project == project {
+            OnNetwork.shared.setPassword(password, for: share.name)
+            lanShares[id]?.hasPassword = password != nil
+        }
+        return true
+    }
+
+    /// Puts a server on the network: any of a project's servers, each with its own switch
+    /// and its own name there. With `password` that becomes the project's password first;
+    /// `open` takes the project's password away; neither uses the one it has. Returns what
+    /// is wrong, or nil.
     func shareOnNetwork(_ row: PortRow, password: String? = nil, open: Bool = false) -> String? {
-        let key = Names.key(row)
-        guard let base = names.base[key], let target = names.targets[base], let name = networkName(key) else {
+        let project = Names.key(row)
+        guard let base = names.base[project], let own = names.byRow[row.id], let target = names.targets[own] else {
             return "\(row.title) has no name, so it can't go on the network."
         }
-        // A share is for one server, and it is this row's: the one the project's name goes to.
-        guard target.port == row.port else { return "Only the server \(base)\(Names.suffix) opens can go on the network." }
         // The name it has without having been renamed is checked like a typed one (wpad, this Mac's own).
-        if let problem = Lan.nameProblem(savedLanNames[key] ?? base, others: [], machine: lanName) { return problem }
+        let plain = savedLanNames[nameKey(row)] ?? own, name = plain + DebugCLI.lanSuffix
+        if let problem = Lan.nameProblem(plain, others: [], machine: lanName) { return problem }
         guard let network = LAN.current() else { return "This Mac isn't on a network right now." }
         checkNetwork()
-        if lanShares.contains(where: { $0.key != key && $0.value.name == name }) { return "\(name)\(Lan.suffix) is already another project's name." }
-        passwordKnown[key] = nil
+        if lanShares.contains(where: { $0.key != row.id && $0.value.name == name }) { return "\(name)\(Lan.suffix) is already another server's name." }
         if open {
-            Passwords.set(key, nil)
+            guard keep(nil, for: project) else { return "The password file couldn't be written, so nothing was shared." }
         } else if let password {
-            if let problem = Lan.passwordProblem(password, names: [base, name]) { return problem }
-            guard Passwords.set(key, password) else { return "The Keychain wouldn't keep the password." }
+            if let problem = Lan.passwordProblem(password, names: [base, own, name]) { return problem }
+            guard keep(password, for: project) else { return "The password couldn't be saved, so nothing was shared." }
         }
-        let stored = Passwords.get(key)
-        guard open || stored != nil else { return "Choose a password first, or share it without one." }
+        // Read back, not assumed: a password that can't be read is not "no password".
+        let gate = Self.gate(Passwords.read(project), open: open, name: name)
+        if let problem = gate.problem { return problem }
+        let stored = gate.password
         // It is shared for this very process on this port, so that has to be the only thing there
         // (with another program on the same port a request could land on that one), and there right now.
         if let other = Self.otherListener(on: row.port, than: row.pid, in: ports) {
@@ -581,8 +648,8 @@ final class Monitor {
         let answering = DebugCLI.lanAddress.map { LAN.Network(interface: "lo0", address: $0, router: nil) } ?? network
         let wanted = DebugCLI.isDebugRun ? DebugCLI.lanPort : 80
         // The new name first, then the old one off: the listener stays open through a rename, with no port to win back.
-        let old = lanShares[key]
-        let begun = OnNetwork.shared.begin(name: name, server: server, password: stored, on: answering, port: wanted)
+        let old = lanShares[row.id]
+        let begun = OnNetwork.shared.begin(name: name, project: project, server: server, password: stored, on: answering, port: wanted)
         if let old, old.name != name || begun.port == nil { OnNetwork.shared.stop(old.name) }
         if !begun.doorBack {
             // The door stepped aside for the listener and couldn't be loaded again. The usual check takes it from here.
@@ -591,7 +658,7 @@ final class Monitor {
             doorChecked = nil
         }
         guard let port = begun.port else {
-            lanShares[key] = nil
+            lanShares[row.id] = nil
             // Nothing is shared on another port instead. Another program on this one is named when harbor can
             // see it; and when it is harbor's own door, in front of a copy that may not move it, that is said.
             let holder = ports.first { $0.port == wanted && !Names.isHarbor($0.path) }?.processName
@@ -601,14 +668,14 @@ final class Monitor {
         }
         lanNetwork = network
         lanIPv6Taken = !OnNetwork.shared.holdsIPv6
-        lanShares[key] = LanShare(name: name, port: port, hasPassword: stored != nil, pid: row.pid, serverPort: row.port, started: row.started)
+        lanShares[row.id] = LanShare(name: name, project: project, port: port, hasPassword: stored != nil, pid: row.pid, serverPort: row.port, started: row.started)
         _ = LAN.firewallOn  // read it now, so the panel can say what macOS may ask
         return nil
     }
 
-    /// Takes a project off the network. `because` is said in a notice when harbor did it by itself.
-    func stopSharing(_ key: String, because reason: String? = nil) {
-        guard let share = lanShares.removeValue(forKey: key) else { return }
+    /// Takes a server off the network (by its row). `because` is said in a notice when harbor did it by itself.
+    func stopSharing(_ id: String, because reason: String? = nil) {
+        guard let share = lanShares.removeValue(forKey: id) else { return }
         OnNetwork.shared.stop(share.name)
         if let reason { notify(reason) }
     }
@@ -620,36 +687,62 @@ final class Monitor {
         if let reason { notify(reason) }
     }
 
-    /// A project's name on the network; empty goes back to its `.localhost` name. If it is
+    /// A server's name on the network; empty goes back to its `.localhost` name. If it is
     /// on the network it moves to the new name at once (visitors sign in again).
     func renameOnNetwork(_ row: PortRow, to typed: String) -> String? {
-        let key = Names.key(row)
-        guard names.base[key] != nil else { return "\(row.title) has no name to change." }
+        let key = nameKey(row), project = Names.key(row)
+        guard names.byRow[row.id] != nil else { return "\(row.title) has no name to change." }
         var name = typed.trimmingCharacters(in: .whitespaces).lowercased()
         if name.hasSuffix(Lan.suffix) { name.removeLast(Lan.suffix.count) }
         if !name.isEmpty {
-            // Names other projects have there: saved ones, and what running projects would use.
+            // Names other servers have there: saved ones, and what the running ones would use.
             var others = Set(savedLanNames.filter { $0.key != key }.values)
-            others.formUnion(names.base.filter { $0.key != key && savedLanNames[$0.key] == nil }.values)
+            others.formUnion(ports.filter { $0.id != row.id && savedLanNames[nameKey($0)] == nil }.compactMap { names.byRow[$0.id] })
             if let problem = Lan.nameProblem(name, others: others, machine: lanName) { return problem }
         }
         savedLanNames[key] = name.isEmpty ? nil : name
         DebugCLI.defaults.set(savedLanNames, forKey: "lanNames")
-        if lanShares[key] != nil { return shareOnNetwork(row, open: Passwords.get(key) == nil) }
-        return nil
+        guard let share = lanShares[row.id] else { return nil }
+        // It moves to the new name with the gate it has. With a password that can't be read
+        // any more it comes off the network instead: never on under the new name without one.
+        if share.hasPassword, let problem = Self.gate(Passwords.read(project), open: false, name: share.name).problem {
+            stopSharing(row.id, because: problem)
+            return problem
+        }
+        return shareOnNetwork(row, open: !share.hasPassword)
     }
 
-    /// A new password for a project (nil: none). Everyone who was signed in signs in again.
+    /// A new password for a row's project (nil: none), for all of its servers on the
+    /// network. Everyone who was signed in signs in again.
     func setNetworkPassword(_ row: PortRow, _ password: String?) -> String? {
-        let key = Names.key(row)
-        if let password, let problem = Lan.passwordProblem(password, names: [names.base[key], networkName(key)].compactMap { $0 }) { return problem }
-        guard Passwords.set(key, password) else { return "The Keychain wouldn't keep the password." }
-        passwordKnown[key] = password != nil
-        if var share = lanShares[key] {
-            OnNetwork.shared.setPassword(password, for: share.name)
-            share.hasPassword = password != nil
-            lanShares[key] = share
+        let project = Names.key(row)
+        if let password, let problem = Lan.passwordProblem(password, names: [names.base[project], names.byRow[row.id], networkName(row)].compactMap { $0 }) { return problem }
+        return keep(password, for: project) ? nil : "The password couldn't be saved."
+    }
+
+    // MARK: The main server
+
+    /// The server each project's owner chose as its main one, by project folder: a port.
+    @ObservationIgnored private var savedMains = (DebugCLI.defaults.dictionary(forKey: "mainPorts") as? [String: Int]) ?? [:]
+
+    /// Makes this server the one its project's plain name opens (`storefront.localhost`, and
+    /// `storefront.local` the next time it goes on the network). The server that had the name
+    /// goes by its port from here on (`storefront-3000`). A page open at the plain name
+    /// reaches the new main with its next request; what it has open stays where it is.
+    /// The choice is kept while that server isn't running (then the usual rule decides).
+    ///
+    /// What the project has on the network comes off it, with that said: a name there is
+    /// for one server, and must never start opening another one by itself.
+    func makeMain(_ row: PortRow) -> String? {
+        let project = Names.key(row)
+        guard let base = names.base[project], names.byRow[row.id] != nil else { return "\(row.title) has no name, so it can't be a project's main server." }
+        guard !isMain(row) else { return nil }
+        savedMains[project] = Int(row.port)
+        DebugCLI.defaults.set(savedMains, forKey: "mainPorts")
+        for (id, share) in lanShares where share.project == project {
+            stopSharing(id, because: "The main server of \(base) changed, so \(share.name)\(Lan.suffix) is off the network. Turn it on again.")
         }
+        names = Names.assign(ports, saved: savedNames, previous: names, mains: savedMains)
         return nil
     }
 
@@ -747,7 +840,7 @@ final class Monitor {
         var others = names
         others.base[key] = nil
         for r in ports where Names.key(r) == key { others.byRow[r.id] = nil }
-        names = Names.assign(ports, saved: savedNames, previous: others)
+        names = Names.assign(ports, saved: savedNames, previous: others, mains: savedMains)
         return nil
     }
 
