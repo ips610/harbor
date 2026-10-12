@@ -496,6 +496,16 @@ final class Monitor {
     /// While sharing: harbor couldn't have the port on IPv6 as well, because another program has it.
     private(set) var lanIPv6Taken = false
 
+    /// Why the network listener's port couldn't be had, in the owner's words. Never "another
+    /// program" when it is harbor's own door.
+    nonisolated static func portProblem(_ port: UInt16, _ opening: Door.Opening, holder: String?, ownDoor: Bool) -> String {
+        if ownDoor {
+            return "Port \(port) is \(AppInfo.name)'s own door's, and only the \(AppInfo.name) in Applications can move it aside. Open that one to put a project on the network."
+        }
+        return opening == .taken ? "Port \(port) on this Mac is used by \(holder ?? "another program"), so nothing can go on the network."
+            : "Port \(port) on this Mac isn't free yet. Try again in half a minute."
+    }
+
     /// Somebody else listening on a shared server's port: not that process, and not one it started itself (its workers).
     static func otherListener(on port: UInt16, than pid: pid_t, in rows: [PortRow]) -> PortRow? {
         rows.first { $0.port == port && $0.pid != pid && $0.ppid != pid }
@@ -572,12 +582,22 @@ final class Monitor {
         let wanted = DebugCLI.isDebugRun ? DebugCLI.lanPort : 80
         // The new name first, then the old one off: the listener stays open through a rename, with no port to win back.
         let old = lanShares[key]
-        let started = OnNetwork.shared.start(name: name, server: server, password: stored, on: answering, port: wanted)
-        if let old, old.name != name || started == nil { OnNetwork.shared.stop(old.name) }
-        guard let port = started else {
+        let begun = OnNetwork.shared.begin(name: name, server: server, password: stored, on: answering, port: wanted)
+        if let old, old.name != name || begun.port == nil { OnNetwork.shared.stop(old.name) }
+        if !begun.doorBack {
+            // The door stepped aside for the listener and couldn't be loaded again. The usual check takes it from here.
+            notify("\(AppInfo.name) couldn't put its door on port \(wanted) back. Until it is, a name needs the port: \(base)\(Names.suffix):\(proxyPort).")
+            doorIsOurs = false
+            doorChecked = nil
+        }
+        guard let port = begun.port else {
             lanShares[key] = nil
-            // Something else has the port there (a web server, most likely). Nothing is shared on another one instead.
-            return "Port \(wanted) is in use on this Mac's network address, so \(name)\(Lan.suffix) can't go on the network."
+            // Nothing is shared on another port instead. Another program on this one is named when harbor can
+            // see it; and when it is harbor's own door, in front of a copy that may not move it, that is said.
+            let holder = ports.first { $0.port == wanted && !Names.isHarbor($0.path) }?.processName
+            let ownDoor = OnNetwork.shared.aside == nil && OnNetwork.hearsEveryInterface(wanted)
+                && LaunchAgent.launchctl(["print", "\(LaunchAgent.domain)/\(Door.label)"])
+            return Self.portProblem(wanted, begun.opening, holder: holder, ownDoor: ownDoor)
         }
         lanNetwork = network
         lanIPv6Taken = !OnNetwork.shared.holdsIPv6
@@ -654,6 +674,11 @@ final class Monitor {
     private func connectNetworkEvents() {
         guard !networkEventsConnected else { return }
         networkEventsConnected = true
+        // Port 80 is the door's too: the door steps aside while the listener is bound. Only the
+        // copy that manages the agents does that (or a debug run, to a throwaway door of its own).
+        if let door = DebugCLI.lanDoor ?? (LaunchAgent.mayManage ? (label: Door.label, plist: Door.plistURL) : nil) {
+            OnNetwork.shared.aside = { bind, answers in Door.aside(label: door.label, plist: door.plist, bind: bind, answers: answers) }
+        }
         OnNetwork.shared.renamed = { from, to in
             MainActor.assumeIsolated {
                 let m = Monitor.shared

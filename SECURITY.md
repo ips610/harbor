@@ -33,7 +33,10 @@ Only the latest release is supported. If you're on an older one, update first.
   root). It answers only connections that arrived on the address harbor
   announced, only for a Host that is exactly a shared name, and it knows
   nothing of harbor's page, the `.localhost` names or the projects that aren't
-  on. If another program already has port 80 there, nothing is shared. Without
+  on. The door for the `.localhost` names is unloaded for the moment that
+  listener is bound and loaded again right after (launchd's loopback sockets
+  on port 80 would otherwise refuse it); only the copy in Applications does
+  that. If another program already has port 80, nothing is shared. Without
   root, no other program can bind the announced address on port 80. harbor
   also holds port 80 on IPv6 while sharing, serves nothing there, and says so
   if another program had it first.

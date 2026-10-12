@@ -476,6 +476,33 @@ enum Sock {
         while wait(fd, POLLIN, until: deadline), read(fd, &chunk, chunk.count) > 0 {}
     }
 
+    /// Drops a connection outright: nothing of it stays behind on the local port. (An
+    /// ordinary close keeps the address for half a minute when this side closed first.)
+    static func drop(_ fd: Int32) {
+        var now = linger(l_onoff: 1, l_linger: 0)
+        setsockopt(fd, SOL_SOCKET, SO_LINGER, &now, socklen_t(MemoryLayout<linger>.size))
+        close(fd)
+    }
+
+    /// Ends a connection politely and still leaves nothing behind on the local port: says it
+    /// is done, gives the other side `seconds` to close too, then drops what is left. The
+    /// door closes this way, because what a closed connection leaves on port 80 is launchd's,
+    /// and for half a minute it would keep harbor from binding that port (see Door.aside).
+    static func closeLeavingNothing(_ fd: Int32, within seconds: Double = 1) {
+        // The option first: once both sides have said goodbye it can't be set any more, and
+        // the close would keep the address after all.
+        var now = linger(l_onoff: 1, l_linger: 0)
+        setsockopt(fd, SOL_SOCKET, SO_LINGER, &now, socklen_t(MemoryLayout<linger>.size))
+        shutdown(fd, SHUT_WR)
+        let deadline = Date().addingTimeInterval(seconds)
+        var chunk = [UInt8](repeating: 0, count: 4096)
+        while wait(fd, POLLIN, until: deadline) {
+            let n = read(fd, &chunk, chunk.count)
+            if n == 0 || (n < 0 && errno != EAGAIN && errno != EINTR) { break }
+        }
+        close(fd)
+    }
+
     /// Connects to the first of `addresses` (numeric, this Mac's own) that answers on `port`.
     static func connect(_ addresses: [String], port: UInt16, within seconds: Double = 5) -> Int32? {
         for address in addresses {

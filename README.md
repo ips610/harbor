@@ -112,8 +112,11 @@ a server that only listens on `127.0.0.1` too, because harbor passes the request
   and passwords are kept.
 - A row that is on the network says so in orange, and the menu's header and the top of the page
   count them: "1 project on your network".
-- It needs port 80 on the Mac's network address. If another program already has it there (a
-  web server), harbor says so and shares nothing.
+- It needs port 80, which harbor's own door for the `.localhost` names is on too. So when the
+  first project goes on the network, harbor takes the door away for a moment, opens its
+  listener, and puts the door back. A page open at a `.localhost` name loses its connection
+  for that moment and reconnects. If another program has port 80 (a web server), harbor says
+  which one and shares nothing.
 
 The first time, macOS asks whether harbor may find devices on local networks. If the firewall is
 on, it asks once more when the first device connects: may harbor accept incoming connections.

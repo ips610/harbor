@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 /// The shared "door" on port 80 (also used by headroom): launchd holds
 /// 127.0.0.1:80 and [::1]:80 and starts `harbor --door` on a connection. It
@@ -51,9 +52,22 @@ enum Door {
                 sources.append(src)
             }
             scheduleIdleCheck()
+            // launchd is taking the door away (harbor does that itself for a moment when the
+            // first project goes on the network, see `aside`): nothing of what is still open
+            // may stay behind on the port, so every socket is dropped, not closed.
+            signal(SIGTERM, SIG_IGN)
+            let term = DispatchSource.makeSignalSource(signal: SIGTERM, queue: queue)
+            term.setEventHandler {
+                var now = linger(l_onoff: 1, l_linger: 0)
+                for fd in 3..<getdtablesize() { setsockopt(fd, SOL_SOCKET, SO_LINGER, &now, socklen_t(MemoryLayout<linger>.size)) }
+                exit(0)
+            }
+            term.resume()
+            terminate = term
         }
         dispatchMain()
     }
+    private static var terminate: DispatchSourceSignal?
 
     private static func scheduleIdleCheck() {
         queue.asyncAfter(deadline: .now() + 2) {
@@ -72,7 +86,7 @@ enum Door {
             setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
             var tv = timeval(tv_sec: 1, tv_usec: 0)  // short reads, so the 5 s deadline below is enforced
             setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
-            guard active < maxRelays else { close(fd); continue }
+            guard active < maxRelays else { Sock.drop(fd); continue }
             active += 1
             // A thread each, not the GCD pool: a carried connection can last as long as its tab.
             Thread.detachNewThread {
@@ -84,7 +98,8 @@ enum Door {
 
     /// Reads the request head (blocking, 5 s timeout) and answers by Host.
     private static func answer(_ fd: Int32) {
-        defer { close(fd) }
+        // Not a plain close: see Sock.closeLeavingNothing.
+        defer { Sock.closeLeavingNothing(fd) }
         var head = Data()
         var chunk = [UInt8](repeating: 0, count: 4096)
         // A deadline for the whole request, not per read: a slow client that
@@ -178,6 +193,68 @@ enum Door {
         }
     }
 
+    // MARK: Making room for the network listener
+
+    /// What became of opening a listener on the door's port.
+    enum Opening: Equatable {
+        case open
+        /// Another program answers on that port.
+        case taken
+        /// Nobody answers there, and still it can't be bound yet: connections that closed a
+        /// moment ago keep it for up to half a minute.
+        case busy
+    }
+
+    /// Door changes one at a time: this, `install`, and whatever asks while one of them runs.
+    private static let changing = NSRecursiveLock()
+
+    /// Makes room on the door's port for a listener on every interface, and puts the door back.
+    ///
+    /// launchd holds the door's two loopback addresses on port 80, and its sockets are
+    /// root's. While they are there nobody else can bind every interface on that port,
+    /// whatever options they set: the kernel keeps one user's port from another's. The other
+    /// way round works: with harbor's listener there first, launchd binds the door's
+    /// addresses beside it, and each gets its own connections. So the door is unloaded,
+    /// `bind` is run (it binds the listener, and the same port on IPv6), and the door is
+    /// loaded again.
+    ///
+    /// - Whoever loads the door again in between (headroom's launcher, harbor's own check)
+    ///   is unloaded again, a few times over.
+    /// - The door goes back whatever came of the bind, before anything is reported; a
+    ///   refused bootstrap is tried again as `install` does. `doorBack` is false only when
+    ///   that didn't work, and then the owner is told.
+    /// - When the bind fails, `answers` says whether another program is on the port.
+    /// - Unloading the door cuts what is open through it at that moment (a page at
+    ///   name.localhost reconnects by itself). That happens once, when the first project
+    ///   goes on the network; later ones use the listener that is already there.
+    ///
+    /// (`run` is launchctl; a test passes its own.)
+    static func aside(label: String = label, plist: URL = plistURL, bind: () -> Bool, answers: () -> Bool,
+                      run: ([String]) -> Bool = { LaunchAgent.launchctl($0) }, pause: () -> Void = { usleep(200_000) })
+        -> (opening: Opening, doorBack: Bool) {
+        changing.lock()
+        defer { changing.unlock() }
+        let service = "\(LaunchAgent.domain)/\(label)"
+        var opening = Opening.busy
+        for attempt in 0..<5 {
+            if run(["print", service]) { _ = run(["bootout", service]) }
+            if bind() {
+                opening = .open
+                break
+            }
+            if attempt < 4 { pause() }      // launchd letting go, or somebody loading the door again
+        }
+        if opening != .open, answers() { opening = .taken }
+        // No file, no door to put back (it was never installed; `check` sees to that).
+        var back = !FileManager.default.fileExists(atPath: plist.path)
+        for attempt in 0..<15 where !back {
+            back = run(["bootstrap", LaunchAgent.domain, plist.path]) || run(["print", service])
+            if !back, attempt < 14 { pause() }
+        }
+        Logger(subsystem: "local.harbor", category: "door").notice("door \(label, privacy: .public) stepped aside: port \(String(describing: opening), privacy: .public), door back=\(back, privacy: .public)")
+        return (opening, back)
+    }
+
     // MARK: Installing
 
     /// Makes the door harbor's: names only work through harbor's door, so a door
@@ -202,6 +279,8 @@ enum Door {
     /// throwaway label on a high port.)
     static func install(label: String, plist: URL, program: [String], port: Int, extra: [String: Any] = [:],
                         run: ([String]) -> Bool = { LaunchAgent.launchctl($0) }) -> Bool {
+        changing.lock()
+        defer { changing.unlock() }
         let service = "\(LaunchAgent.domain)/\(label)"
         func ours() -> Bool { NSDictionary(contentsOf: plist)?["ProgramArguments"] as? [String] == program }
         func write() -> Bool {

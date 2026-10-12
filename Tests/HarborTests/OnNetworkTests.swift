@@ -1051,6 +1051,173 @@ final class OnNetworkTests: XCTestCase {
         XCTAssertNil(grab6(port, at: "::1", options: [SO_REUSEADDR, SO_REUSEPORT]))
     }
 
+    // MARK: Port 80 and the door
+
+    /// launchctl as `Door.aside` sees it, for a test: what is loaded, what was asked, what refuses.
+    private final class Launchd {
+        var loaded: Bool
+        var calls: [String] = []
+        var bootstrapsRefused = 0
+        var reloadsBy = 0              // somebody else loads the door again this many times, right after it was unloaded
+        init(loaded: Bool = true) { self.loaded = loaded }
+        func run(_ args: [String]) -> Bool {
+            calls.append(args[0])
+            switch args[0] {
+            case "print": return loaded
+            case "bootout":
+                loaded = reloadsBy > 0
+                reloadsBy = max(0, reloadsBy - 1)
+                return true
+            case "bootstrap":
+                if bootstrapsRefused > 0 { bootstrapsRefused -= 1; return false }
+                loaded = true
+                return true
+            default: return false
+            }
+        }
+    }
+
+    func testTheDoorStepsAsideWhileThePortIsBound() throws {
+        let plist = FileManager.default.temporaryDirectory.appendingPathComponent("harbor-test-door-\(Lan.token(4)).plist")
+        try Data("x".utf8).write(to: plist)
+        defer { try? FileManager.default.removeItem(at: plist) }
+        func aside(_ d: Launchd, plist: URL = plist, answers: Bool = false, bind: @escaping () -> Bool) -> (opening: Door.Opening, doorBack: Bool) {
+            Door.aside(label: "local.harbor.test.door", plist: plist, bind: { d.calls.append("bind"); return bind() }, answers: { d.calls.append("answers"); return answers },
+                       run: d.run, pause: { d.calls.append("pause") })
+        }
+        // While the door is loaded the port can't be bound (that is the whole reason), so: door out, bind, door back, in that order.
+        var d = Launchd()
+        var r = aside(d) { !d.loaded }
+        XCTAssertEqual(d.calls, ["print", "bootout", "bind", "bootstrap"])
+        XCTAssertTrue(r.opening == .open && r.doorBack && d.loaded)
+        // No door loaded: nothing to unload, and the one on file is loaded afterwards.
+        d = Launchd(loaded: false)
+        r = aside(d) { !d.loaded }
+        XCTAssertEqual(d.calls, ["print", "bind", "bootstrap"])
+        XCTAssertTrue(r.opening == .open && r.doorBack)
+        // No door at all (never installed): just the bind.
+        d = Launchd(loaded: false)
+        r = aside(d, plist: plist.appendingPathExtension("missing")) { true }
+        XCTAssertEqual(d.calls, ["print", "bind"])
+        XCTAssertTrue(r.opening == .open && r.doorBack && !d.loaded)
+        // Somebody loads the door again in between (headroom's launcher, harbor's own check): out again, and then it works.
+        d = Launchd()
+        d.reloadsBy = 2
+        r = aside(d) { !d.loaded }
+        XCTAssertEqual(d.calls, ["print", "bootout", "bind", "pause", "print", "bootout", "bind", "pause", "print", "bootout", "bind", "bootstrap"])
+        XCTAssertTrue(r.opening == .open && r.doorBack && d.loaded)
+        // The door's bootstrap is refused a few times (launchd still letting go): tried again, as install does.
+        d = Launchd()
+        d.bootstrapsRefused = 3
+        r = aside(d) { !d.loaded }
+        XCTAssertTrue(r.opening == .open && r.doorBack && d.loaded)
+        XCTAssertEqual(d.calls.filter { $0 == "bootstrap" }.count, 4)
+        // Another program really has the port: the bind fails with the door out. The door is back before anything is said.
+        d = Launchd()
+        r = aside(d, answers: true) { false }
+        XCTAssertEqual(r.opening, .taken)
+        XCTAssertTrue(r.doorBack && d.loaded, "the door is back")
+        XCTAssertEqual(d.calls.filter { $0 == "bind" }.count, 5)
+        XCTAssertEqual(Array(d.calls.suffix(2)), ["answers", "bootstrap"])
+        XCTAssertFalse(d.calls.contains("bootstrap") && d.calls.firstIndex(of: "bootstrap")! < d.calls.lastIndex(of: "bind")!, "never loaded again before the last try")
+        // Nobody answers there and still it can't be bound (connections just closed keep it a while): said as it is, door back.
+        d = Launchd()
+        r = aside(d, answers: false) { false }
+        XCTAssertEqual(r.opening, .busy)
+        XCTAssertTrue(r.doorBack && d.loaded)
+        // The door can't be loaded again at all: the listener is still open, and the owner is told (doorBack false).
+        d = Launchd()
+        d.bootstrapsRefused = 99
+        r = aside(d) { !d.loaded }
+        XCTAssertTrue(r.opening == .open && !r.doorBack && !d.loaded)
+        XCTAssertEqual(d.calls.filter { $0 == "bootstrap" }.count, 15)
+
+        // What the owner reads. Never "another program" for harbor's own door.
+        XCTAssertEqual(Monitor.portProblem(80, .taken, holder: nil, ownDoor: false), "Port 80 on this Mac is used by another program, so nothing can go on the network.")
+        XCTAssertEqual(Monitor.portProblem(80, .taken, holder: "nginx", ownDoor: false), "Port 80 on this Mac is used by nginx, so nothing can go on the network.")
+        XCTAssertEqual(Monitor.portProblem(80, .busy, holder: nil, ownDoor: false), "Port 80 on this Mac isn't free yet. Try again in half a minute.")
+        XCTAssertTrue(Monitor.portProblem(80, .taken, holder: "nginx", ownDoor: true).hasPrefix("Port 80 is harbor's own door's"))
+    }
+
+    func testOnlyTheFirstShareMovesTheDoor() throws {
+        let project = try XCTUnwrap(Project())
+        defer { project.stop() }
+        let net = OnNetwork(announces: false)
+        defer { net.stopAll() }
+        var asides = 0, refuse: Door.Opening?, back = true
+        net.aside = { bind, _ in
+            asides += 1
+            if let refuse { return (refuse, back) }
+            return (bind() ? .open : .busy, back)
+        }
+        let network = LAN.Network(interface: "en0", address: "192.0.2.24", router: nil)
+        // A port under 1024 stands in for port 80: there the door is in the way, and is asked aside. Once.
+        var port: UInt16 = 0
+        for wanted in stride(from: UInt16(1023), to: 1000, by: -1) where port == 0 {
+            asides = 0
+            port = net.begin(name: "storefront", server: project.server, password: nil, on: network, port: wanted).port ?? 0
+        }
+        if port == 0 { throw XCTSkip("no free port under 1024 to stand in for port 80") }
+        XCTAssertEqual(asides, 1)
+        XCTAssertTrue(net.holdsIPv6, "the same port on IPv6, bound in the same breath")
+        // A second and a third project use the listener that is there: the door isn't touched again.
+        XCTAssertEqual(net.begin(name: "notes", server: project.server, password: nil, on: network, port: port).port, port)
+        XCTAssertEqual(net.begin(name: "blog", server: project.server, password: "k7mqx2hw", on: network, port: port).port, port)
+        XCTAssertEqual(asides, 1)
+        XCTAssertEqual(Set(net.names), ["storefront", "notes", "blog"])
+        // One stops, the others stay; the last one closes the listener, and the next first one asks the door aside again.
+        net.stop("storefront")
+        XCTAssertEqual(net.port, port)
+        net.stop("notes"); net.stop("blog")
+        XCTAssertEqual(net.port, 0)
+        XCTAssertNotNil(net.begin(name: "storefront", server: project.server, password: nil, on: network, port: port).port)
+        XCTAssertEqual(asides, 2)
+        net.stopAll()
+        // The port couldn't be had: nothing is shared, and what came of the door is passed on as it is.
+        refuse = .taken; back = false
+        let begun = net.begin(name: "storefront", server: project.server, password: nil, on: network, port: port)
+        XCTAssertNil(begun.port)
+        XCTAssertEqual(begun.opening, .taken)
+        XCTAssertFalse(begun.doorBack)
+        XCTAssertTrue(net.names.isEmpty)
+        XCTAssertEqual(net.port, 0)
+        // A high port (debug runs, tests) has no door in the way: never asked.
+        refuse = nil; asides = 0
+        XCTAssertNotNil(net.begin(name: "storefront", server: project.server, password: nil, on: LAN.Network(interface: "lo0", address: "127.0.0.1", router: nil), port: 0).port)
+        XCTAssertEqual(asides, 0)
+    }
+
+    func testAClosedConnectionLeavesNothingOnThePort() throws {
+        // What the door does with every connection: after it, the port can be bound again at once, even by a
+        // socket that tolerates nothing (no SO_REUSEADDR). A plain close keeps it for half a minute.
+        func serveOnce(close finish: (Int32) -> Void) throws -> Bool {
+            let listener = try XCTUnwrap(grab("127.0.0.1", 0, options: []))
+            XCTAssertEqual(listen(listener, 4), 0)
+            let port = Sock.port(of: listener)
+            let client = try XCTUnwrap(Sock.connect(["127.0.0.1"], port: port, within: 2))
+            let served = accept(listener, nil, nil)
+            XCTAssertGreaterThanOrEqual(served, 0)
+            Sock.send(served, Data("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".utf8))
+            // The other side reads the reply to its end and closes, as a browser does.
+            let reader = expectation(description: "the client has read it all")
+            Thread.detachNewThread {
+                var chunk = [UInt8](repeating: 0, count: 4096), got = 0
+                while true { let n = read(client, &chunk, chunk.count); if n > 0 { got += n } else if n == 0 || (errno != EAGAIN && errno != EINTR) { break } else { usleep(2000) } }
+                XCTAssertGreaterThan(got, 40)
+                close(client)
+                reader.fulfill()
+            }
+            finish(served)
+            wait(for: [reader], timeout: 3)
+            close(listener)
+            guard let again = grab("127.0.0.1", port, options: []) else { return false }
+            close(again)
+            return true
+        }
+        XCTAssertTrue(try serveOnce { Sock.closeLeavingNothing($0) }, "free at once")
+        XCTAssertFalse(try serveOnce { close($0) }, "a plain close first keeps the port (which is why the door doesn't)")
+    }
+
     /// The same through this Mac's real network address, which is how another device arrives.
     /// Asked for by name, because a firewall may ask about it.
     func testThroughTheNetworkAddress() throws {

@@ -18,6 +18,8 @@ import SwiftUI
 ///       --lan-suffix S         added to the names a debug run announces on the network
 ///       --lan-address A        answer shared names on this address (127.0.0.1) instead of the
 ///                              network's, and announce nothing: the listener, checked on this Mac
+///       --lan-door LABEL PLIST the door that steps aside when the listener opens on a port
+///                              under 1024: a throwaway one (never the real label)
 ///       --expand PORT          with --demo-menu: that row starts with its details open
 ///       --fixture [shared]     made-up ports instead of this Mac's, for snapshots; "shared"
 ///                              also shows one of them as on the network (nothing is opened)
@@ -27,7 +29,7 @@ import SwiftUI
 ///   --test-agent LABEL DIR install or refresh a throwaway agent (DIR/LABEL.plist) the way
 ///                          --refresh-agents does the real one, and start it; only with
 ///                          HARBOR_PORTS set (see Ports), so it uses test ports
-///   --test-door LABEL DIR PORT  the same for a throwaway door on a high port
+///   --test-door LABEL DIR PORT  the same for a throwaway door, on a high port or a low test one (81, 82; never 80)
 ///   --may-manage           may this copy write the agents? (only one in Applications may)
 ///   --no-open              normal launch, but log the page URL instead of opening it
 ///   --menubar-icons DIR    write the menu bar glyph for each state as PNGs
@@ -106,8 +108,8 @@ enum DebugCLI {
     /// over from whoever has it). Refused without HARBOR_PORTS, and for the real label.
     private static func testDoor(_ label: String) {
         guard let ports = Ports.testValue, label != Door.label, let i = args.firstIndex(of: label), i + 2 < args.count,
-              let port = Int(args[i + 2]), port > 1024, let exe = Bundle.main.executablePath else {
-            out("refusing: set HARBOR_PORTS and give a label, a folder and a high port"); return
+              let port = Int(args[i + 2]), port != 80, port > 0, let exe = Bundle.main.executablePath else {
+            out("refusing: set HARBOR_PORTS and give a label, a folder and a port (never 80)"); return
         }
         let folder = URL(fileURLWithPath: args[i + 1])
         let ok = Door.install(label: label, plist: folder.appendingPathComponent(label + ".plist"), program: [exe, "--door"], port: port,
@@ -371,8 +373,15 @@ enum DebugCLI {
     /// --expand PORT: the menu row that starts with its details open, for snapshots.
     static var expandPort: UInt16? { UInt16(value(after: "--expand") ?? "") }
 
+    /// --lan-door LABEL PLIST: a throwaway door, loaded on the debug run's own low `--lan-port`,
+    /// to go through the real sequence (door out, listener bound, door back) without the real door.
+    static var lanDoor: (label: String, plist: URL)? {
+        guard isDebugRun, let i = args.firstIndex(of: "--lan-door"), i + 2 < args.count, args[i + 1] != Door.label else { return nil }
+        return (args[i + 1], URL(fileURLWithPath: args[i + 2]))
+    }
+
     /// --lan-port N: where a debug run serves projects to the network (never 80). 0 lets the system pick.
-    static var lanPort: UInt16 { UInt16(value(after: "--lan-port") ?? "") ?? 0 }
+    static var lanPort: UInt16 { UInt16(value(after: "--lan-port") ?? "").flatMap { $0 == 80 ? nil : $0 } ?? 0 }
 
     /// --lan-suffix S: added to every name a debug run announces ("storefront" + "-t1" + ".local"),
     /// so a test can't collide with a real name on the network.

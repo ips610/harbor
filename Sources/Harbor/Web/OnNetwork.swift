@@ -538,6 +538,10 @@ final class OnNetwork: @unchecked Sendable {
     var manyWrong: ((_ name: String) -> Void)?
     var answered: ((_ name: String, _ announced: Bool) -> Void)?
     var gone: ((_ name: String) -> Void)?
+    /// On port 80 harbor's own door has to step aside while the listener is bound (see
+    /// Door.aside). Set for the copy that manages the agents, and for a debug run pointed at
+    /// a throwaway door; nil: the port is simply bound.
+    var aside: ((_ bind: () -> Bool, _ answers: () -> Bool) -> (opening: Door.Opening, doorBack: Bool))?
 
     private static let log = Logger(subsystem: "local.harbor", category: "network")
     /// Connections at once: from everyone (as many as the `.localhost` proxy takes), and
@@ -592,12 +596,49 @@ final class OnNetwork: @unchecked Sendable {
     var holdsIPv6: Bool { locked { held6 } }
     var names: [String] { locked { Array(shares.keys) } }
 
-    /// Starts serving `name` from `server` on `network`, opening the listener if this is the
-    /// first one. Returns the port, or nil when it couldn't be had: then nothing is shared.
+    /// How starting went: the port it is served on (nil: nothing is shared), why not, and
+    /// whether the door is where it was (it steps aside while port 80 is bound).
+    struct Begun {
+        var port: UInt16?
+        var opening = Door.Opening.open
+        var doorBack = true
+    }
+
     func start(name: String, server: Server, password: String?, on network: LAN.Network, port wanted: UInt16) -> UInt16? {
-        queue.sync { () -> UInt16? in
+        begin(name: name, server: server, password: password, on: network, port: wanted).port
+    }
+
+    /// Starts serving `name` from `server` on `network`, opening the listener if this is the
+    /// first one; later names use the listener that is there. One at a time: two started at
+    /// once take their turns on `queue`, and only the first opens anything.
+    func begin(name: String, server: Server, password: String?, on network: LAN.Network, port wanted: UInt16) -> Begun {
+        queue.sync { () -> Begun in
+            var begun = Begun()
             if source == nil {
-                guard let bound = Self.bind(wanted, on: Self.hearsEveryInterface(wanted) ? nil : network.address) else { return nil }
+                let every = Self.hearsEveryInterface(wanted)
+                var listener: (fd: Int32, port: UInt16)?
+                var hold: Int32?
+                // The listener, and the same port on IPv6 in the same breath: once the door is back, neither could be bound.
+                let bind = { () -> Bool in
+                    listener = Self.bind(wanted, on: every ? nil : network.address)
+                    if let listener { hold = Self.hold6(listener.port) }
+                    return listener != nil
+                }
+                // Is another program on that port? (Asked only when it couldn't be bound.)
+                let answers = { () -> Bool in
+                    guard let fd = Sock.connect(["127.0.0.1", network.address], port: wanted, within: 0.5) else { return false }
+                    close(fd)
+                    return true
+                }
+                if every, let aside {
+                    (begun.opening, begun.doorBack) = aside(bind, answers)
+                } else if !bind() {
+                    begun.opening = answers() ? .taken : .busy
+                }
+                guard let bound = listener else {
+                    Self.log.notice("port \(wanted, privacy: .public) couldn't be had: \(String(describing: begun.opening), privacy: .public) door back=\(begun.doorBack, privacy: .public)")
+                    return begun
+                }
                 locked { boundPort = bound.port }
                 let src = DispatchSource.makeReadSource(fileDescriptor: bound.fd, queue: queue)
                 src.setEventHandler { [weak self] in self?.acceptAll(bound.fd) }
@@ -606,7 +647,7 @@ final class OnNetwork: @unchecked Sendable {
                 source = src
                 // The same port on IPv6, only so that nobody else has it. Nothing is served
                 // there: whatever arrives is closed. Without it sharing works all the same.
-                if let fd6 = Self.hold6(bound.port) {
+                if let fd6 = hold {
                     let src6 = DispatchSource.makeReadSource(fileDescriptor: fd6, queue: queue)
                     src6.setEventHandler { while case let c = accept(fd6, nil, nil), c >= 0 { close(c) } }
                     src6.setCancelHandler { close(fd6) }
@@ -628,7 +669,8 @@ final class OnNetwork: @unchecked Sendable {
             }
             if announces, !bonjour.announce(name, address: network.address, interface: network.interface) { announcedResult(name, DNSServiceErrorType(kDNSServiceErr_Unknown)) }
             Self.log.notice("on network: \(name, privacy: .public) password=\(password != nil, privacy: .public) port=\(self.port, privacy: .public)")
-            return port
+            begun.port = port
+            return begun
         }
     }
 
