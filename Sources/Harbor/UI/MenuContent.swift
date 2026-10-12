@@ -130,6 +130,10 @@ struct MenuContent: View {
                 Text("Listening on localhost").font(.system(size: 13, weight: .semibold))
                 Text(meta(count)).font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
                 Text(networkLine).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).textSelection(.enabled)
+                // Only when harbor had to move off its usual port, or port 80 isn't its door's.
+                ForEach(monitor.portNotes, id: \.self) { note in
+                    Text(note).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                }
             }
             Spacer()
             Button { monitor.requestFullScan() } label: { Image(systemName: "arrow.clockwise") }
@@ -296,6 +300,7 @@ struct MenuContent: View {
                 || r.processName.lowercased().contains(q) || r.title.lowercased().contains(q)
                 || (r.framework?.lowercased().contains(q) ?? false)
                 || (r.command?.lowercased().contains(q) ?? false)
+                || (monitor.nameHost(r)?.contains(q) ?? false)
         }
     }
 
@@ -460,7 +465,7 @@ private struct PortLine: View {
                     .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 4)
-                Pill(title: "open", style: .open, help: "Open \(row.url.absoluteString)") { Engine.open(row) }
+                Pill(title: "open", style: .open, help: "Open \(monitor.address(row).absoluteString)") { Engine.open(row) }
                 if !(row.isSystem || row.isSelf) {
                     Button { showLAN.toggle() } label: { Image(systemName: "qrcode") }
                         .buttonStyle(.borderless)
@@ -480,6 +485,26 @@ private struct PortLine: View {
                         caption: $caption
                     )
                 }
+            }
+            // Its name, storefront.localhost (click to copy), on a line of its own under the row,
+            // where a long one fits; :port on the left stays the plain address.
+            if let host = monitor.nameHost(row) {
+                let name = Button {
+                    Engine.copyURL(row)
+                    monitor.flash("Copied http://\(host)/")
+                } label: { Text(host).foregroundStyle(Tone.openInk).lineLimit(1).truncationMode(.middle) }
+                .buttonStyle(.plain)
+                .help("Copy http://\(host)/")
+                // The plain address beside it when both fit; otherwise just the name.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 0) {
+                        name
+                        Text(" · " + row.url.absoluteString.replacingOccurrences(of: "http://", with: "")).foregroundStyle(.secondary).fixedSize()
+                    }
+                    name
+                }
+                .font(.system(size: 11))
+                .padding(.leading, 77)
             }
             if let caption {
                 Text(caption)
@@ -507,8 +532,15 @@ private struct PortLine: View {
         .onHover { hovering = $0 }
         .onTapGesture { withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() } }
         .contextMenu {
-            Button("Open \(row.url.absoluteString)") { Engine.open(row) }
-            Button("Copy URL") { Engine.copyURL(row); monitor.flash("Copied \(row.url.absoluteString)") }
+            Button("Open \(monitor.address(row).absoluteString)") { Engine.open(row) }
+            Button("Copy URL") { Engine.copyURL(row); monitor.flash("Copied \(monitor.address(row).absoluteString)") }
+            if monitor.nameHost(row) != nil {
+                Button("Copy \(row.url.absoluteString)") {
+                    Engine.copy(row.url.absoluteString)
+                    monitor.flash("Copied \(row.url.absoluteString)")
+                }
+                Button("Rename…") { askRename() }
+            }
             Button("Copy PID") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(String(row.pid), forType: .string)
@@ -520,6 +552,25 @@ private struct PortLine: View {
     }
 
     private var label: String { "\(row.processName) on :\(row.port)" }
+
+    /// A new name for the row's project, the part before .localhost. Empty goes back to the automatic one.
+    private func askRename() {
+        guard let current = monitor.names.base[Names.key(row)] else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.window.appearance = monitor.appearance.nsAppearance
+        alert.messageText = "Rename \(current)\(Names.suffix)"
+        alert.informativeText = "Lowercase letters, numbers and hyphens, up to \(Names.maxLength). Leave it empty to go back to the automatic name."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.stringValue = current
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        if let problem = monitor.rename(row, to: field.stringValue) { monitor.flash(problem) }
+        else if let host = monitor.nameHost(row) { monitor.flash("It's \(host) now.") }
+    }
 
     @ViewBuilder
     private func tunnelLine(_ t: Tunnels.Tunnel) -> some View {
@@ -548,15 +599,7 @@ private struct PortLine: View {
                     }
                     Pill(title: showQR ? "hide qr" : "qr") { showQR.toggle() }
                 }
-                if showQR, let cg = Tunnels.shared.qr(url) {
-                    Image(decorative: cg, scale: 1)
-                        .interpolation(.none)
-                        .resizable()
-                        .frame(width: 132, height: 132)
-                        .padding(6)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
-                        .help("Scan with your phone camera")
-                }
+                if showQR { QRCode(text: url) }
             }
         }
     }
@@ -592,14 +635,19 @@ private struct PortLine: View {
             if let m = row.footprint {
                 DetailLine(label: "Memory", value: Fmt.bytes(m)) { EmptyView() }
             }
+            if let host = monitor.nameHost(row) {
+                DetailLine(label: "Name", value: "http://\(host)/") {
+                    Pill(title: "rename") { askRename() }
+                }
+            }
             DetailLine(label: "URL", value: row.url.absoluteString) {
                 Pill(title: "copy") {
-                    Engine.copyURL(row)
+                    Engine.copy(row.url.absoluteString)
                     monitor.flash("Copied \(row.url.absoluteString)")
                 }
             }
             // The QR the row's button shows, here too: another device on this network scans it.
-            if let lan = row.lanURL(ip: monitor.lanIP), let cg = Tunnels.shared.qr(lan) {
+            if let lan = row.lanURL(ip: monitor.lanIP) {
                 DetailLine(label: "Network", value: lan) {
                     Pill(title: "copy") {
                         NSPasteboard.general.clearContents()
@@ -607,14 +655,7 @@ private struct PortLine: View {
                         monitor.flash("Copied \(lan)")
                     }
                 }
-                Image(decorative: cg, scale: 1)
-                    .interpolation(.none)
-                    .resizable()
-                    .frame(width: 132, height: 132)
-                    .padding(6)
-                    .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
-                    .padding(.leading, 58)  // under the values: the 52 pt label column and its gap
-                    .help("Scan with your phone camera")
+                QRCode(text: lan).padding(.leading, 58)  // under the values: the 52 pt label column and its gap
             }
             if let hint = row.hint {
                 Text(hint).font(.system(size: 11)).foregroundStyle(.secondary)
@@ -692,7 +733,7 @@ struct LANCard: View {
 
     @ViewBuilder private var network: some View {
         if let url = row.lanURL(ip: monitor.lanIP) {
-            qr(url)
+            QRCode(text: url, size: 150)
             link(url)
             if let bonjour = row.bonjourURL(monitor.lanName) {
                 Text("Or \(bonjour)").font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled)
@@ -709,7 +750,7 @@ struct LANCard: View {
         switch Tunnels.shared.active[row.port]?.phase {
         case .ready(let url)?:
             small("Phones can't reach 127.0.0.1, so this opens the public link.")
-            qr(url)
+            QRCode(text: url, size: 150)
             link(url)
         case .starting?:
             HStack(spacing: 6) { ProgressView().controlSize(.mini); small("Opening a public link…") }
@@ -728,17 +769,6 @@ struct LANCard: View {
                 }
             }
             if let note { small(note).textSelection(.enabled) }
-        }
-    }
-
-    @ViewBuilder private func qr(_ url: String) -> some View {
-        if let cg = Tunnels.shared.qr(url) {
-            Image(decorative: cg, scale: 1)
-                .interpolation(.none)
-                .resizable()
-                .frame(width: 150, height: 150)
-                .padding(6)
-                .background(Color.white, in: RoundedRectangle(cornerRadius: 6))
         }
     }
 

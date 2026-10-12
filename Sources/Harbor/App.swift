@@ -30,12 +30,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = LAN.firewallOn  // warm the cached firewall state in the background
         stopTunnelsOnSignals()
         Monitor.shared.start()
+        // Names: the proxy, and the port-80 door that lets them work without a port.
+        Proxy.shared.start()
+        Monitor.shared.checkDoor()
         if DebugCLI.afterLaunch() { return }
         if LaunchAgent.underLaunchd {
             // Started by launchd: a browser may already be waiting on the socket.
             WebServer.shared.start { _ in }
             if LaunchAgent.takePageRequest() { WebServer.shared.openInBrowser() }
-            DispatchQueue.global(qos: .utility).async { Door.ensureInstalled() }
             return
         }
         // Opened from Applications or Spotlight: show the page. At login: stay in the menu bar.

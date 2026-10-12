@@ -95,6 +95,10 @@ enum WebAPI {
                 "address": r.addressLabel,
                 "exposed": r.scope == .all || r.scope == .specific,
                 "url": r.url.absoluteString,
+                // The row's name: its address, what open and copy use, and the project's part of it.
+                "host": n(m.nameHost(r)),
+                "hostUrl": n(m.nameHost(r).map { "http://\($0)/" }),
+                "hostName": n(m.names.base[Names.key(r)]),
                 "uptime": n(r.started.map { max(0, now.timeIntervalSince($0)) }),
                 "memory": n(r.footprint.map { Double($0) }),
                 "workers": r.workers,
@@ -144,6 +148,7 @@ enum WebAPI {
                 "checking": up.checking, "failed": up.failed,
             ],
             "network": ["ip": n(lanIP), "name": n(bonjour), "firewall": LAN.firewallOn],
+            "portNotes": m.portNotes,
             "settings": [
                 "minPort": m.minPort, "maxPort": m.maxPort,
                 "showSystem": m.showSystemPorts, "onlyServers": m.onlyServers, "grouping": m.grouping.rawValue,
@@ -273,7 +278,13 @@ enum WebAPI {
         case "copy":
             guard let row else { return done(400, ["error": "Not a port."]) }
             Engine.copyURL(row)
-            return done(200, ["result": "ok", "message": "Copied \(row.url.absoluteString)"])
+            return done(200, ["result": "ok", "message": "Copied \(m.address(row).absoluteString)"])
+        case "rename":
+            // The project is the shown row's own; only the name comes from the page, and it is checked here.
+            guard let row else { return done(400, ["error": "Not a port."]) }
+            if let problem = m.rename(row, to: (obj["name"] as? String) ?? "") { return done(400, ["error": problem]) }
+            logAction("rename", pid: Int(pid), name: row.processName, port: Int(row.port))
+            return done(200, ["result": "ok", "message": m.nameHost(row).map { "It's \($0) now." } ?? "Renamed."])
         case "stop", "quit", "force", "admin":
             break
         default:

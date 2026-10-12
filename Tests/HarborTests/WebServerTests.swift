@@ -85,7 +85,8 @@ final class WebServerTests: XCTestCase {
             XCTAssertFalse(shell.contains(originKey))
             XCTAssertTrue(shell.contains("<script nonce=\"\(server.scriptNonce)\">"))
             XCTAssertTrue(shell.contains("/api/login"))                      // both pages sign in the same way
-            for left in ["__SESSION__", "__NONCE__", "__theme__"] { XCTAssertFalse(shell.contains(left)) }
+            for left in ["__SESSION__", "__NONCE__", "__theme__", "__QR__", "__WAVES__"] { XCTAssertFalse(shell.contains(left)) }
+            XCTAssertTrue(shell.contains("function qrSvg("))                 // both pages draw QR codes the same way
         }
     }
 
@@ -269,8 +270,8 @@ final class WebServerTests: XCTestCase {
     func testOnlyAPageVisitWakesAQuitHarbor() {
         let h = "Host: harbor.localhost:8470\r\n"
         // Typing the address, a bookmark, or the port-80 door's redirect.
-        XCTAssertTrue(LaunchAgent.isPageVisit("GET / HTTP/1.1\r\n\(h)Sec-Fetch-Mode: navigate\r\nSec-Fetch-Site: none\r\n\r\n"))
-        XCTAssertTrue(LaunchAgent.isPageVisit("GET /?look=a HTTP/1.1\r\n\(h)\r\n"))
+        XCTAssertTrue(LaunchAgent.isPageVisit("GET / HTTP/1.1\r\n\(h)Sec-Fetch-Mode: navigate\r\nSec-Fetch-Site: none\r\n\r\n", port: 8470))
+        XCTAssertTrue(LaunchAgent.isPageVisit("GET /?look=a HTTP/1.1\r\n\(h)\r\n", port: 8470))
         // What an old tab sends by itself, the public page's own calls included.
         for head in [
             "POST /api/invite HTTP/1.1\r\n\(h)X-Harbor: 1\r\nSec-Fetch-Mode: cors\r\nSec-Fetch-Site: same-origin\r\n\r\n{}",
@@ -280,8 +281,20 @@ final class WebServerTests: XCTestCase {
             "GET / HTTP/1.1\r\n\(h)Sec-Fetch-Mode: navigate\r\nSec-Fetch-Site: cross-site\r\n\r\n",    // a link on another website
             "GET /favicon.svg HTTP/1.1\r\n\(h)\r\n",
         ] {
-            XCTAssertFalse(LaunchAgent.isPageVisit(head), head)
+            XCTAssertFalse(LaunchAgent.isPageVisit(head, port: 8470), head)
         }
+        // Only for a Host the page's server answers, on the port it came in on: another
+        // website's name pointed at this Mac never wakes harbor.
+        let nav = "Sec-Fetch-Mode: navigate\r\nSec-Fetch-Site: none\r\n\r\n"
+        for host in ["evil.com:8470", "evil.com", "harbor.localhost:9999", "harbor.localhost", "storefront.localhost:8470", "localhost:8470", ""] {
+            XCTAssertFalse(LaunchAgent.isPageVisit("GET / HTTP/1.1\r\nHost: \(host)\r\n\(nav)", port: 8470), host)
+        }
+        XCTAssertFalse(LaunchAgent.isPageVisit("GET / HTTP/1.1\r\n\(nav)", port: 8470))                                    // no Host
+        XCTAssertFalse(LaunchAgent.isPageVisit("GET / HTTP/1.1\r\nSec-Fetch-Mode: navigate\r\n\r\n\(h)", port: 8470))        // one in the body only
+        XCTAssertFalse(LaunchAgent.isPageVisit("GET / HTTP/1.1\r\n\(h)Host: evil.com:8470\r\n\(nav)", port: 8470))          // two Hosts
+        XCTAssertTrue(LaunchAgent.isPageVisit("GET / HTTP/1.1\r\nHost: 127.0.0.1:8470\r\n\(nav)", port: 8470))
+        XCTAssertTrue(LaunchAgent.isPageVisit("GET / HTTP/1.1\r\nHost: harbor.localhost:8471\r\n\(nav)", port: 8471))       // harbor on a moved port
+        XCTAssertFalse(LaunchAgent.isPageVisit("GET / HTTP/1.1\r\nHost: harbor.localhost:8470\r\n\(nav)", port: 8471))
     }
 
     // MARK: The menu and the page have separate Light/Dark settings

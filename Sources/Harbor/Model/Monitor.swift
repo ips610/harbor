@@ -286,6 +286,7 @@ final class Monitor {
 
     private func enterFastMode() {
         DebugCLI.log("fast mode on (\(visible))")
+        checkDoor()
         requestFullScan()
         // A second sample soon after opening so CPU % shows up quickly.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
@@ -356,6 +357,8 @@ final class Monitor {
 
     private func apply(_ scan: FullScan, memory m: MemorySnapshot) {
         if ports != scan.ports { ports = scan.ports }
+        let table = Names.assign(scan.ports, saved: savedNames, previous: names)
+        if table != names { names = table }
         let ip = LAN.ipv4(), name = LAN.bonjourName()
         if ip != lanIP { lanIP = ip }
         if name != lanName { lanName = name }
@@ -376,6 +379,107 @@ final class Monitor {
         waiting.forEach { $0() }
     }
 
+    // MARK: Ports
+
+    /// The port the page is served on, once it is (WebServer sets it).
+    var pagePort: Int?
+    /// Port 80 doesn't reach harbor's door: another program holds it on this Mac.
+    var port80Taken = false
+    @ObservationIgnored private var doorChecked: Date?
+    @ObservationIgnored private var doorChecking = false
+
+    /// Is it time to look at the door? Once at launch, and after that only while it isn't
+    /// harbor's or isn't reached, at most once a minute. A door that is right costs nothing.
+    nonisolated static func doorCheckDue(ours: Bool, last: Date?, now: Date = Date()) -> Bool {
+        guard let last else { return true }
+        return !ours && now.timeIntervalSince(last) >= 60
+    }
+
+    /// Makes the door harbor's and sees whether port 80 reaches it, off the main thread. Called
+    /// at launch and whenever the menu or the page is looked at, so a failed takeover or one
+    /// slow answer at launch doesn't stand for the whole run.
+    func checkDoor() {
+        guard !DebugCLI.isDebugRun, !doorChecking, Self.doorCheckDue(ours: doorIsOurs, last: doorChecked) else { return }
+        doorChecking = true
+        DispatchQueue.global(qos: .utility).async {
+            let door = Door.check()
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    let m = Monitor.shared
+                    m.doorChecking = false
+                    m.doorChecked = Date()
+                    if m.doorIsOurs != door.reaches { m.doorIsOurs = door.reaches }
+                    if m.port80Taken != (door.ours && !door.reaches) { m.port80Taken = door.ours && !door.reaches }
+                }
+            }
+        }
+    }
+
+    /// Quiet lines for the menu's header and the page's: harbor had to move off its usual
+    /// port, or the bare name can't work.
+    var portNotes: [String] {
+        guard let port = pagePort else { return [] }
+        var notes: [String] = []
+        if port != Ports.harbor.usual { notes.append("On port \(port): \(Ports.harbor.usual) was in use") }
+        if port80Taken {
+            notes.append("\(WebServer.host) needs port 80, which another program is using; use \(WebServer.host):\(port)")
+        }
+        return notes
+    }
+
+    // MARK: Names (<project>.localhost)
+
+    /// Who goes by which name right now; worked out again after every scan.
+    private(set) var names = Names.Table()
+    /// Renames, saved by project folder.
+    @ObservationIgnored private var savedNames = (DebugCLI.defaults.dictionary(forKey: "names") as? [String: String]) ?? [:]
+    /// The proxy's port once it listens. 0 before that, and names are then not shown.
+    var proxyPort: UInt16 = 0
+    /// The port-80 door is harbor's, so a name works without a port.
+    var doorIsOurs = false
+
+    /// "storefront.localhost" for a row that has a name; with the proxy's port
+    /// while the door isn't harbor's, so the address works either way.
+    func nameHost(_ row: PortRow) -> String? {
+        guard proxyPort != 0, let name = names.byRow[row.id] else { return nil }
+        return name + Names.suffix + (doorIsOurs ? "" : ":\(proxyPort)")
+    }
+
+    /// What open and copy use: the name when the row has one, else localhost:<port>.
+    func address(_ row: PortRow) -> URL {
+        nameHost(row).flatMap { URL(string: "http://\($0)/") } ?? row.url
+    }
+
+    /// Renames a row's project (its other ports follow); an empty name goes back
+    /// to the automatic one. Returns what is wrong with the name, or nil.
+    func rename(_ row: PortRow, to typed: String) -> String? {
+        let key = Names.key(row)
+        guard names.base[key] != nil else { return "\(row.title) doesn't have a name to change." }
+        var name = typed.trimmingCharacters(in: .whitespaces).lowercased()
+        if name.hasSuffix(Names.suffix) { name.removeLast(Names.suffix.count) }
+        if !name.isEmpty, let problem = Names.problem(with: name, for: key, in: names, saved: savedNames) { return problem }
+        savedNames[key] = name.isEmpty ? nil : name
+        DebugCLI.defaults.set(savedNames, forKey: "names")
+        // Everyone else keeps the name they have; this project and its ports pick again.
+        var others = names
+        others.base[key] = nil
+        for r in ports where Names.key(r) == key { others.byRow[r.id] = nil }
+        names = Names.assign(ports, saved: savedNames, previous: others)
+        return nil
+    }
+
+    /// Where the proxy sends a Host right now. A hit may rest on a scan up to 5 s
+    /// old; a miss scans again first, since the server may only just have started.
+    func route(host: String, _ done: @escaping (Names.Route) -> Void) {
+        // Not a name at all: answered without a scan.
+        if Names.route(host: host, in: Names.Table()) == .refuse { return done(.refuse) }
+        fresh(maxAge: 5) { [self] in
+            let found = Names.route(host: host, in: names)
+            guard case .unknown = found, let t = lastFullScan, Date().timeIntervalSince(t) > 1 else { return done(found) }
+            fresh(maxAge: 1) { done(Names.route(host: host, in: self.names)) }
+        }
+    }
+
     // MARK: Localhost page
 
     /// How long the page counts as open after a poll: a little over two of its intervals.
@@ -388,6 +492,7 @@ final class Monitor {
     /// hidden), a one-shot timer drops the CPU samples; nothing keeps running.
     func webTouch() {
         webLastSeen = Date()
+        checkDoor()
         webIdleWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {

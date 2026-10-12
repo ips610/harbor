@@ -3,7 +3,8 @@ import Foundation
 import Security
 
 /// Serves the harbor page from inside the app at http://harbor.localhost:8470
-/// (falling back to 8471–8489, then a random port), on 127.0.0.1 and ::1 only.
+/// (or the next free port up to 8489 when another program holds that one, see
+/// Ports; then a random port), on 127.0.0.1 and ::1 only.
 /// The page itself is public and holds no secrets. A tab is signed in by two
 /// things together: an HttpOnly, SameSite=Strict cookie and an origin key the
 /// page keeps in localStorage, both handed out for a one-time code from a link
@@ -38,7 +39,11 @@ final class WebServer: @unchecked Sendable {
     private var answering = Set<ObjectIdentifier>()
     private static let requestTimeout: Double = 5
     private static let maxOpen = 16
-    private static let ports: [UInt16] = Array(8470...8489)
+    /// The port harbor is on first, then the rest of its range.
+    private static let ports: [UInt16] = {
+        let reserved = UInt16(LaunchAgent.port)
+        return [reserved] + Ports.harbor.range.map { UInt16($0) }.filter { $0 != reserved }
+    }()
     private static let codeLifetime: Double = 120
     private static let sessionMaxAge: Double = 30 * 86_400
     /// Hard cap on a request: the 16 KB head plus the 64 KB body we already allow.
@@ -129,21 +134,29 @@ final class WebServer: @unchecked Sendable {
             // Started by launchd: serve on the sockets it hands over.
             if LaunchAgent.underLaunchd {
                 let fds = LaunchAgent.gatedSockets ?? LaunchAgent.activatedSockets()
-                if !fds.isEmpty {
-                    self.adopt(fds, port: UInt16(LaunchAgent.port))
-                    // The connection the gate already accepted (its request is still unread).
-                    if let fd = LaunchAgent.pendingClient {
-                        LaunchAgent.pendingClient = nil
-                        var one: Int32 = 1
-                        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
-                        var tv = timeval(tv_sec: 0, tv_usec: 0)
-                        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
-                        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
-                        self.start(Client(fd: fd))
-                    }
-                    return
+                // A socket whose address another program already held comes back unbound.
+                let live = fds.filter { Sock.port(of: $0) != 0 }
+                if Sock.allBound(fds.map(Sock.port)) {
+                    self.adopt(live, port: Sock.port(of: live[0]))
+                } else {
+                    // launchd doesn't hold harbor's port (or only half of it): move to the next
+                    // free one. What it does hold still gets an answer, a refusal, not silence.
+                    DebugCLI.log(fds.isEmpty ? "launch_activate_socket gave nothing; binding ourselves"
+                        : "another program holds harbor's port; binding the next free one")
+                    self.watch(live)
+                    self.tryPort(0)
                 }
-                DebugCLI.log("launch_activate_socket gave nothing; binding ourselves")
+                // The connection the gate already accepted (its request is still unread).
+                if let fd = LaunchAgent.pendingClient {
+                    LaunchAgent.pendingClient = nil
+                    var one: Int32 = 1
+                    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
+                    var tv = timeval(tv_sec: 0, tv_usec: 0)
+                    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+                    _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+                    self.start(Client(fd: fd))
+                }
+                return
             }
             self.tryPort(0)
         }
@@ -184,8 +197,25 @@ final class WebServer: @unchecked Sendable {
         adopt(fds, port: port)
     }
 
-    /// Serve on these listening sockets (ours, or launchd's).
+    /// Serve on these listening sockets (ours, or launchd's). `port` is harbor's port from
+    /// now on: it goes into the port file, so the door and the next agent follow it.
     private func adopt(_ fds: [Int32], port: UInt16) {
+        watch(fds)
+        boundPort = port
+        starting = false
+        DebugCLI.log("serving on 127.0.0.1 and [::1] port \(port)\(LaunchAgent.underLaunchd ? " (launchd)" : "")")
+        // Not every copy may say so: a debug run, or a stray copy opened beside the installed
+        // one, is on another port and must not move harbor's (Ports.mayRecord).
+        if !DebugCLI.isDebugRun || Ports.isTest,
+           Ports.mayRecord(underLaunchd: LaunchAgent.underLaunchd, installed: LaunchAgent.mayManage,
+                           agentLoaded: LaunchAgent.launchctl(["print", "\(LaunchAgent.domain)/\(LaunchAgent.label)"])) {
+            Ports.record(Int(port), Ports.harbor)
+        }
+        DispatchQueue.main.async { MainActor.assumeIsolated { Monitor.shared.pagePort = Int(port) } }
+        flush(loginURL())
+    }
+
+    private func watch(_ fds: [Int32]) {
         for fd in fds {
             _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
             let src = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
@@ -194,17 +224,14 @@ final class WebServer: @unchecked Sendable {
             src.resume()
             acceptSources.append(src)
         }
-        boundPort = port
-        starting = false
-        DebugCLI.log("serving on 127.0.0.1 and [::1] port \(port)\(LaunchAgent.underLaunchd ? " (launchd)" : "")")
-        flush(loginURL())
     }
 
     /// Plain BSD sockets: Network.framework can't set IPV6_V6ONLY, and without
     /// it ::1 and 127.0.0.1 can't share a port. SO_REUSEADDR only lets a restart
     /// rebind 8470 while old connections sit in TIME_WAIT; without SO_REUSEPORT
-    /// no other socket can listen on the same address and port.
-    private static func bindLoopback(_ port: UInt16) -> ([Int32], UInt16)? {
+    /// no other socket can listen on the same address and port. Shared with the
+    /// proxy for names, which listens the same way on its own port.
+    static func bindLoopback(_ port: UInt16) -> ([Int32], UInt16)? {
         var one: Int32 = 1
         let fd4 = socket(AF_INET, SOCK_STREAM, 0)
         guard fd4 >= 0 else { return nil }
@@ -594,9 +621,13 @@ struct HTTPResponse {
         case 400: return "Bad Request"
         case 403: return "Forbidden"
         case 404: return "Not Found"
+        case 408: return "Request Timeout"
         case 409: return "Conflict"
         case 413: return "Payload Too Large"
         case 415: return "Unsupported Media Type"
+        case 431: return "Request Header Fields Too Large"
+        case 502: return "Bad Gateway"
+        case 503: return "Service Unavailable"
         default: return "Error"
         }
     }

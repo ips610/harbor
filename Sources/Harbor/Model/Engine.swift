@@ -262,13 +262,18 @@ enum Engine {
 
     // MARK: Small actions
 
+    /// Open and copy use the row's name (storefront.localhost) when it has one.
     static func open(_ row: PortRow) {
-        NSWorkspace.shared.open(row.url)
+        NSWorkspace.shared.open(Monitor.shared.address(row))
     }
 
     static func copyURL(_ row: PortRow) {
+        copy(Monitor.shared.address(row).absoluteString)
+    }
+
+    static func copy(_ text: String) {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(row.url.absoluteString, forType: .string)
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     static func reveal(_ path: String) {

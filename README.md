@@ -33,6 +33,8 @@ new Wi-Fi shows up on the next refresh.
 Every row has a QR button, and the QR is also in a row's details. A server on all interfaces gets
 its network address as a QR for your phone on the same Wi-Fi. One bound to `127.0.0.1` can't be
 reached from a phone, so it says so and offers share; once shared, the QR opens the public link.
+The codes are drawn with soft squares and harbor's waves in the middle, and they stay dark on
+white in dark mode too, because phones don't always read an inverted one.
 
 For the full view, open harbor from Applications (or "Open harbor…" in the menu) and it opens
 `harbor.localhost:8470` in your browser. That page groups ports by project, with the folder, the
@@ -54,6 +56,31 @@ installs anything itself. ngrok works too if you have it set up and no cloudflar
 There's also a small "This Mac" part: memory and swap, the apps using the most memory, and a
 warning if stuck (zombie) processes start piling up. The menu bar icon turns orange or red when
 memory gets tight.
+
+## Names
+
+Every project gets its own address. A server I start in `~/code/storefront` opens at
+`storefront.localhost`, with no port to remember, and the address bar keeps that name. Hot reload
+works through it. The dev server sees that name as its host. If one refuses it, allow `.localhost`
+in its settings.
+
+- The name is the folder's name in lowercase, with anything that isn't a letter or a number
+  turned into a hyphen.
+- If a project has several ports, the name goes to its dev server (or the lowest port) and the
+  others get the port on the end, like `storefront-3001.localhost`.
+- If two folders have the same name, the one that started first keeps it and the other gets its
+  parent folder in front, like `blog-web.localhost`. A name doesn't change while its server runs.
+- Apps without a folder get one too (`ollama.localhost`). `harbor` and `headroom` are taken.
+  Databases don't get one, and neither does anything on a port browsers refuse to open.
+- To rename one, right-click its row in the menu and choose **Rename…**, or click **Rename** on
+  its card on the page. The name is saved for that folder. Leave it empty to go back to the
+  automatic one.
+
+The menu and the page show the name beside `localhost:3000`, and open and copy use the name.
+
+Only harbor's door on port 80 knows the names, so harbor takes the door over when it opens (see
+below), and headroom leaves it alone after that. If port 80 isn't harbor's, the names still work
+with harbor's own port on the end, `storefront.localhost:8490`, and harbor shows them that way.
 
 ## Getting started
 
@@ -94,7 +121,7 @@ away. That check and Share are the only times harbor talks to the internet.
 
 To update, quit harbor (gear menu → Quit harbor), download the new zip, unzip it and drag harbor
 into Applications. Click **Replace** when Finder asks. A new download may need Open Anyway once
-more.
+more. Opening the new one replaces the old one's helpers, even if the old one was still running.
 
 ### Typing the address
 
@@ -103,15 +130,26 @@ launchd then holds `127.0.0.1:8470` and `[::1]:8470` for me, and nothing runs un
 connects. So I can quit harbor, type `harbor.localhost:8470` in Safari, and it starts and shows the
 page. If that browser is already signed in, the typed address (or a bookmark) just works. If it
 isn't, harbor opens a signed-in tab itself and the tab I typed in says so. A link from another
-website never makes harbor open anything.
+website never makes harbor open anything. launchd holds port 8490 the same way; that's where the
+names are answered, so going to `storefront.localhost` starts harbor too.
 
-If `local.localhost.door` isn't already there (headroom adds the same one), harbor also adds that
-agent. It answers on port 80 and sends `harbor.localhost` to `:8470` and `headroom.localhost` to
-`:8460`, so the bare name works too. It exits ten seconds after the last visit.
+If another program already has 8470 on this Mac, harbor takes the next free port up to 8489 and
+stays on it. It writes that port to `~/Library/Application Support/local.harbor/port`, the menu
+and the page say "On port 8471: 8470 was in use", and `harbor.localhost` still lands on harbor,
+because the door reads that file. headroom does the same from 8460.
+
+harbor also sets up `local.localhost.door`. headroom adds one too, and harbor takes it over,
+because only harbor's knows the names. It answers on port 80: `harbor.localhost` and
+`headroom.localhost` are sent to the ports the two apps are on, and every other name goes to
+harbor. It exits ten seconds after the last visit, or when the last page that came through it is
+closed. If another program has port 80 itself, the bare names can't work; harbor says so and shows
+the addresses with their ports.
 
 When I quit harbor (from the menu, with ⌘Q or from the Dock), it stays quit. An open page that
 asks in the background is told harbor has quit and stops asking, so it doesn't start harbor again
-behind my back. Only typing the address or opening the app starts it again.
+behind my back. Only typing the address or opening the app starts it again. A project's name
+counts as typing the address when I go to it in the browser; a dev page left open that keeps
+retrying doesn't.
 
 ### Uninstalling
 
@@ -132,7 +170,8 @@ launchctl bootout gui/$(id -u)/local.localhost.door
 rm ~/Library/LaunchAgents/local.localhost.door.plist
 ```
 
-If you move the app somewhere else instead, harbor fixes its helper's path the next time you open it.
+If you move the app to your own Applications folder instead, harbor fixes its helpers' paths the
+next time you open it. A copy opened from anywhere else (Downloads, a build folder) leaves them alone.
 
 ## Building it yourself
 
@@ -144,7 +183,8 @@ You need Xcode 16 or newer.
 open /Applications/harbor.app
 ```
 
-`install.sh` puts it in `/Applications` and replaces a running copy. To rename the app, change
+`install.sh` puts it in `/Applications` and replaces a running copy. It then runs the new copy
+with `--refresh-agents`, which reloads its helpers and starts it without opening the page. To rename the app, change
 `app.conf` and build again. `./package.sh` makes the two zips for the Releases page; build it on
 an Apple Silicon Mac.
 
@@ -180,6 +220,11 @@ name could be sent it. The key never leaves harbor's own address, and the cookie
 without it. The sign-in lasts 30 days. No website can talk to the page, because it has neither
 half (and POSTs need harbor's own header).
 
+Names go through a second listener, also only on this Mac. It answers nothing but `.localhost`
+names, so another website can't reach my dev servers through it, it only passes requests on to
+servers harbor lists itself, never to harbor's or headroom's own pages, and it has nothing to do
+with the sign-in above. Renaming goes through the signed-in page.
+
 harbor can only stop or share a process it just showed you, and it checks the process is still the
 same one right before it acts, so a reused PID is safe. Stop sends a normal quit first and offers
 force kill only if that didn't work. For a process owned by another user, like an antivirus, macOS
@@ -191,10 +236,13 @@ processes are never offered.
 Ports opened by other users (root) don't show up, the same as `lsof` without sudo. CPU % takes a
 second to appear after you open the menu or the page.
 
+A name is plain http and only works on this Mac.
+
 ## Debugging
 
 The app binary has a few flags for testing: `--dump`, `--bench N`, `--serve`, `--no-open`,
-`--demo-menu --snapshot PATH`, `--demo-lan PORT`, `--theme light|dark`, `--show-system`,
-`--check-update` and `--test-stop PORT` (see `Sources/Harbor/DebugCLI.swift`). Test runs never add a menu bar or Dock
+`--proxy-port N`, `--demo-menu --snapshot PATH`, `--demo-lan PORT`, `--theme light|dark`,
+`--show-system`, `--check-update`, `--door --door-port N` and `--test-stop PORT` (see
+`Sources/Harbor/DebugCLI.swift`). Test runs never add a menu bar or Dock
 icon, never take the keyboard, don't save settings, and use the next free port, so they can run
 next to an installed copy.

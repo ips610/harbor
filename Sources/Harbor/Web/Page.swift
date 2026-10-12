@@ -1,4 +1,4 @@
-// The harbor page, served by WebServer at http://harbor.localhost:8470/.
+// The harbor page, served by WebServer at http://harbor.localhost:8470/ (or the port it moved to).
 // Every value from the app is rendered with textContent; nothing is parsed as HTML.
 enum Page {
     /// The page with the session script and the app's name filled in (see AppInfo).
@@ -7,6 +7,7 @@ enum Page {
     /// Shared with PageLooks, so both pages sign in the same way.
     static func fill(_ template: String) -> String {
         template.replacingOccurrences(of: "__SESSION__", with: sessionScript)
+            .replacingOccurrences(of: "__QR__", with: qrScript)
             .replacingOccurrences(of: "__APP__", with: AppInfo.name)
             .replacingOccurrences(of: "__app__", with: AppInfo.name.lowercased())
     }
@@ -58,7 +59,7 @@ async function redeem() {
 // link only reaches this Mac's own browser. Asked once per page load, only from
 // poll() (so only while the tab is visible), and never for a visit that came from
 // another website. Resolves to the lines to show.
-const QUIT_TEXT = '__APP__ was quit. Type harbor.localhost:8470 in the address bar to start it again.';
+const QUIT_TEXT = '__APP__ was quit. Type ' + location.host + ' in the address bar to start it again.';
 let asked = null;
 function signedOut() {
   setKey(null);
@@ -78,6 +79,44 @@ window.addEventListener('storage', (e) => {
 });
 """#
 
+    /// How both pages draw a QR code: harbor's style (the same as QR.image in the app), as SVG
+    /// built node by node from the rows /api/qr returns. Those rows have no quiet zone.
+    static let qrScript = #"""
+// ---------- QR codes ----------
+// A white card, soft squares, the three corner eyes as shapes, and the wave mark in the middle
+// (the code is made at correction level H, so the mark may cover some of it). Always dark on
+// white, in dark mode too: inverted codes fail on some phones. 4 px per module.
+function qrSvg(rows, label) {
+  const NS = 'http://www.w3.org/2000/svg';
+  const make = (tag, attrs) => { const n = document.createElementNS(NS, tag); for (const k in attrs) n.setAttribute(k, attrs[k]); return n; };
+  const N = rows.length, Q = 4, T = N + Q * 2, ink = '#0b0b0c';
+  // The square cleared for the mark: odd, about 24% of the width (7 of 29, 11 of 49).
+  let hole = Math.floor(N * 0.245);
+  if (hole % 2 === 0) hole -= 1;
+  const lo = (N - hole) / 2, hi = lo + hole;
+  const eye = (x, y) => (x < 7 && y < 7) || (x >= N - 7 && y < 7) || (x < 7 && y >= N - 7);
+  const svg = make('svg', { viewBox: `0 0 ${T} ${T}`, width: T * 4, height: T * 4, role: 'img', 'aria-label': label });
+  svg.append(make('rect', { width: T, height: T, rx: T * 0.07, fill: '#fff' }));
+  // Every module is a 0.88 square with 0.3 corners; all of them in one path.
+  let d = '';
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    if (rows[y][x] !== '1' || eye(x, y) || (x >= lo && x < hi && y >= lo && y < hi)) continue;
+    d += `M${x + Q + 0.36} ${y + Q + 0.06}h.28a.3.3 0 0 1 .3.3v.28a.3.3 0 0 1-.3.3h-.28a.3.3 0 0 1-.3-.3v-.28a.3.3 0 0 1 .3-.3z`;
+  }
+  svg.append(make('path', { d, fill: ink }));
+  for (const [ex, ey] of [[0, 0], [N - 7, 0], [0, N - 7]]) {
+    svg.append(make('rect', { x: ex + Q + 0.5, y: ey + Q + 0.5, width: 6, height: 6, rx: 1.9, fill: 'none', stroke: ink, 'stroke-width': 1 }));
+    svg.append(make('rect', { x: ex + Q + 2, y: ey + Q + 2, width: 3, height: 3, rx: 1, fill: ink }));
+  }
+  // The app's tile, one module smaller than its hole, in the tab icon's 64-unit square.
+  const mark = make('g', { transform: `translate(${lo + Q + 0.5} ${lo + Q + 0.5}) scale(${(hole - 1) / 64})` });
+  mark.append(make('rect', { width: 64, height: 64, rx: 14, fill: '#16171c' }));
+  for (const wave of __WAVES__) mark.append(make('path', { d: wave, fill: 'none', stroke: '#a7b4ff', 'stroke-width': 6, 'stroke-linecap': 'round' }));
+  svg.append(mark);
+  return svg;
+}
+"""#.replacingOccurrences(of: "__WAVES__", with: "[" + waves.map { "'\($0)'" }.joined(separator: ", ") + "]")
+
     /// Dark-mode CSS: under macOS dark mode unless the page is set to Light, and
     /// always when it's set to Dark. `scope` narrows it, e.g. "body.look-a".
     static func dark(_ decls: String, _ scope: String = "") -> String {
@@ -95,9 +134,13 @@ window.addEventListener('storage', (e) => {
     static let icon = """
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
     <rect width="64" height="64" rx="14" fill="#16171c"/>
-    <g fill="none" stroke="#a7b4ff" stroke-width="6" stroke-linecap="round"><path d="M11 25c5-4.8 9-4.8 14 0s9 4.8 14 0 9-4.8 14 0"/><path d="M11 39c5-4.8 9-4.8 14 0s9 4.8 14 0 9-4.8 14 0"/></g>
+    <g fill="none" stroke="#a7b4ff" stroke-width="6" stroke-linecap="round">\(waves.map { "<path d=\"\($0)\"/>" }.joined())</g>
     </svg>
     """
+
+    /// The mark's two waves as SVG path data, in the 64-unit square (WaveMark's curves). The
+    /// tab icon above and the mark in the middle of a QR code both use them.
+    static let waves = ["M11 25c5-4.8 9-4.8 14 0s9 4.8 14 0 9-4.8 14 0", "M11 39c5-4.8 9-4.8 14 0s9 4.8 14 0 9-4.8 14 0"]
 
     private static let darkTokens = """
       color-scheme: dark;
@@ -285,6 +328,12 @@ window.addEventListener('storage', (e) => {
   .netaddr.local { color: var(--muted); cursor: inherit; text-decoration: none; }
   .tag.shared { border-color: transparent; background: var(--shared); color: var(--shared-ink); }
   .psub { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* The row's name, on a line of its own under the row (inside it, so it shares the hover and the click). */
+  .pname { grid-column: 1 / -1; margin-top: -5px; padding-left: 110px; font: 12.5px/1.5 var(--f-mono); color: var(--muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pname a { color: var(--open-ink); text-decoration: none; }
+  .pname a:hover { text-decoration: underline; text-underline-offset: 3px; }
+  .card-acts { display: flex; flex: none; }
   .pacts { display: flex; gap: 6px; align-items: center; }
   .pl {
     font: 500 12.5px/1 var(--f-body); padding: 7px 12px; border-radius: 999px; border: 0; background: var(--panel-2);
@@ -310,8 +359,8 @@ window.addEventListener('storage', (e) => {
   .pl.go:hover { background: var(--shared); color: var(--shared-ink); filter: brightness(1.08); }
   .ptunnel { padding: 0 18px 12px 128px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); }
   .ptunnel a { font: 12.5px/1.4 var(--f-mono); color: var(--c-mac); overflow-wrap: anywhere; }
-  .qr { margin: 0 18px 12px 128px; background: #fff; padding: 8px; border-radius: 8px; width: max-content; }
-  .qr canvas { display: block; image-rendering: pixelated; }
+  .qr { margin: 0 18px 12px 128px; width: max-content; }
+  .qr svg { display: block; }
   .pline.info { color: var(--text-2); }
   .pdetails { display: grid; grid-template-columns: 6.5em minmax(0, 1fr) auto; gap: 7px 12px; padding: 2px 18px 14px 128px; align-items: baseline; margin: 0; }
   .pdetails dt { color: var(--muted); font: 11px/1.4 var(--f-mono); text-transform: uppercase; letter-spacing: .06em; }
@@ -425,6 +474,7 @@ window.addEventListener('storage', (e) => {
   dialog::backdrop { background: #0000004d; }
   dialog h3 { font: 650 17px/1.3 var(--f-body); }
   dialog p { color: var(--text-2); font-size: 14px; margin-top: 8px; overflow-wrap: anywhere; }
+  dialog input { width: 100%; margin-top: 14px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); font: 14px var(--f-mono); }
   .dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
   .dlg-actions .btn { min-height: 34px; padding: 0 16px; font-size: 13.5px; }
   .btn.primary { background: var(--text); color: var(--bg); border-color: var(--text); }
@@ -437,6 +487,7 @@ window.addEventListener('storage', (e) => {
     .rows li { grid-template-columns: auto minmax(0, 1fr); }
     .prow { grid-template-columns: 1fr; }
     .pmain { grid-template-columns: 76px minmax(0, 1fr); }
+    .pname { padding-left: 90px; margin-top: 0; }
     .pport { font-size: 19px; }
     .pacts { justify-content: flex-end; }
     .pline, .pdetails, .ptunnel { padding-left: 18px; }
@@ -470,6 +521,7 @@ window.addEventListener('storage', (e) => {
       <span><i class="dot" id="live-dot"></i><span id="st-live">Connecting</span></span>
       <span id="st-net"></span>
       <span id="st-scan">127.0.0.1 only</span>
+      <span id="st-note" hidden></span>
     </div>
     <div class="hero">
       <h1 class="hero-num display" aria-live="polite"><span id="hero-num">–</span><small id="hero-unit">servers</small></h1>
@@ -552,6 +604,7 @@ window.addEventListener('storage', (e) => {
   <form method="dialog">
     <h3 id="dlg-title"></h3>
     <p id="dlg-body"></p>
+    <input id="dlg-input" type="text" maxlength="50" autocomplete="off" autocapitalize="off" spellcheck="false" aria-labelledby="dlg-title" hidden>
     <div class="dlg-actions">
       <button class="btn" value="no" id="dlg-no">Cancel</button>
       <button class="btn danger" value="yes" id="dlg-yes"></button>
@@ -624,6 +677,7 @@ function colour(key) { return PALETTE[hash(key) % PALETTE.length]; }
 function plural(n, one, many) { return n === 1 ? `1 ${one}` : `${n} ${many}`; }
 
 __SESSION__
+__QR__
 // The banner under the header: one line, or a few.
 function banner(lines, status) {
   $('offline').hidden = false;
@@ -683,7 +737,7 @@ function visiblePorts() {
   if (!query) return all;
   const q = query.toLowerCase();
   return all.filter((p) => String(p.port).startsWith(q) || String(p.pid) === q ||
-    [p.name, p.title, p.framework, p.project, p.command, p.app].some((v) => v && v.toLowerCase().includes(q)));
+    [p.name, p.title, p.framework, p.project, p.command, p.app, p.host].some((v) => v && v.toLowerCase().includes(q)));
 }
 
 function groupKey(p) { return p.projectPath ? 'p:' + p.projectPath : 'a:' + (p.app || p.name); }
@@ -711,6 +765,9 @@ function render() {
   const net = state.network || {};
   $('st-net').textContent = net.ip ? 'On your network: ' + [net.ip, net.name].filter(Boolean).join(' · ') : 'Not on a network';
   $('st-scan').textContent = `${location.host} · this Mac only · scanned in ${state.scanMs.toFixed(0)} ms · ${cadence()}`;
+  // Only when the app had to move off its usual port, or port 80 isn't its door's.
+  $('st-note').textContent = (state.portNotes || []).join(' · ');
+  $('st-note').hidden = !(state.portNotes || []).length;
   renderHero(all);
   renderAlarm();
   renderNotices();
@@ -831,7 +888,7 @@ function renderPorts(ports, all) {
   const shape = model.map((g) => [g.key, g.rows.map((p) => [p.id, p.title, p.name, p.framework, p.command, p.address,
     uptime(p.uptime), bytes(p.memory), p.workers, p.busy, p.system, p.hint, phase.get(p.id), opened.has(p.id),
     p.tunnel, sharing.get(p.id), qrShown.has(p.port), state.share.available, lanShown.has(p.id), p.lan, p.lanBonjour, p.net,
-    p.lanReachable, p.loopbackOnly, p.macos, state.network])]);
+    p.lanReachable, p.loopbackOnly, p.macos, state.network, p.host])]);
   swap('cards', group + query + JSON.stringify(shape), () => {
     $('cards').className = group === 'project' ? 'cards' : 'stack-list';
     if (!ports.length) {
@@ -851,7 +908,9 @@ function card(g) {
       mac ? el('p', { class: 'card-badge' }, macGlyph(), 'macOS service')
         : el('p', { class: 'card-path mono', text: g.path || 'App or service' }),
       frameworks.length ? el('div', { class: 'chips' }, frameworks.map((f) => el('span', { class: 'chip', text: f }))) : null),
-    g.folder ? el('button', { class: 'btn quiet', text: 'Reveal', title: 'Show this folder in Finder', onclick: () => act('reveal', g.rows[0].pid) }) : null);
+    el('span', { class: 'card-acts' },
+      g.rows[0].hostName ? el('button', { class: 'btn quiet', text: 'Rename', title: `Change ${g.rows[0].hostName}.localhost`, onclick: () => rename(g.rows[0]) }) : null,
+      g.folder ? el('button', { class: 'btn quiet', text: 'Reveal', title: 'Show this folder in Finder', onclick: () => act('reveal', g.rows[0].pid) }) : null));
   return el('article', { class: 'card' + (mac ? ' mac-svc' : ''), style: { '--pc': g.rows[0].color } },
     head, el('ul', { class: 'rows' }, g.rows.map((p) => row(p, false))));
 }
@@ -881,8 +940,8 @@ function row(p, showProject) {
   else if (ph && ph.kind === 'admin') acts = [pill('admin password…', 'admin', () => runStop(p, 'admin')), pill('cancel', '', () => setPhase(p.id, null))];
   else if (sh && sh.kind === 'confirm') acts = [pill('share', 'go', () => startShare(p)), pill('cancel', '', () => setShare(p.id, null))];
   else acts = [
-    el('a', { class: 'pl open', href: safeUrl(p.url), target: '_blank', rel: 'noopener noreferrer', text: 'open', title: 'Open ' + p.url, onclick: stop }),
-    pill('copy', '', () => copy(p), { title: 'Copy ' + p.url }),
+    el('a', { class: 'pl open', href: safeUrl(address(p)), target: '_blank', rel: 'noopener noreferrer', text: 'open', title: 'Open ' + address(p), onclick: stop }),
+    pill('copy', '', () => copy(p), { title: 'Copy ' + address(p) }),
     p.system ? null : qrButton(p),
     p.system ? null : shareAction(p, pill),
     p.system ? null : pill('kill', 'kill', () => armKill(p), { title: `Kill PID ${p.pid}` }),
@@ -902,7 +961,10 @@ function row(p, showProject) {
             p.exposed ? el('span', { class: 'tag warn', text: p.address, title: 'Other devices on your network can reach this port.' }) : null,
             live ? el('span', { class: 'tag shared', text: 'shared', title: 'Public link: ' + live.url }) : null),
           el('div', { class: 'psub' }, netAddress(p), ' · ' + facts))),
-      el('div', { class: 'pacts' }, acts)),
+      el('div', { class: 'pacts' }, acts),
+      // Its name, with the plain address beside it.
+      p.host ? el('div', { class: 'pname' }, el('a', { href: safeUrl(p.hostUrl), target: '_blank', rel: 'noopener noreferrer', text: p.host, title: 'Open ' + p.hostUrl, onclick: stop }),
+        ' · ' + p.url.replace('http://', '')) : null),
     ph && ph.text ? el('p', { class: 'pline' + (ph.kind === 'msg' ? ' info' : '') , text: ph.text }) : null,
     sh && sh.kind === 'confirm' ? el('p', { class: 'pline share', text: sh.text }) : null,
     sh && sh.kind === 'hint' ? el('p', { class: 'pline info' }, sh.text + ' ', el('code', { text: sh.command }), ' ',
@@ -921,7 +983,8 @@ function details(p) {
   if (p.folder) add('Folder', p.folder, el('button', { class: 'pl', text: 'reveal', onclick: () => act('reveal', p.pid) }));
   if (p.command) add('Command', p.command);
   add('Address', p.address);
-  add('URL', p.url, el('button', { class: 'pl', text: 'copy', onclick: () => copy(p) }));
+  if (p.host) add('Name', p.hostUrl, el('button', { class: 'pl', text: 'rename', onclick: () => rename(p) }));
+  add('URL', p.url, el('button', { class: 'pl', text: 'copy', onclick: () => copyText(p.url) }));
   if (p.memory != null) add('Memory', bytes(p.memory));
   if (p.hint) add('Note', p.hint);
   return el('dl', { class: 'pdetails' }, items);
@@ -951,7 +1014,11 @@ async function runStop(p, op) {
   poll();
 }
 
-function safeUrl(url) { return /^http:\/\/(localhost|127\.0\.0\.1|\[[0-9a-f:]+\]|[0-9.]+):\d+$/i.test(url) ? url : '#'; }
+// A row's own address: its name (storefront.localhost) when it has one, else localhost:<port>.
+function address(p) { return p.hostUrl || p.url; }
+function safeUrl(url) {
+  return /^http:\/\/(localhost|127\.0\.0\.1|\[[0-9a-f:]+\]|[0-9.]+):\d+$/i.test(url) || /^http:\/\/[a-z0-9-]+\.localhost(:\d+)?\/$/.test(url) ? url : '#';
+}
 function safePublic(url) { return /^https:\/\/[a-z0-9-]+\.(trycloudflare\.com|ngrok(-free)?\.(app|dev|io))\/?$/i.test(url) ? url : '#'; }
 
 // ---------- share: Manfath's tunnel, always confirmed first ----------
@@ -1031,14 +1098,7 @@ function safeLan(u) { return /^http:\/\/[a-z0-9.\-]+:\d+\/?$/i.test(u) ? u : '#'
 
 function qrBox(port, kind) {
   const box = el('div', { class: 'qr', title: 'Scan with your phone camera' });
-  const draw = (rows) => {
-    const scale = 4, size = rows.length;
-    const c = el('canvas', { width: size * scale, height: size * scale, 'aria-label': kind === 'lan' ? 'QR code of the network link' : 'QR code of the public link' });
-    const g = c.getContext('2d');
-    g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.fillStyle = '#000';
-    rows.forEach((r, y) => { for (let x = 0; x < r.length; x++) if (r[x] === '1') g.fillRect(x * scale, y * scale, scale, scale); });
-    box.replaceChildren(c);
-  };
+  const draw = (rows) => box.replaceChildren(qrSvg(rows, kind === 'lan' ? 'QR code of the network link' : 'QR code of the public link'));
   const key = (kind || 'public') + port;
   if (qrCache.has(key)) draw(qrCache.get(key));
   else api('/api/qr?port=' + port + (kind === 'lan' ? '&kind=lan' : '')).then((d) => { qrCache.set(key, d.rows); draw(d.rows); }).catch((e) => toast(e.message));
@@ -1146,6 +1206,35 @@ function ask(title, body, yes, danger = true) {
   });
 }
 
+// The same dialog with a text field: resolves to what was typed, or null when cancelled.
+function askText(title, body, value, yes) {
+  const input = $('dlg-input');
+  $('dlg-title').textContent = title;
+  $('dlg-body').textContent = body;
+  $('dlg-yes').textContent = yes;
+  $('dlg-yes').className = 'btn primary';
+  input.value = value;
+  input.hidden = false;
+  return new Promise((resolve) => {
+    dlg.addEventListener('close', () => { input.hidden = true; resolve(dlg.returnValue === 'yes' ? input.value : null); }, { once: true });
+    dlg.returnValue = 'no';
+    dlg.showModal();
+    input.select();
+  });
+}
+// Enter in the field means yes (the form's default button is Cancel).
+$('dlg-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); dlg.close('yes'); } });
+
+// A project's name, the part before .localhost. The app checks it and says what's wrong.
+async function rename(p) {
+  const name = await askText(`Rename ${p.hostName}.localhost`,
+    'Lowercase letters, numbers and hyphens, up to 40. Leave it empty to go back to the automatic name.', p.hostName, 'Rename');
+  if (name == null) return;
+  const r = await act('rename', p.pid, { name });
+  if (r) toast(r.message);
+  poll();
+}
+
 let toastTimer = null;
 function toast(text) {
   const t = $('toast');
@@ -1179,7 +1268,7 @@ async function run(op, pid, label) {
 }
 
 async function copy(p) {
-  try { await navigator.clipboard.writeText(p.url); toast('Copied ' + p.url); }
+  try { await navigator.clipboard.writeText(address(p)); toast('Copied ' + address(p)); }
   catch (e) { const r = await act('copy', p.pid); if (r) toast(r.message); }
 }
 

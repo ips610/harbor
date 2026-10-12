@@ -77,8 +77,8 @@ enum PageLooks {
   .note code { font: 12px var(--f-mono); background: var(--pill); padding: 2px 6px; border-radius: 5px; color: var(--pill-ink); }
   .tunnel { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); }
   .tunnel a { font: 12.5px/1.4 var(--f-mono); color: var(--share-ink); overflow-wrap: anywhere; }
-  .qr { background: #fff; padding: 8px; border-radius: 8px; width: max-content; }
-  .qr canvas { display: block; image-rendering: pixelated; }
+  .qr { width: max-content; }
+  .qr svg { display: block; }
   .details { display: grid; grid-template-columns: 6em minmax(0, 1fr) auto; gap: 6px 12px; align-items: baseline; font-size: 12.5px; }
   .details dt { color: var(--muted); }
   .details dd { margin: 0; font: 12.5px/1.45 var(--f-mono); color: var(--text-2); overflow-wrap: anywhere; }
@@ -314,6 +314,7 @@ function safeUrl(u) { return /^http:\/\/(localhost|127\.0\.0\.1|\[[0-9a-f:]+\]|[
 function safePublic(u) { return /^https:\/\/[a-z0-9-]+\.(trycloudflare\.com|ngrok(-free)?\.(app|dev|io))\/?$/i.test(u) ? u : '#'; }
 
 __SESSION__
+__QR__
 async function act(op, pid, extra) {
   try { return await api('/api/action', { op, pid, ...(extra || {}) }); } catch (e) { toast(e.message); return null; }
 }
@@ -563,14 +564,7 @@ function row(p, projectInRow) {
 
 function qrBox(port) {
   const box = el('div', { class: 'qr', title: 'Scan with your phone camera' });
-  const draw = (rows) => {
-    const scale = 4, size = rows.length;
-    const c = el('canvas', { width: size * scale, height: size * scale, 'aria-label': 'QR code of the public link' });
-    const g = c.getContext('2d');
-    g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.fillStyle = '#000';
-    rows.forEach((r, y) => { for (let x = 0; x < r.length; x++) if (r[x] === '1') g.fillRect(x * scale, y * scale, scale, scale); });
-    box.replaceChildren(c);
-  };
+  const draw = (rows) => box.replaceChildren(qrSvg(rows, 'QR code of the public link'));
   if (qrCache.has(port)) draw(qrCache.get(port));
   else api('/api/qr?port=' + port).then((d) => { qrCache.set(port, d.rows); draw(d.rows); }).catch((e) => toast(e.message));
   return box;

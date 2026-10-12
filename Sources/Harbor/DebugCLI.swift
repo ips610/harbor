@@ -12,6 +12,16 @@ import SwiftUI
 ///                          folder), escalating to SIGKILL with --force
 ///   --make-icon DIR        write an .iconset into DIR (used by build.sh)
 ///   --serve                start the page server, print its URL, open nothing
+///       --proxy-port N         the port for names in a debug run (default: any free one)
+///       --bare-names           show names as if the port-80 door were harbor's (for snapshots)
+///       --port-notes           show the "moved off 8470" and "port 80 is taken" lines (for snapshots)
+///   --door --door-port N   a door on port N instead of launchd's port 80 (see Door.swift)
+///   --check-door N         does a door answer on port N of 127.0.0.1 and ::1?
+///   --test-agent LABEL DIR install or refresh a throwaway agent (DIR/LABEL.plist) the way
+///                          --refresh-agents does the real one, and start it; only with
+///                          HARBOR_PORTS set (see Ports), so it uses test ports
+///   --test-door LABEL DIR PORT  the same for a throwaway door on a high port
+///   --may-manage           may this copy write the agents? (only one in Applications may)
 ///   --no-open              normal launch, but log the page URL instead of opening it
 ///   --menubar-icons DIR    write the menu bar glyph for each state as PNGs
 ///   --demo-menu            launch with the menu content in a plain panel
@@ -38,7 +48,41 @@ enum DebugCLI {
         if let dir = value(after: "--make-icon") { makeIcon(dir); return true }
         if let dir = value(after: "--menubar-icons") { menubarIcons(dir); return true }
         if args.contains("--check-update") { checkUpdate(); return true }
+        if let p = value(after: "--check-door") { out("door on \(p): \(Door.reachable(port: UInt16(p) ?? 0))"); return true }
+        if let label = value(after: "--test-agent") { testAgent(label); return true }
+        if let label = value(after: "--test-door") { testDoor(label); return true }
+        if args.contains("--may-manage") { out("may manage agents: \(LaunchAgent.mayManage) (\(Bundle.main.executablePath ?? "?"))"); return true }
         return false
+    }
+
+    // MARK: Agent on a test port
+
+    /// Runs the agent install with a throwaway label, to see the port being chosen. Refused
+    /// without HARBOR_PORTS, so it can't write the real port file or load on the real ports.
+    private static func testAgent(_ label: String) {
+        guard let ports = Ports.testValue, Ports.isTest, label != LaunchAgent.label, let i = args.firstIndex(of: label), i + 1 < args.count,
+              let exe = Bundle.main.executablePath else { out("refusing: set HARBOR_PORTS and give a label and a folder"); return }
+        let folder = URL(fileURLWithPath: args[i + 1])
+        // The job keeps the test's ports, and says what it does in a log beside its plist.
+        let extra: [String: Any] = ["EnvironmentVariables": ["HARBOR_PORTS": ports, "HARBOR_DEBUG": "1"],
+                                    "StandardOutPath": folder.appendingPathComponent(label + ".log").path]
+        let agent = LaunchAgent.install(label: label, plist: folder.appendingPathComponent(label + ".plist"),
+                                        program: [exe, "--launchd", "--serve", "--no-open"], app: Ports.harbor, extra: extra)
+        let ok = "\(agent), started: \(agent != .failed && LaunchAgent.kickstart(label))"
+        out("installed=\(ok) usual=\(Ports.harbor.usual) reserved=\(Ports.reserved(Ports.harbor)) file=\(Ports.harbor.file.path)")
+    }
+
+    /// A throwaway door on a high port, installed the way the real one is (taking the label
+    /// over from whoever has it). Refused without HARBOR_PORTS, and for the real label.
+    private static func testDoor(_ label: String) {
+        guard let ports = Ports.testValue, label != Door.label, let i = args.firstIndex(of: label), i + 2 < args.count,
+              let port = Int(args[i + 2]), port > 1024, let exe = Bundle.main.executablePath else {
+            out("refusing: set HARBOR_PORTS and give a label, a folder and a high port"); return
+        }
+        let folder = URL(fileURLWithPath: args[i + 1])
+        let ok = Door.install(label: label, plist: folder.appendingPathComponent(label + ".plist"), program: [exe, "--door"], port: port,
+                              extra: ["EnvironmentVariables": ["HARBOR_PORTS": ports]])
+        out("door installed=\(ok)")
     }
 
     // MARK: Updates
@@ -177,9 +221,12 @@ enum DebugCLI {
     @MainActor
     static func afterLaunch() -> Bool {
         let snapshotPath = value(after: "--snapshot")
+        if args.contains("--bare-names") { Monitor.shared.doorIsOurs = true }  // not the real door: for looking only
+        if args.contains("--port-notes") { Monitor.shared.pagePort = 8471; Monitor.shared.port80Taken = true }
         if args.contains("--serve") {
             // Start the page server and print its URL without opening a browser.
             WebServer.shared.start { url in out("PAGE \(url?.absoluteString ?? "failed")") }
+            out("PROXY \(Monitor.shared.proxyPort)")
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                 let bars = NSApp.windows.filter { String(describing: type(of: $0)).contains("StatusBar") && $0.isVisible }
                 out("STATUS ITEMS \(bars.count)")
@@ -281,6 +328,9 @@ enum DebugCLI {
             }
         }
     }
+
+    /// --proxy-port N: where a debug run's proxy listens. 0 lets the system pick.
+    static var proxyPort: UInt16 { UInt16(value(after: "--proxy-port") ?? "") ?? 0 }
 
     /// --no-open (or --serve): never open the browser, only log the page URL.
     static var noOpen: Bool { args.contains("--no-open") || args.contains("--serve") }

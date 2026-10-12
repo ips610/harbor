@@ -35,11 +35,17 @@ rm -rf "$TARGET"
 ditto "$SRC" "$TARGET"
 echo "Installed: $TARGET"
 
-# Killing the running copy above makes it set the "stay quit" marker, which would
-# leave the launchd agent dormant until someone visits the page. Clear it and
-# start harbor again now, so a reinstall just comes back (without opening a tab).
+# Killing the running copy above made it set the "stay quit" marker, which
+# would leave harbor waiting for a visit to the page. Clear it, so a reinstall
+# just comes back.
 rm -f "$HOME/Library/Application Support/$BUNDLE_ID/quit"
-launchctl kickstart "gui/$(id -u)/$BUNDLE_ID" 2>/dev/null || true
+# The new copy writes and reloads its own agents (a new version may hold more
+# ports than the old agent did) and starts under them, without opening a tab.
+# Run from somewhere other than Applications it leaves the agents alone; then
+# the one that is already loaded is started, as before.
+"$TARGET/Contents/MacOS/$EXECUTABLE" --refresh-agents || launchctl kickstart "gui/$(id -u)/$BUNDLE_ID" 2>/dev/null || true
+# Once more: a copy that was still running somewhere else set it again on its way out.
+rm -f "$HOME/Library/Application Support/$BUNDLE_ID/quit"
 
 # An older copy in ~/Applications would show up twice in Spotlight and Launchpad.
 if [ -z "${INSTALL_DIR:-}" ] && [ "$DEST" = "/Applications" ] && [ -d "$OLD" ]; then

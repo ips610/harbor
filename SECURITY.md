@@ -22,6 +22,11 @@ Only the latest release is supported. If you're on an older one, update first.
 - Requests are checked against harbor's own Host names (so a rebinding attack
   can't reach it), POSTs need harbor's own header, and the page's one script
   runs under a CSP nonce.
+- Project names (`<name>.localhost`) are answered by a second listener, also
+  only on `127.0.0.1` and `[::1]`. It refuses every Host that isn't a
+  `.localhost` name, forwards only to ports harbor lists itself (never to
+  harbor's or headroom's own pages), and has no access to the session. Renames
+  need the signed-in page.
 - harbor only stops or shares a process it just showed you, and it re-checks the
   process is still the same one right before it acts, so a reused PID is safe.
 - Stopping a process owned by another user uses macOS's own password dialog,

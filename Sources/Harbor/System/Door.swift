@@ -1,13 +1,21 @@
 import Foundation
 
 /// The shared "door" on port 80 (also used by headroom): launchd holds
-/// 127.0.0.1:80 and [::1]:80 and starts `harbor --door` on a connection, which
-/// redirects bare names to the real ports. No NSApplication, no menu bar item;
-/// it exits after 10 s without a connection.
+/// 127.0.0.1:80 and [::1]:80 and starts `harbor --door` on a connection. It
+/// redirects the two apps' bare names to their real ports, and hands any other
+/// `<name>.localhost` to harbor's proxy, bytes both ways (so the name stays in
+/// the address bar). No NSApplication, no menu bar item; it exits 10 s after
+/// the last connection has gone.
 enum Door {
     static let label = "local.localhost.door"
-    static let routes = ["headroom.localhost": 8460, "harbor.localhost": 8470]
+    /// Where the two apps are right now: read from their port files on every request (a file
+    /// that is missing or doesn't hold a port in the app's range means its usual port).
+    static func routes(harbor: Ports.App = Ports.harbor, headroom: Ports.App = Ports.headroom) -> [String: Int] {
+        ["headroom.localhost": Ports.reserved(headroom), "harbor.localhost": Ports.reserved(harbor)]
+    }
     private static let idleExit: Double = 10
+    /// Connections it carries to the proxy at once; more are closed.
+    private static let maxRelays = 128
 
     static var plistURL: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/LaunchAgents/\(label).plist")
@@ -16,11 +24,23 @@ enum Door {
     // MARK: Serving (`--door`)
 
     private static let queue = DispatchQueue(label: "local.harbor.door")
+    // Touched only on `queue`.
     private static var sources: [DispatchSourceRead] = []
     private static var lastActivity = Date()
+    private static var active = 0
+
+    /// A debug door's own ports: `--door --door-port N [--proxy-port N]`.
+    private static func argument(_ flag: String) -> UInt16? {
+        let args = CommandLine.arguments
+        return args.firstIndex(of: flag).flatMap { $0 + 1 < args.count ? UInt16(args[$0 + 1]) : nil }
+    }
+    private static let proxyPort = argument("--proxy-port") ?? Proxy.port
 
     static func run() -> Never {
-        let fds = LaunchAgent.activatedSockets()
+        // A socket launchd couldn't bind (another program holds that address on port 80) is no use.
+        var fds = LaunchAgent.activatedSockets().filter { Sock.port(of: $0) != 0 }
+        // For testing next to the real door: a door on a high port that binds it itself.
+        if fds.isEmpty, let port = argument("--door-port") { fds = WebServer.bindLoopback(port)?.0 ?? [] }
         if fds.isEmpty { exit(1) }  // not started by launchd: nothing to serve
         queue.sync {
             for fd in fds {
@@ -37,7 +57,8 @@ enum Door {
 
     private static func scheduleIdleCheck() {
         queue.asyncAfter(deadline: .now() + 2) {
-            if Date().timeIntervalSince(lastActivity) >= idleExit { exit(0) }
+            // A connection it is still carrying (an open page's hot-reload socket) keeps it up.
+            if active == 0 && Date().timeIntervalSince(lastActivity) >= idleExit { exit(0) }
             scheduleIdleCheck()
         }
     }
@@ -51,7 +72,13 @@ enum Door {
             setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
             var tv = timeval(tv_sec: 1, tv_usec: 0)  // short reads, so the 5 s deadline below is enforced
             setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
-            DispatchQueue.global().async { answer(fd) }
+            guard active < maxRelays else { close(fd); continue }
+            active += 1
+            // A thread each, not the GCD pool: a carried connection can last as long as its tab.
+            Thread.detachNewThread {
+                answer(fd)
+                queue.async { active -= 1; lastActivity = Date() }
+            }
         }
     }
 
@@ -72,29 +99,44 @@ enum Door {
             }
             head.append(contentsOf: chunk[0..<n])
         }
-        write(fd, response(for: head))
+        switch route(head) {
+        case .reply(let data):
+            write(fd, data)
+        case .proxy:
+            // The slow-client rule for a carried connection: the head had its 5 s above; from
+            // here the door only copies bytes, and it ends when the client or harbor's proxy
+            // closes. The proxy has the limits (one request per connection, a silent one dropped
+            // after 10 minutes, no limit only once the server has agreed to a WebSocket).
+            guard let proxy = Sock.connect(["127.0.0.1", "::1"], port: proxyPort, within: 2) else {
+                return write(fd, Proxy.page(503, "\(AppInfo.name) isn't running, so this name can't open. Open \(AppInfo.name), then reload this page."))
+            }
+            defer { close(proxy) }
+            Sock.prepare(fd)
+            Sock.relay(fd, proxy, first: head, idle: nil)
+        }
     }
 
-    static func response(for head: Data) -> Data {
-        let text = String(decoding: head, as: UTF8.self)
+    enum Route: Equatable { case reply(Data), proxy }
+
+    /// What a request gets, by its Host: a redirect for the two apps, harbor's proxy for any
+    /// other `.localhost` name, and 404 for the rest (so no other website's name gets anywhere).
+    static func route(_ head: Data, routes: [String: Int] = routes()) -> Route {
+        // Only the head counts, up to its blank line: a "Host:" line in a body is not a header.
+        // It is read the way the proxy reads it (exactly one Host, plain header names), so the
+        // two can't disagree about where a request goes. Anything else has no host here.
         var host = ""
-        for line in text.components(separatedBy: "\r\n").dropFirst() {
-            guard let colon = line.firstIndex(of: ":") else { continue }
-            if line[..<colon].trimmingCharacters(in: .whitespaces).lowercased() == "host" {
-                host = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces).lowercased()
-            }
+        if let end = head.range(of: Data("\r\n\r\n".utf8)), let request = ProxyHead(head.subdata(in: head.startIndex..<end.upperBound)) {
+            host = Names.hostName(request.host) ?? ""
         }
-        // Drop a port, but keep IPv6 brackets intact.
-        if let colon = host.lastIndex(of: ":"), !host.hasSuffix("]") { host = String(host[..<colon]) }
-        if host.hasSuffix(".") { host.removeLast() }
         // 302, never 301: browsers cache 301 forever.
         if let port = routes[host] {
-            return Data(("HTTP/1.1 302 Found\r\nLocation: http://\(host):\(port)/\r\nCache-Control: no-store\r\n"
-                + "Content-Length: 0\r\nConnection: close\r\n\r\n").utf8)
+            return .reply(Data(("HTTP/1.1 302 Found\r\nLocation: http://\(host):\(port)/\r\nCache-Control: no-store\r\n"
+                + "Content-Length: 0\r\nConnection: close\r\n\r\n").utf8))
         }
+        if host.hasSuffix(Names.suffix) { return .proxy }
         let body = "Nothing here. Try harbor.localhost or headroom.localhost.\n"
-        return Data(("HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\n"
-            + "Content-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n" + body).utf8)
+        return .reply(Data(("HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\n"
+            + "Content-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n" + body).utf8))
     }
 
     private static func write(_ fd: Int32, _ data: Data) {
@@ -107,33 +149,89 @@ enum Door {
         }
     }
 
+    /// The door as the app needs to know it: is it harbor's and loaded, and does port 80
+    /// really reach it. One answer that is slow in coming isn't "another program has port 80",
+    /// so that is asked up to three times. Monitor asks again later while it isn't right.
+    static func check() -> (ours: Bool, reaches: Bool) {
+        settled(installed: ensureInstalled(), reach: { reachable() })
+    }
+
+    static func settled(installed: Bool, reach: () -> Bool, pause: () -> Void = { sleep(1) }) -> (ours: Bool, reaches: Bool) {
+        guard installed else { return (false, false) }
+        for attempt in 0..<3 {
+            if reach() { return (true, true) }
+            if attempt < 2 { pause() }
+        }
+        return (true, false)
+    }
+
+    /// Does port 80 on this Mac really reach a door? launchd loads the agent even when another
+    /// program already holds 127.0.0.1:80 or [::1]:80, and the bare names then go to that
+    /// program instead. harbor only says so, it doesn't try to fix it.
+    static func reachable(port: UInt16 = 80) -> Bool {
+        ["127.0.0.1", "::1"].allSatisfy { address in
+            guard let fd = Sock.connect([address], port: port, within: 2) else { return false }
+            defer { close(fd) }
+            Sock.send(fd, Data("GET / HTTP/1.1\r\nHost: \(WebServer.host)\r\n\r\n".utf8), within: 2)
+            guard case .ok(let head, _) = Sock.readHead(fd, max: 4096, within: 3) else { return false }
+            return String(decoding: head, as: UTF8.self).contains("\r\nLocation: http://\(WebServer.host):")
+        }
+    }
+
     // MARK: Installing
 
-    /// Install the door unless someone (headroom) already has it loaded with a
-    /// binary that exists. Take it over if it points at a missing binary.
-    static func ensureInstalled() {
-        guard Bundle.main.bundleURL.pathExtension == "app", let exe = Bundle.main.executablePath else { return }
-        let loaded = LaunchAgent.launchctl(["print", "\(LaunchAgent.domain)/\(label)"])
-        if loaded {
-            let current = (NSDictionary(contentsOf: plistURL)?["ProgramArguments"] as? [String])?.first
-            if let current, FileManager.default.isExecutableFile(atPath: current) { return }
+    /// Makes the door harbor's: names only work through harbor's door, so a door
+    /// that headroom installed (or one left pointing at a copy that moved) is
+    /// pointed at this copy and loaded again. headroom leaves a door of harbor's
+    /// alone. True when the door is harbor's and loaded. Only the installed copy
+    /// does this (LaunchAgent.mayManage), never a debug run.
+    @discardableResult
+    static func ensureInstalled() -> Bool {
+        guard LaunchAgent.mayManage, let exe = Bundle.main.executablePath else { return false }
+        return install(label: label, plist: plistURL, program: [exe, "--door"], port: 80)
+    }
+
+    /// Loads a door agent for `program`, taking the label over from whoever has it.
+    ///
+    /// headroom may be installing its own door at the same moment (both apps do at launch),
+    /// so a refused bootstrap isn't the end: if the label is loaded with this plist by then,
+    /// that is what was wanted (headroom loads harbor's plist when it finds it unloaded); if
+    /// it is loaded with another one, that one is taken over on the next try. It never leaves
+    /// by its own doing a state with no door: the plist is written before the old one is
+    /// booted out. (`run` is launchctl; a test passes its own. `--test-door` runs this with a
+    /// throwaway label on a high port.)
+    static func install(label: String, plist: URL, program: [String], port: Int, extra: [String: Any] = [:],
+                        run: ([String]) -> Bool = { LaunchAgent.launchctl($0) }) -> Bool {
+        let service = "\(LaunchAgent.domain)/\(label)"
+        func ours() -> Bool { NSDictionary(contentsOf: plist)?["ProgramArguments"] as? [String] == program }
+        func write() -> Bool {
+            let agent: [String: Any] = [
+                "Label": label,
+                "ProgramArguments": program,
+                "Sockets": [
+                    "v4": ["SockNodeName": "127.0.0.1", "SockServiceName": "\(port)", "SockFamily": "IPv4"],
+                    "v6": ["SockNodeName": "::1", "SockServiceName": "\(port)", "SockFamily": "IPv6"],
+                ],
+                "LimitLoadToSessionType": "Aqua",
+                "ProcessType": "Interactive",
+            ]
+            guard let data = try? PropertyListSerialization.data(fromPropertyList: agent.merging(extra) { _, new in new }, format: .xml, options: 0) else { return false }
+            return (try? data.write(to: plist, options: .atomic)) != nil
         }
-        let plist: [String: Any] = [
-            "Label": label,
-            "ProgramArguments": [exe, "--door"],
-            "Sockets": [
-                "v4": ["SockNodeName": "127.0.0.1", "SockServiceName": "80", "SockFamily": "IPv4"],
-                "v6": ["SockNodeName": "::1", "SockServiceName": "80", "SockFamily": "IPv6"],
-            ],
-            "LimitLoadToSessionType": "Aqua",
-            "ProcessType": "Interactive",
-        ]
-        guard let data = try? PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0),
-              (try? data.write(to: plistURL, options: .atomic)) != nil else { return }
-        if loaded { LaunchAgent.launchctl(["bootout", "\(LaunchAgent.domain)/\(label)"]) }
+        let loaded = run(["print", service])
+        if loaded, ours() { return true }
+        guard write() else { return false }
+        if loaded { _ = run(["bootout", service]) }
         for _ in 0..<15 {
-            if LaunchAgent.launchctl(["bootstrap", LaunchAgent.domain, plistURL.path]) { return }
+            if run(["bootstrap", LaunchAgent.domain, plist.path]) { return true }
+            if run(["print", service]) {
+                if ours() { return true }
+                // Someone else's door got in between: point the file back at harbor and unload theirs.
+                guard write() else { return false }
+                _ = run(["bootout", service])
+            }
             usleep(200_000)
         }
+        return false
     }
 }

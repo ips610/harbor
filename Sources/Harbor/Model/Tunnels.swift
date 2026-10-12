@@ -191,31 +191,111 @@ final class Tunnels {
 
     // MARK: QR codes
 
-    /// Pixels per QR module. Scaled here with nearest sampling so the code stays
-    /// sharp however it is drawn (snapshots ignore SwiftUI's .interpolation).
-    private static let qrScale = 8
-
-    func qr(_ text: String) -> CGImage? {
-        if let c = qrCache[text] { return c }
-        guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
-        filter.setValue(Data(text.utf8), forKey: "inputMessage")
-        filter.setValue("M", forKey: "inputCorrectionLevel")
-        let k = CGFloat(Self.qrScale)
-        guard let image = filter.outputImage?.samplingNearest().transformed(by: CGAffineTransform(scaleX: k, y: k)),
-              let cg = CIContext(options: [.useSoftwareRenderer: true]).createCGImage(image, from: image.extent) else { return nil }
-        qrCache[text] = cg
+    /// A QR code drawn exactly `pixels` wide, in harbor's style (see QR). Kept per text and size.
+    func qr(_ text: String, pixels: Int) -> CGImage? {
+        let key = "\(pixels) \(text)"
+        if let c = qrCache[key] { return c }
+        guard let cg = QR.image(text, pixels: pixels) else { return nil }
+        qrCache[key] = cg
         return cg
     }
 
-    /// The QR code as rows of "0"/"1", for the page to draw on a canvas.
+    /// The QR code as rows of "0"/"1", without a quiet zone, for the page to draw the same way.
     func qrRows(_ text: String) -> [String]? {
-        guard let cg = qr(text) else { return nil }
+        QR.matrix(text)?.map { String($0.map { $0 ? "1" : "0" }) }
+    }
+}
+
+/// harbor's QR codes: soft squares, round corner eyes and the wave mark in the middle, on a
+/// white card. Always dark on white, in dark mode too: inverted codes fail on some phones.
+/// The page draws the same thing from `matrix` (Page.qrScript); keep the two alike.
+enum QR {
+    /// Modules of white around the code, inside the card (the standard quiet zone).
+    static let quiet = 4
+    static let ink = "#0b0b0c"
+
+    /// The modules, dark = true, with no quiet zone. Correction level H (30%), because the
+    /// mark in the middle covers some of them.
+    static func matrix(_ text: String) -> [[Bool]]? {
+        guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+        filter.setValue(Data(text.utf8), forKey: "inputMessage")
+        filter.setValue("H", forKey: "inputCorrectionLevel")
+        guard let image = filter.outputImage,
+              let cg = CIContext(options: [.useSoftwareRenderer: true]).createCGImage(image, from: image.extent) else { return nil }
+        // One pixel per module.
         let w = cg.width, h = cg.height
         var pixels = [UInt8](repeating: 255, count: w * h)
         guard let ctx = CGContext(data: &pixels, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w,
                                   space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
         ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
-        let k = Self.qrScale, n = w / k  // one sample from the middle of each module
-        return (0..<n).map { y in String((0..<n).map { pixels[(y * k + k / 2) * w + $0 * k + k / 2] < 128 ? "1" : "0" }) }
+        var rows = (0..<h).map { y in (0..<w).map { pixels[y * w + $0] < 128 } }
+        // Core Image puts a white border of its own around the code; the card has the real one.
+        while rows.first?.contains(true) == false { rows.removeFirst() }
+        while rows.last?.contains(true) == false { rows.removeLast() }
+        while !rows.isEmpty, !rows.contains(where: { $0.first == true }) { rows = rows.map { Array($0.dropFirst()) } }
+        while !rows.isEmpty, !rows.contains(where: { $0.last == true }) { rows = rows.map { Array($0.dropLast()) } }
+        return rows.isEmpty || rows.count != rows[0].count ? nil : rows
+    }
+
+    /// How many modules across the square cleared for the mark is: an odd number, about 24% of
+    /// the width, so it never covers more than about 6% of the modules (7 of 29, 11 of 49).
+    static func hole(_ modules: Int) -> Int {
+        let h = Int(Double(modules) * 0.245)
+        return h % 2 == 1 ? h : h - 1
+    }
+
+    /// The code drawn `pixels` wide: the white card, soft squares for the modules, the three
+    /// corner eyes as shapes, and the mark on its tile, one module smaller than its hole.
+    static func image(_ text: String, pixels: Int) -> CGImage? {
+        guard pixels > 0, let m = matrix(text), let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let ctx = CGContext(data: nil, width: pixels, height: pixels, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        let n = m.count, total = CGFloat(n + quiet * 2), side = CGFloat(pixels)
+        func fill(_ x: CGFloat, _ y: CGFloat, _ side: CGFloat, radius: CGFloat, _ color: String) {
+            ctx.setFillColor(NSColor(hex: color).cgColor)
+            ctx.addPath(CGPath(roundedRect: CGRect(x: x, y: y, width: side, height: side), cornerWidth: radius, cornerHeight: radius, transform: nil))
+            ctx.fillPath()
+        }
+        // Pixels, y down, from the card's top left corner.
+        ctx.translateBy(x: 0, y: side)
+        ctx.scaleBy(x: 1, y: -1)
+        fill(0, 0, side, radius: side * 0.07, "#ffffff")
+        // A module is a whole number of pixels, and the code sits in the middle of the card: at
+        // 132 points a long link's modules are only 2 or 3 pixels, and ones that straddle
+        // pixels blur until the code stops scanning. The card's margin takes up the slack. It
+        // starts on an even pixel, so a reader that halves the picture first still sees whole
+        // modules (drawn from an odd pixel, some sizes didn't read).
+        let unit = side >= total ? (side / total).rounded(.down) : side / total
+        let margin = 2 * ((side - unit * total) / 4).rounded() + unit * CGFloat(quiet)
+        // From here on: module units, from the code's top left corner.
+        ctx.translateBy(x: margin, y: margin)
+        ctx.scaleBy(x: unit, y: unit)
+
+        let hole = Self.hole(n), lo = (n - hole) / 2, cleared = lo..<(lo + hole)
+        let eyes = [(0, 0), (n - 7, 0), (0, n - 7)]
+        for y in 0..<n {
+            for x in 0..<n where m[y][x] {
+                if eyes.contains(where: { (ex, ey) in (ex..<ex + 7).contains(x) && (ey..<ey + 7).contains(y) }) { continue }
+                if cleared.contains(x) && cleared.contains(y) { continue }
+                fill(CGFloat(x) + 0.06, CGFloat(y) + 0.06, 0.88, radius: 0.3, ink)
+            }
+        }
+        for (ex, ey) in eyes {
+            let x = CGFloat(ex), y = CGFloat(ey)
+            ctx.setStrokeColor(NSColor(hex: ink).cgColor)
+            ctx.setLineWidth(1)
+            ctx.addPath(CGPath(roundedRect: CGRect(x: x + 0.5, y: y + 0.5, width: 6, height: 6), cornerWidth: 1.9, cornerHeight: 1.9, transform: nil))
+            ctx.strokePath()
+            fill(x + 2, y + 2, 3, radius: 1, ink)
+        }
+        // The app's tile (flat, like the tab icon) with WaveMark's two waves.
+        let at = CGFloat(lo) + 0.5, tile = CGFloat(hole - 1), k = tile / 64
+        fill(at, at, tile, radius: 14 * k, "#16171c")
+        ctx.addPath(WaveMark.path { x, y in NSPoint(x: at + x * k, y: at + y * k) }.cgPath)
+        ctx.setStrokeColor(NSColor(hex: "#a7b4ff").cgColor)
+        ctx.setLineWidth(6 * k)
+        ctx.setLineCap(.round)
+        ctx.strokePath()
+        return ctx.makeImage()
     }
 }

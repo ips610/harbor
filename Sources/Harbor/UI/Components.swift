@@ -95,6 +95,23 @@ struct AppIconView: View {
     }
 }
 
+/// A QR code in harbor's style, `size` points wide and drawn for this screen's pixels.
+struct QRCode: View {
+    let text: String
+    var size: CGFloat = 132
+    @Environment(\.displayScale) private var scale
+
+    var body: some View {
+        if let cg = Tunnels.shared.qr(text, pixels: Int((size * scale).rounded())) {
+            Image(decorative: cg, scale: scale)
+                .interpolation(.high)
+                .resizable()
+                .frame(width: size, height: size)
+                .help("Scan with your phone camera")
+        }
+    }
+}
+
 struct ToastView: View {
     @Environment(Monitor.self) private var monitor
 
