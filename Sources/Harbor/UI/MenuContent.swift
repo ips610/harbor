@@ -104,6 +104,12 @@ struct MenuContent: View {
                             if grouping != .flat {
                                 SectionTitle(title: section.title, count: section.rows.count,
                                              color: grouping == .project ? section.rows.first.map { Color(hex: $0.colorHex) } : nil)
+                                    .contextMenu {
+                                        if grouping == .project, let first = section.rows.first, !first.isSystem {
+                                            Button("Rename group…") { askCardTitle(first) }
+                                            if first.chosen.group != nil { Button("Delete group") { monitor.deleteGroup(key: first.groupKey) } }
+                                        }
+                                    }
                             }
                             ForEach(section.rows) { row in
                                 PortLine(row: row, showTitle: grouping != .project)
@@ -394,6 +400,23 @@ struct MenuContent: View {
                     return t == .orderedSame ? a.rows[0].port < b.rows[0].port : t == .orderedAscending
                 }
         }
+    }
+
+    /// A name for a card (right-click its title): a group made by hand, or an automatic card. Empty goes back to the automatic one.
+    private func askCardTitle(_ first: PortRow) {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.window.appearance = monitor.appearance.nsAppearance
+        alert.messageText = "Rename this group"
+        alert.informativeText = first.chosen.group != nil ? "A name for the group." : "A name of your own for this card. Leave it empty to go back to the automatic one."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.stringValue = first.groupTitle
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        if let problem = monitor.renameCard(key: first.groupKey, to: field.stringValue) { monitor.flash(problem) }
     }
 
     /// Seconds, or a number with s, m, h or d ("90", "30m", "2h", "1d"): 5 seconds to a week.
@@ -823,6 +846,17 @@ private struct PortLine: View {
         monitor.flash(problem ?? "\(monitor.networkLink(row) ?? name) is on your network.")
     }
 
+    private func askNewGroup() {
+        guard let typed = ask("New group", "A name for the group. This server goes into it, and so can others.", value: "", yes: "Create") else { return }
+        if let problem = monitor.newGroup(titled: typed.answer, moving: row) { monitor.flash(problem) }
+    }
+
+    private func askRowName() {
+        guard let typed = ask("Rename this server", "Its name in lists, here and on the page. Leave it empty to go back to the automatic name.",
+                              value: row.chosen.rowName ?? row.display(served: monitor.served[row.id]?.line), yes: "Rename") else { return }
+        if let problem = monitor.renameRow(row, to: typed.answer) { monitor.flash(problem) }
+    }
+
     private func askNetworkName() {
         guard let name = monitor.networkName(row),
               let typed = ask("Rename \(name)\(Lan.suffix)", "Its name for other devices on this network. Lowercase letters, numbers and hyphens, up to \(Names.maxLength). Leave it empty to use its .localhost name.",
@@ -983,6 +1017,25 @@ private struct PortLine: View {
                 }
             }
             let canShare = monitor.isNetworkRow(row), shared = monitor.lanShares[row.id] != nil
+            // Which card it sits on, and its own name in lists: both are for the person to choose.
+            if !row.isSystem {
+                DetailLine(label: "Group", value: row.chosen.groupTitle ?? "\(row.autoGroupTitle) (automatic)") {
+                    Menu("move…") {
+                        Button("Automatic · \(row.autoGroupTitle)") { _ = monitor.move(row, toGroup: nil) }
+                        ForEach(monitor.customGroupList, id: \.id) { g in
+                            Button(g.title) { _ = monitor.move(row, toGroup: g.id) }
+                        }
+                        Divider()
+                        Button("New group…") { askNewGroup() }
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help("Put it in a group of your own, or back on its automatic card")
+                }
+                DetailLine(label: "Name", value: row.chosen.rowName ?? row.display(served: monitor.served[row.id]?.line)) {
+                    Pill(title: "rename", help: "Its name in lists, here and on the page") { askRowName() }
+                }
+            }
             // Its two names, one above the other, each with its own rename: on this Mac, and on the network.
             if let host = monitor.nameHost(row) {
                 DetailLine(label: Names.suffix, value: host) {

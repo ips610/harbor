@@ -32,6 +32,16 @@ struct PortRow: Identifiable, Hashable {
     /// container belongs to. Only the card: names, passwords and everything saved by folder
     /// still go by `projectFolder`.
     var repo: String? = nil
+    /// What was chosen for this row in the app, set by the monitor from what is saved: a card of
+    /// its own, a new title for its card, a name for the row. Never read from the system.
+    var chosen = Chosen()
+
+    struct Chosen: Hashable {
+        var group: String? = nil          // the id of a group made by hand
+        var groupTitle: String? = nil     // that group's name
+        var cardTitle: String? = nil      // a new name for the automatic card it sits on
+        var rowName: String? = nil        // its own name in lists
+    }
 
     /// The same listener, known as the container it forwards to: a database or a dev
     /// server by its image, and tagged with that image.
@@ -56,6 +66,7 @@ struct PortRow: Identifiable, Hashable {
 
     /// `served` is what the server answered on "/" when it was last asked (see Probe), if it was.
     func display(served: String?) -> String {
+        if let own = chosen.rowName { return own }
         guard container == nil, let folder, Self.isUserFolder(folder) else { return label }
         let name = processName.lowercased()
         guard Self.runtimeNames.contains(name) || name.hasPrefix("python") else { return label }
@@ -83,7 +94,10 @@ struct PortRow: Identifiable, Hashable {
     private static let runtimeNames: Set = ["node", "ruby", "php", "java", "bun", "deno", "dotnet", "perl", "beam.smp"]
 
     /// What its card is called: the compose project (or "Docker"), else its own title.
-    var groupTitle: String { repo.map(Fmt.lastComponent) ?? container?.group ?? title }
+    var groupTitle: String { chosen.groupTitle ?? chosen.cardTitle ?? autoGroupTitle }
+
+    /// What its card is called without anything chosen.
+    var autoGroupTitle: String { repo.map(Fmt.lastComponent) ?? container?.group ?? title }
 
     /// Hidden unless "Show system ports" is on.
     var isHiddenByDefault: Bool { port < 1024 || isSystem || isSelf }
@@ -146,7 +160,10 @@ struct PortRow: Identifiable, Hashable {
     }
 
     /// The card a row belongs to: its project folder, else its app.
-    var groupKey: String {
+    var groupKey: String { chosen.group.map { "c:" + $0 } ?? autoGroupKey }
+
+    /// The card it would be on without a group made by hand: what a card's new name is saved under.
+    var autoGroupKey: String {
         if let repo { return "p:" + Fmt.path(repo) }
         return container.map { "d:" + $0.group } ?? projectFolder.map { "p:" + Fmt.path($0) } ?? "a:" + (appName ?? processName)
     }

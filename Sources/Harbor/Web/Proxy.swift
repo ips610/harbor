@@ -197,6 +197,8 @@ enum Names {
         case forward(Target)
         /// A well-formed name nothing is running as. The label is safe to show.
         case unknown(String)
+        /// A name harbor saw stop, which it can start again (after a confirm, in its own page): its id in that list.
+        case stopped(name: String, id: String)
         /// Not a `.localhost` name (or one of the apps' own): answered with 404.
         case refuse
     }
@@ -852,6 +854,10 @@ final class Proxy: @unchecked Sendable {
             Sock.reply(fd, Self.page(404, "Nothing here.", link: false))
         case .unknown(let name):
             Sock.reply(fd, Self.page(404, "Nothing is running as \(name)\(Names.suffix)."))
+        case .stopped(let name, let id):
+            // Never started from here: the page asks first, with the real program and folder in the question.
+            Sock.reply(fd, Self.page(404, "\(name)\(Names.suffix) isn't running. \(AppInfo.name) saw it stop and can start it again.",
+                                     action: ("Start it again…", "http://\(WebServer.host):\(LaunchAgent.port)/?start=\(id)")))
         case .forward(let target):
             // Only to this Mac's own addresses, as they are now.
             guard let up = Sock.connect(target.addresses.filter(Sock.isOwn), port: target.port) else {
@@ -1028,14 +1034,14 @@ final class Proxy: @unchecked Sendable {
 
     /// One of harbor's own small pages, for when there is nothing to forward to. `text` is
     /// escaped, and the page allows no scripts, so a made-up Host can't put markup into it.
-    static func page(_ status: Int, _ text: String, link: Bool = true) -> Data {
+    static func page(_ status: Int, _ text: String, link: Bool = true, action: (text: String, url: String)? = nil) -> Data {
         let safe = text.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")
         let home = "http://\(WebServer.host):\(LaunchAgent.port)/"
         let body = """
         <!doctype html><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>\(AppInfo.name)</title>
         <body style="font: 15px/1.5 -apple-system, system-ui, sans-serif; max-width: 34em; margin: 18vh auto; padding: 0 20px">
-        <p>\(safe)</p>\(link ? "\n<p><a href=\"\(home)\">Open \(AppInfo.name)</a></p>" : "")
+        <p>\(safe)</p>\(action.map { "\n<p><a href=\"\($0.url)\">\($0.text)</a></p>" } ?? "")\(link ? "\n<p><a href=\"\(home)\">Open \(AppInfo.name)</a></p>" : "")
 
         """
         let head = "HTTP/1.1 \(status) \(HTTPResponse.reason(status))\r\nContent-Type: text/html; charset=utf-8\r\n"

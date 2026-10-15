@@ -88,6 +88,30 @@ final class NamesTests: XCTestCase {
         XCTAssertTrue(row(3000, scope: .specific, addresses: ["172.17.134.35"]).isReachable)
     }
 
+    /// Groups and names made by hand sit over the automatic ones, and never change a key.
+    func testWhatWasChosenSitsOverTheAutomatic() {
+        var r = row(3000, folder: NSHomeDirectory() + "/code/shop")
+        let auto = r.groupKey
+        XCTAssertEqual(r.autoGroupKey, auto)
+        r.chosen.cardTitle = "My shop"                                   // an automatic card, renamed
+        XCTAssertEqual(r.groupKey, auto)
+        XCTAssertEqual(r.groupTitle, "My shop")
+        XCTAssertEqual(r.autoGroupTitle, "shop")
+        r.chosen.group = "ab12cd34"                                      // a group of its own
+        r.chosen.groupTitle = "Exams"
+        XCTAssertEqual(r.groupKey, "c:ab12cd34")
+        XCTAssertEqual(r.groupTitle, "Exams")
+        XCTAssertEqual(r.autoGroupKey, auto)                             // what a rename of the card is saved under
+        r.chosen.rowName = "storefront admin"
+        XCTAssertEqual(r.display(served: nil), "storefront admin")
+        XCTAssertEqual(Names.key(r), NSHomeDirectory() + "/code/shop")  // names and saved things are by folder, as ever
+        // A made-up Route for a stopped server is its own case.
+        XCTAssertNotEqual(Names.Route.stopped(name: "shop", id: "a1"), Names.Route.unknown("shop"))
+        // And the page for it holds a link that asks first, in harbor's own page.
+        let page = String(decoding: Proxy.page(404, "shop isn't running.", action: ("Start it again…", "http://harbor.localhost:8470/?start=a1")), as: UTF8.self)
+        XCTAssertTrue(page.contains("<a href=\"http://harbor.localhost:8470/?start=a1\">Start it again…</a>"))
+    }
+
     // MARK: Slugs
 
     func testSlug() {

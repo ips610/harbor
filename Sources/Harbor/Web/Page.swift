@@ -85,7 +85,8 @@ window.addEventListener('storage', (e) => {
 // ---------- QR codes ----------
 // A white card, soft squares, the three corner eyes as shapes, and the wave mark in the middle
 // (the code is made at correction level H, so the mark may cover some of it). Always dark on
-// white, in dark mode too: inverted codes fail on some phones. 4 px per module.
+// white, in dark mode too: inverted codes fail on some phones. Always 168 px wide, so two codes
+// of different lengths sit side by side at one size.
 function qrSvg(rows, label) {
   const NS = 'http://www.w3.org/2000/svg';
   const make = (tag, attrs) => { const n = document.createElementNS(NS, tag); for (const k in attrs) n.setAttribute(k, attrs[k]); return n; };
@@ -95,7 +96,7 @@ function qrSvg(rows, label) {
   if (hole % 2 === 0) hole -= 1;
   const lo = (N - hole) / 2, hi = lo + hole;
   const eye = (x, y) => (x < 7 && y < 7) || (x >= N - 7 && y < 7) || (x < 7 && y >= N - 7);
-  const svg = make('svg', { viewBox: `0 0 ${T} ${T}`, width: T * 4, height: T * 4, role: 'img', 'aria-label': label });
+  const svg = make('svg', { viewBox: `0 0 ${T} ${T}`, width: 168, height: 168, role: 'img', 'aria-label': label });
   svg.append(make('rect', { width: T, height: T, rx: T * 0.07, fill: '#fff' }));
   // Every module is a 0.88 square with 0.3 corners; all of them in one path.
   let d = '';
@@ -301,6 +302,8 @@ function qrSvg(rows, label) {
 
   /* ---------- port cards ---------- */
   .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 600px), 1fr)); gap: 16px; align-items: start; }
+  /* "1 card" in the Cards control: one column, however wide the window. */
+  #cards.one { grid-template-columns: minmax(0, 1fr); }
   .card { background: var(--panel); border-radius: 14px; overflow: hidden; border-top: 3px solid var(--pc, var(--c-ports)); }
   .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px 18px 10px; }
   .card-title { min-width: 0; }
@@ -341,7 +344,6 @@ function qrSvg(rows, label) {
   .left { color: var(--text-2); font-variant-numeric: tabular-nums; }
   /* Servers that stopped, with a way to start each again. */
   #stopped { margin-top: 18px; }
-  #stopped:empty { display: none; }
   .card.was { --pc: var(--muted); }
   .card.was .prow, .card.was .prow:hover { cursor: default; background: none; }
   .card.was .pcmd { grid-column: 1 / -1; margin-top: -5px; padding-left: 110px; font: 12.5px/1.5 var(--f-mono); color: var(--muted); overflow-wrap: anywhere; }
@@ -463,6 +465,14 @@ function qrSvg(rows, label) {
   .apps .slot { display: flex; justify-content: flex-end; }
   .settings { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; margin-top: 28px; padding: 14px 18px; border-radius: 12px; background: var(--panel); font-size: 13px; color: var(--muted); }
   .settings b { color: var(--text); font-weight: 600; }
+  /* How to use the harbor command, shown once it is installed: each line copies on a click. */
+  .cmdhelp { flex-basis: 100%; display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; align-items: baseline; }
+  .cmdhelp:empty { display: none; }
+  .cmdhelp h4 { grid-column: 1 / -1; margin: 0; font-size: 12px; font-weight: 600; color: var(--text); }
+  .cmdhelp button { font: 12.5px var(--f-mono); color: var(--text); background: var(--bg); border: 0; border-radius: 8px; padding: 4px 9px; cursor: pointer; text-align: left; }
+  .cmdhelp button:hover { background: var(--panel-2); }
+  .cmdhelp span { font-size: 12.5px; color: var(--muted); }
+  .cmdhelp .cmdnote { grid-column: 1 / -1; font-size: 12px; }
   /* A dropdown of the page's own: the browser's list can't take the page's colours, so this one is drawn here. */
   .dd { position: relative; display: inline-block; margin-left: 4px; }
   .ddb { appearance: none; -webkit-appearance: none; font: 600 13px var(--f-body); color: var(--text); cursor: pointer; text-align: left;
@@ -476,6 +486,7 @@ function qrSvg(rows, label) {
   .ddl li { padding: 7px 12px 7px 28px; border-radius: 9px; font: 500 13px var(--f-body); color: var(--text-2); cursor: pointer; position: relative; }
   .ddl li:hover, .ddl li.on { background: var(--panel-2); color: var(--text); }
   .ddl li[aria-selected="true"] { color: var(--text); font-weight: 600; }
+  .ddl.float { position: fixed; z-index: 60; min-width: 190px; }
   .ddl li[aria-selected="true"]::before { content: ""; position: absolute; left: 11px; top: 50%; width: 5px; height: 9px; margin-top: -6px;
     border: solid var(--c-ports); border-width: 0 2px 2px 0; transform: rotate(45deg); }
 
@@ -598,6 +609,10 @@ function qrSvg(rows, label) {
           <button type="button" data-group="category" aria-pressed="false">Category</button>
           <button type="button" data-group="flat" aria-pressed="false">Flat</button>
         </div>
+        <div class="seg" role="group" aria-label="Cards in a row">
+          <button type="button" data-cols="2" aria-pressed="true" title="As many cards side by side as fit">Cards side by side</button>
+          <button type="button" data-cols="1" aria-pressed="false" title="One card per row, full width">One per row</button>
+        </div>
         <span class="range" title="Ports outside this range are hidden, like Manfath's visible range.">Ports
           <input type="number" id="rmin" min="1" max="65535" aria-label="Lowest port shown"> –
           <input type="number" id="rmax" min="1" max="65535" aria-label="Highest port shown"></span>
@@ -629,6 +644,7 @@ function qrSvg(rows, label) {
     <span class="check">Refresh while open <span class="dd" id="interval"></span></span>
     <span class="check">Menu bar badge <span class="dd" id="badge"></span></span>
     <span class="check"><button class="btn" id="command-btn" type="button"></button></span>
+    <div class="cmdhelp" id="command-help"></div>
     <span class="check">Appearance
       <span class="seg small" role="group" aria-label="Appearance">
         <button type="button" data-appearance="auto" aria-pressed="false">Auto</button>
@@ -880,6 +896,19 @@ function render() {
   intervalDD.set([...options, ['custom', 'Custom…']], every);
   badgeDD.set([['hidden', 'Hidden'], ['count', 'Count'], ['dot', 'Dot']], state.settings.badge);
   $('command-btn').textContent = state.commandPath ? 'Remove the harbor command…' : 'Install the harbor command…';
+  // Once it is installed, say how to use it: lines with this Mac's own ports, each copied on a click.
+  const example = state.ports.find((p) => !p.system && !p.hidden && p.hostName);
+  swap('command-help', JSON.stringify([state.commandPath, example && [example.port, example.hostName]]), () => {
+    if (!state.commandPath) return [];
+    const lines = [['harbor ls', 'what is listening, with names and what is shared'],
+      ['harbor ls --json', 'the same as JSON, for scripts (--all adds macOS services)'],
+      [`harbor kill ${example ? example.port : 3000}`, 'stop what listens on that port; it asks first (-y skips the question, --force ends it)'],
+      [`harbor open ${example ? example.hostName : 'storefront'}`, 'open its .localhost address in the browser; a port number works too'],
+      ['harbor --help', 'every option and the exit codes']];
+    return [el('h4', { text: 'In Terminal (click a line to copy it)' }),
+      ...lines.flatMap(([cmd, what]) => [el('button', { type: 'button', text: cmd, title: 'Copy', onclick: () => copyText(cmd) }), el('span', { text: what })]),
+      el('span', { class: 'cmdnote', text: `Linked at ${state.commandPath}. If Terminal says "command not found", add export PATH="$HOME/.local/bin:$PATH" to ~/.zshrc and open a new window.` })];
+  });
   $('command-btn').title = state.commandPath ? `Linked at ${state.commandPath}` : 'Lets Terminal run: harbor ls, harbor kill 3000, harbor open storefront';
   $('settings-note').textContent = every > 0
     ? `Scans every ${span(every)} while the menu or this page is open.`
@@ -1015,7 +1044,14 @@ function renderPorts(ports, all) {
     return model.map((g) => g.kind === 'card' ? card(g) : section(g));
   });
   swap('stopped', JSON.stringify([state.stopped.map((s) => [s.id, s.name, s.port, s.folder, s.command, uptime(s.ago), s.note, s.log]), [...busyStart]]),
-    () => state.stopped.length ? stoppedCard(state.stopped) : []);
+    () => stoppedCard(state.stopped));
+  // Arrived from a name that isn't running ("tips.localhost" -> Start it again…): ask, once.
+  const want = new URLSearchParams(location.search).get('start');
+  if (want) {
+    history.replaceState(null, '', location.pathname);
+    const s = state.stopped.find((x) => x.id === want);
+    if (s) startAgain(s); else toast("harbor doesn't have that server any more. It keeps the last 20 for a day, and not after it quits.");
+  }
 }
 
 // Servers harbor saw stop. Each can be started again: the request names the entry and nothing else.
@@ -1024,7 +1060,9 @@ function stoppedCard(list) {
   const pill = (text, cls, onclick, extra) => el('button', { class: 'pl ' + (cls || ''), text, onclick, ...(extra || {}) });
   return el('article', { class: 'card was' },
     el('div', { class: 'card-head' }, el('div', { class: 'card-title' }, el('h3', { text: 'Stopped' }),
-      el('p', { class: 'card-path mono', text: 'Servers that were running here. Started again, a server has no Terminal: its output goes to a log.' }))),
+      el('p', { class: 'card-path mono', text: list.length
+        ? 'Servers that were running here. Started again, a server has no Terminal: its output goes to a log. Typing the name of one in the address bar offers to start it.'
+        : 'Nothing has stopped since harbor started. The last 20 that stop are kept here for a day, with how to start each again. Typing the name of one in the address bar offers to start it.' }))),
     el('ul', { class: 'rows' }, list.map((s) => el('li', {},
       el('div', { class: 'prow' },
         el('div', { class: 'pmain' }, el('span', { class: 'pport', text: ':' + s.port }),
@@ -1069,7 +1107,14 @@ function card(g) {
       frameworks.length || onNetwork ? el('div', { class: 'chips' }, frameworks.map((f) => el('span', { class: 'chip', text: f })),
         onNetwork ? el('span', { class: 'chip warn', text: 'on network', title: onNetwork.local.link }) : null) : null),
     el('span', { class: 'card-acts' },
-      g.folder ? el('button', { class: 'btn quiet', text: 'Reveal', title: 'Show this folder in Finder', onclick: () => act('reveal', g.rows[0].pid) }) : null));
+      // Rows open on a click, but nobody knows to: a button says so, and opens or closes all of the card's.
+      el('button', { class: 'btn quiet', text: g.rows.every((p) => opened.has(p.id)) ? 'Hide details' : 'Show details',
+        title: g.rows.every((p) => opened.has(p.id)) ? 'Close every row of this card' : 'Open every row of this card: its names, address, folder and more',
+        'aria-expanded': String(g.rows.every((p) => opened.has(p.id))),
+        onclick: () => { const all = g.rows.every((p) => opened.has(p.id)); for (const p of g.rows) { if (all) opened.delete(p.id); else opened.add(p.id); } render(); } }),
+      mac ? null : el('button', { class: 'btn quiet', text: 'Rename', title: 'Give this group a name of your own', onclick: () => renameCard(g) }),
+      g.key.startsWith('c:') ? el('button', { class: 'btn quiet', text: 'Delete', title: 'Take the group away; its servers go back on their own cards', onclick: () => deleteGroup(g) }) : null,
+      g.folder ? el('button', { class: 'btn quiet', text: 'Open in Finder', title: 'Show this folder in Finder', onclick: () => act('reveal', g.rows[0].pid) }) : null));
   return el('article', { class: 'card' + (mac ? ' mac-svc' : ''), style: { '--pc': g.rows[0].color } },
     head, el('ul', { class: 'rows' }, g.rows.map((p) => row(p, false))));
 }
@@ -1152,6 +1197,14 @@ function details(p) {
     if (p.container.project) add('Compose', p.container.project + (p.container.service ? ' / ' + p.container.service : ''));
   }
   if (p.nokill) add('Kill', p.nokill);
+  if (!p.macos && !p.system) {
+    const mine = p.chosenGroup && (state.groups || []).find((g) => g.id === p.chosenGroup);
+    add('Group', mine ? mine.title : `${p.autoGroupTitle} (automatic)`,
+      el('button', { class: 'pl', text: 'move…', title: 'Put it in a group of your own, or back on its automatic card', onclick: (e) => { e.stopPropagation(); chooseGroup(p, e.currentTarget); } }));
+    add('Name', p.rowName || p.display, el('span', { class: 'acts' },
+      el('button', { class: 'pl', text: 'rename', title: 'Its name in lists', onclick: (e) => { e.stopPropagation(); renameRow(p); } }),
+      p.rowName ? el('button', { class: 'pl', text: 'reset', title: 'Back to the automatic name', onclick: (e) => { e.stopPropagation(); setRowName(p, ''); } }) : null));
+  }
   if (p.folder) add('Folder', p.folder, el('button', { class: 'pl', text: 'reveal', onclick: () => act('reveal', p.pid) }));
   if (p.command) add('Command', p.command);
   add('Address', p.address);
@@ -1528,6 +1581,59 @@ function askText(title, body, value, yes) {
 $('dlg-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); dlg.close('yes'); } });
 
 // A project's name, the part before .localhost. The app checks it and says what's wrong.
+// A list of choices at an element, in the page's own colours (the browser's can't take them). Closes on a pick, Escape or a click elsewhere.
+function chooseFrom(anchor, options, pick) {
+  document.querySelectorAll('.ddl.float').forEach((n) => n.remove());
+  const done = () => { list.remove(); document.removeEventListener('mousedown', away, true); document.removeEventListener('keydown', esc, true); };
+  const away = (e) => { if (!list.contains(e.target)) done(); };
+  const esc = (e) => { if (e.key === 'Escape') done(); };
+  const list = el('ul', { class: 'ddl float', role: 'menu' }, options.map(([value, text, on]) =>
+    el('li', { role: 'menuitem', 'aria-selected': String(!!on), text, onclick: () => { done(); pick(value); } })));
+  document.body.append(list);
+  const r = anchor.getBoundingClientRect(), h = list.offsetHeight;
+  list.style.left = Math.max(8, Math.min(r.left, innerWidth - list.offsetWidth - 12)) + 'px';
+  list.style.top = (innerHeight - r.bottom > h + 20 ? r.bottom + 6 : Math.max(8, r.top - h - 6)) + 'px';
+  setTimeout(() => { document.addEventListener('mousedown', away, true); document.addEventListener('keydown', esc, true); });
+}
+function chooseGroup(p, anchor) {
+  const options = [['auto', `Automatic · ${p.autoGroupTitle}`, !p.chosenGroup],
+    ...(state.groups || []).map((g) => [g.id, g.title, p.chosenGroup === g.id]), ['new', 'New group…', false]];
+  chooseFrom(anchor, options, async (v) => {
+    let r;
+    if (v === 'new') {
+      const title = await askText('New group', 'A name for the group. This server goes into it, and so can others.', '', 'Create');
+      if (title === null) return;
+      r = await act('group-set', p.pid, { port: p.port, title });
+    } else {
+      r = await act('group-set', p.pid, { port: p.port, group: v === 'auto' ? null : v });
+    }
+    if (r) toast(r.message);
+    poll();
+  });
+}
+async function renameCard(g) {
+  const auto = !g.key.startsWith('c:');
+  const title = await askText('Rename this group', auto ? 'A name of your own for this card. Leave it empty to go back to the automatic one.' : 'A name for the group.', g.title, 'Rename');
+  if (title === null) return;
+  const r = await act('card-rename', 0, { key: g.key, title });
+  if (r) toast(r.message);
+  poll();
+}
+async function deleteGroup(g) {
+  if (!await ask(`Delete the group ${g.title}?`, 'Its servers go back on their own cards. Nothing is stopped.', 'Delete')) return;
+  const r = await act('group-delete', 0, { key: g.key });
+  if (r) toast(r.message);
+  poll();
+}
+async function setRowName(p, name) {
+  const r = await act('row-rename', p.pid, { port: p.port, name });
+  if (r) toast(r.message);
+  poll();
+}
+async function renameRow(p) {
+  const name = await askText('Rename this server', 'Its name in lists, here and in the menu. Leave it empty to go back to the automatic name.', p.rowName || p.display, 'Rename');
+  if (name !== null) setRowName(p, name);
+}
 async function rename(p) {
   const name = await askText(`Rename ${p.hostName}.localhost`,
     'Lowercase letters, numbers and hyphens, up to 40. Leave it empty to go back to the automatic name.', p.hostName, 'Rename');
@@ -1576,6 +1682,19 @@ async function copy(p) {
 }
 
 // ---------- controls ----------
+// One card per row, or as many as fit: this browser's own choice, kept in it.
+let columns = '2';
+try { columns = localStorage.getItem('__app__.columns') === '1' ? '1' : '2'; } catch (e) {}
+function showColumns() {
+  $('cards').classList.toggle('one', columns === '1');
+  for (const b of document.querySelectorAll('[data-cols]')) b.setAttribute('aria-pressed', String(b.dataset.cols === columns));
+}
+for (const b of document.querySelectorAll('[data-cols]')) b.addEventListener('click', () => {
+  columns = b.dataset.cols;
+  try { localStorage.setItem('__app__.columns', columns); } catch (e) {}
+  showColumns();
+});
+showColumns();
 for (const b of document.querySelectorAll('[data-group]')) {
   b.addEventListener('click', () => { group = b.dataset.group; if (state) { state.settings.grouping = group; render(); } saveSettings({ grouping: group }); });
 }

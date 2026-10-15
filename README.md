@@ -101,6 +101,41 @@ Name.local" (or "Not on a network"), and each row shows its address there, or "t
 You can set a port range, tick "Servers only", hide processes you don't care about (right-click
 a row in the menu), and tick "macOS services" to see Apple's own, which are marked as such.
 
+Two more filters, in the gear menu and on the page's Ports controls:
+
+- **Other apps** (on by default). Off hides everything that isn't a project of mine: Ollama,
+  a command-line tool's helper ports, redis. Containers of a project count as the project's.
+- **Reachable only** (off by default). On shows just the ports other devices on the network can
+  reach, so I can see exactly what is exposed.
+
+The page says how many ports each filter is hiding.
+
+### Cards, groups and names
+
+A card is a project. A site that runs from `web/` and its API at the repo's root sit on one
+card: a project folder inside a git checkout goes on the checkout's card. A container goes on its
+project's card too, by the folder its compose file is in, or (for one started with `docker run`)
+by a folder it mounts something from. Only below my home folder, so a repo at `~` can't gather
+everything. A container of nothing of mine stays under "Docker".
+
+A server running as `node` or `Python` is listed by its folder, `exams-portal` or `web`. Vite,
+Next and the like are marked `frontend`. Flask, Django, FastAPI and the like are marked `backend`
+only once harbor has seen `/` answer without a page, because one that answers with a title or a
+redirect renders its own pages (Jinja, Django templates) and is both.
+
+All of that is automatic and can be changed:
+
+- **Rename a card.** **Rename** on the card on the page, or right-click its title in the menu.
+  An empty name goes back to the automatic one.
+- **Make a group.** In a row's details, **Group → move…** puts the server in a group of my own,
+  or **New group…** makes one. A group can be renamed and deleted (its servers go back on their
+  own cards). A group nobody is in is forgotten.
+- **Name a server.** **Name → rename** changes what the lists call it. **reset** goes back.
+
+These are saved by project folder and port, like a network name, so a server I start again goes
+back into the same group. They only change which card a row sits on and what it's called in
+lists. The `.localhost` and `.local` names, the passwords and the main server are not touched.
+
 ### Names
 
 Every project gets its own address. A server I start in `~/code/storefront` opens at
@@ -189,11 +224,24 @@ What to know about it:
   harbor says why. Asking twice starts it once. A row leaves the list when something listens on
   its port again, however it was started.
 
+### Starting a stopped server by its name
+
+harbor keeps how each server that stopped was started (the last 20, for a day, in memory only).
+The page's **Stopped** card lists them, with **start again**, and says so when there are none.
+
+If I type the name of one in the address bar, `storefront.localhost`, harbor answers with a page
+that says it isn't running and has **Start it again…**. That opens harbor's page and asks, with
+the real program path, its arguments and the folder, before anything runs. Nothing starts from
+the address bar by itself, so a link on some other site can't make harbor run a program.
+
+Two limits. A `.local` name stops resolving when its server stops, on purpose, so only
+`.localhost` names get this. And the list is in memory, so after harbor quits it is empty.
+
 ### Docker
 
 Everything Docker publishes used to show as one process called "Docker". Now each published port
-is its container: `web`, `db`, `mailpit`. Containers from a compose project sit together under
-the project's name, and the rest under "Docker". The row's details show the container, the image
+is its container: `web`, `db`, `mailpit`. A container sits on the card of the project it belongs
+to (see Cards, groups and names), and the rest under "Docker". The row's details show the container, the image
 and the compose service.
 
 A container gets a `.localhost` name from its service or container name (`web.localhost`), unless
@@ -279,6 +327,8 @@ itself. ngrok works too if you have it set up and no cloudflared.
 
 ### QR codes
 
+Both codes on the page, the one for the network and the public link, are drawn at one size.
+
 Every row has a QR button, and the code is also in a row's details. A server on all interfaces
 gets its network address as a code for a phone on the same Wi-Fi. One on the network under its
 name gets that name instead. One with a public link gets the link. With both a name on the
@@ -321,12 +371,16 @@ The command does its own scan. It never talks to the running app.
 
 ### Refresh, appearance and the Dock
 
-harbor scans every 5, 15 (the default), 30 or 60 seconds while the menu or the page is open, or
-every N seconds if you type your own (5 to 3600), or only when you press refresh. The menu and
-the page use the same setting. With everything closed nothing is scanned, with two exceptions:
+harbor scans every 5, 15 (the default), 30 or 60 seconds, or every 5 or 15 minutes, or every
+hour, 2 hours, 6 hours or day, while the menu or the page is open. **Custom…** takes seconds, or
+a number with s, m, h or d (`90`, `30m`, `2h`, `1d`), from 5 seconds to a week. Or only when I
+press refresh. The menu and the page use the same setting. With everything closed nothing is scanned, with two exceptions:
 a menu bar badge (a count or a dot, off by default) keeps scanning at that interval so the
 number stays right. And while anything is on the network harbor scans at least every 15
 seconds, whatever the setting.
+
+The page's Settings strip has the refresh interval, the menu bar badge (Hidden, Count or Dot)
+and the harbor command, as the gear menu does, in the page's own dropdowns.
 
 Appearance is Auto, Light or Dark, and the menu and the page are set separately: the gear menu's
 Appearance is for the dropdown, and the switch on the page is for the page. Auto follows macOS.

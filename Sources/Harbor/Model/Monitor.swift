@@ -460,7 +460,8 @@ final class Monitor {
     private(set) var lanName = LAN.bonjourName()
 
     private func apply(_ scan: FullScan, memory m: MemorySnapshot) {
-        if ports != scan.ports { ports = scan.ports }
+        let shown = scan.ports.map(customized)
+        if ports != shown { ports = shown }
         let table = Names.assign(scan.ports, saved: savedNames, previous: names, mains: savedMains)
         if table != names { names = table }
         moveOldNetworkNames()
@@ -1252,6 +1253,133 @@ final class Monitor {
         return nil
     }
 
+    // MARK: Groups and names chosen by hand
+
+    // Saved by folder and port ("<project>\t<port>"), like a network name, so a server that is started
+    // again goes back where it was. Nothing here is read from the system: only typed or picked in the app.
+    @ObservationIgnored private var customGroups = (DebugCLI.defaults.dictionary(forKey: "customGroups") as? [String: String]) ?? [:]   // id → title
+    @ObservationIgnored private var customMembers = (DebugCLI.defaults.dictionary(forKey: "customMembers") as? [String: String]) ?? [:] // row → id
+    @ObservationIgnored private var cardTitles = (DebugCLI.defaults.dictionary(forKey: "cardTitles") as? [String: String]) ?? [:]       // automatic card → title
+    @ObservationIgnored private var rowNames = (DebugCLI.defaults.dictionary(forKey: "rowNames") as? [String: String]) ?? [:]           // row → name
+    static let maxTitle = 40
+
+    private func saveChosen() {
+        guard !DebugCLI.isDebugRun else { return }
+        DebugCLI.defaults.set(customGroups, forKey: "customGroups")
+        DebugCLI.defaults.set(customMembers, forKey: "customMembers")
+        DebugCLI.defaults.set(cardTitles, forKey: "cardTitles")
+        DebugCLI.defaults.set(rowNames, forKey: "rowNames")
+    }
+
+    /// The row as it is shown: its group, its card's title and its own name, from what was chosen.
+    func customized(_ r: PortRow) -> PortRow {
+        var row = r
+        let key = nameKey(row)
+        row.chosen = PortRow.Chosen()
+        if let id = customMembers[key], let title = customGroups[id] {
+            row.chosen.group = id
+            row.chosen.groupTitle = title
+        } else if let title = cardTitles[row.autoGroupKey] {
+            row.chosen.cardTitle = title
+        }
+        row.chosen.rowName = rowNames[key]
+        return row
+    }
+
+    private func showChosen() {
+        let shown = ports.map(customized)
+        if ports != shown { ports = shown }
+    }
+
+    /// The groups made by hand: id, title, and how many of the listed servers are in each.
+    var customGroupList: [(id: String, title: String, count: Int)] {
+        customGroups.map { id, title in (id, title, ports.filter { $0.chosen.group == id }.count) }
+            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+
+    /// A title as it is kept: one line of plain text, up to 40 characters; nil when nothing is left.
+    private static func title(_ typed: String) -> String? {
+        let t = Docker.clean(typed.trimmingCharacters(in: .whitespacesAndNewlines), max: maxTitle)
+        return t.isEmpty ? nil : t
+    }
+
+    private func titleTaken(_ title: String, except id: String?) -> Bool {
+        customGroups.contains { $0.key != id && $0.value.caseInsensitiveCompare(title) == .orderedSame }
+    }
+
+    /// Puts a row in a group made by hand, or (nil) back on its automatic card. Returns what is wrong, or nil.
+    func move(_ row: PortRow, toGroup id: String?) -> String? {
+        let key = nameKey(row)
+        if let id {
+            guard customGroups[id] != nil else { return "That group isn't there any more." }
+            customMembers[key] = id
+        } else {
+            customMembers[key] = nil
+        }
+        pruneGroups()
+        saveChosen()
+        showChosen()
+        return nil
+    }
+
+    /// A new group with this title, with the row in it. Returns what is wrong, or nil.
+    func newGroup(titled typed: String, moving row: PortRow) -> String? {
+        guard let title = Self.title(typed) else { return "A group needs a name." }
+        if titleTaken(title, except: nil) { return "There is a group called \(title) already." }
+        var id = Lan.token(4)
+        while customGroups[id] != nil { id = Lan.token(4) }
+        customGroups[id] = title
+        return move(row, toGroup: id)
+    }
+
+    /// Gives a card a new name: a group made by hand ("c:<id>"), or an automatic card of a server that is
+    /// listed. An empty name takes an automatic card back to its own. Returns what is wrong, or nil.
+    func renameCard(key: String, to typed: String) -> String? {
+        let empty = typed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if key.hasPrefix("c:") {
+            let id = String(key.dropFirst(2))
+            guard customGroups[id] != nil else { return "That group isn't there any more." }
+            guard let title = Self.title(typed) else { return "A group needs a name." }
+            if titleTaken(title, except: id) { return "There is a group called \(title) already." }
+            customGroups[id] = title
+        } else {
+            guard ports.contains(where: { $0.autoGroupKey == key }) else { return "That card isn't on the page any more." }
+            if empty { cardTitles[key] = nil } else if let title = Self.title(typed) { cardTitles[key] = title }
+        }
+        saveChosen()
+        showChosen()
+        return nil
+    }
+
+    /// Takes a group made by hand away: its servers go back on their automatic cards.
+    func deleteGroup(key: String) {
+        guard key.hasPrefix("c:") else { return }
+        let id = String(key.dropFirst(2))
+        customGroups[id] = nil
+        customMembers = customMembers.filter { $0.value != id }
+        saveChosen()
+        showChosen()
+    }
+
+    /// A group nobody is in is forgotten.
+    private func pruneGroups() {
+        let used = Set(customMembers.values)
+        customGroups = customGroups.filter { used.contains($0.key) }
+    }
+
+    /// The row's own name in lists; empty goes back to the automatic one. Returns what is wrong, or nil.
+    func renameRow(_ row: PortRow, to typed: String) -> String? {
+        let key = nameKey(row)
+        if typed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            rowNames[key] = nil
+        } else if let name = Self.title(typed) {
+            rowNames[key] = name
+        }
+        saveChosen()
+        showChosen()
+        return nil
+    }
+
     /// Where the proxy sends a Host right now. A hit may rest on a scan up to 5 s
     /// old; a miss scans again first, since the server may only just have started.
     func route(host: String, _ done: @escaping (Names.Route) -> Void) {
@@ -1259,9 +1387,17 @@ final class Monitor {
         if Names.route(host: host, in: Names.Table()) == .refuse { return done(.refuse) }
         fresh(maxAge: 5) { [self] in
             let found = Names.route(host: host, in: names)
-            guard case .unknown = found, let t = lastFullScan, Date().timeIntervalSince(t) > 1 else { return done(found) }
-            fresh(maxAge: 1) { done(Names.route(host: host, in: self.names)) }
+            guard case .unknown = found, let t = lastFullScan, Date().timeIntervalSince(t) > 1 else { return done(self.rememberedStop(found)) }
+            fresh(maxAge: 1) { done(self.rememberedStop(Names.route(host: host, in: self.names))) }
         }
+    }
+
+    /// A name nothing runs as, but that harbor saw stop and kept how to start: it says so, so the page
+    /// can offer to start it (and asks first). Anything else is as it was.
+    private func rememberedStop(_ route: Names.Route) -> Names.Route {
+        guard case .unknown(let name) = route,
+              let s = stopped.first(where: { $0.name == name && $0.pid == nil }) else { return route }
+        return .stopped(name: name, id: s.id)
     }
 
     // MARK: Localhost page

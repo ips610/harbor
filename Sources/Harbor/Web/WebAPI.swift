@@ -109,8 +109,13 @@ enum WebAPI {
                 "title": r.title,
                 // A container: what it is, the card it belongs on, and why it has no kill.
                 "container": n(r.container.map { ["name": $0.name, "image": $0.image, "project": n($0.project), "service": n($0.service)] as [String: Any] }),
-                "group": n(r.container != nil || r.repo != nil ? r.groupKey : nil),
-                "groupTitle": n(r.repo.map(Fmt.lastComponent) ?? r.container?.group),
+                "group": n(r.container != nil || r.repo != nil || r.chosen.group != nil ? r.groupKey : nil),
+                // What was chosen by hand, and what the card would be called without it.
+                "chosenGroup": n(r.chosen.group),
+                "rowName": n(r.chosen.rowName),
+                "autoGroupKey": r.autoGroupKey,
+                "autoGroupTitle": r.autoGroupTitle,
+                "groupTitle": n(r.chosen.groupTitle ?? r.chosen.cardTitle ?? r.repo.map(Fmt.lastComponent) ?? r.container?.group),
                 "nokill": n(Docker.owns(path: r.path) ? Docker.noKill(r.container) : nil),
                 // What it answered on "/" when it was last looked at: plain text, or nothing yet.
                 "served": n(m.served[r.id]?.line),
@@ -204,6 +209,8 @@ enum WebAPI {
             ],
             "network": ["ip": n(lanIP), "name": n(bonjour), "firewall": LAN.firewallOn, "asks": Lan.systemAsks(firewall: LAN.firewallOn), "plain": Lan.plainHttp],
             "portNotes": m.portNotes,
+            // Groups made by hand, for the "group" chooser on a row.
+            "groups": m.customGroupList.map { ["id": $0.id, "key": "c:" + $0.id, "title": $0.title, "count": $0.count] as [String: Any] },
             "settings": [
                 "minPort": m.minPort, "maxPort": m.maxPort,
                 "showSystem": m.showSystemPorts, "onlyServers": m.onlyServers,
@@ -260,6 +267,13 @@ enum WebAPI {
             return done(400, ["error": "Send {op, pid}."])
         }
         switch op {
+        case "card-rename":
+            // A card, not a process: named by its key, which the page was given.
+            if let problem = Monitor.shared.renameCard(key: (obj["key"] as? String) ?? "", to: (obj["title"] as? String) ?? "") { return done(400, ["error": problem]) }
+            return done(200, ["result": "ok", "message": "Renamed."])
+        case "group-delete":
+            Monitor.shared.deleteGroup(key: (obj["key"] as? String) ?? "")
+            return done(200, ["result": "ok", "message": "The group is gone; its servers are back on their own cards."])
         case "command-install":
             // The same link the menu's "Install the harbor command…" makes; the page asked first.
             logAction("command-install", pid: 0, name: AppInfo.name, port: 0)
@@ -375,6 +389,18 @@ enum WebAPI {
             guard let row else { return done(400, ["error": "Not a port."]) }
             Engine.copyURL(row)
             return done(200, ["result": "ok", "message": "Copied \(m.address(row).absoluteString)"])
+        case "group-set":
+            // Into a group made by hand, a new one with the title typed, or (none) back to the automatic card.
+            guard let row = lanRow else { return done(400, ["error": "Not a port."]) }
+            let problem: String?
+            if let title = obj["title"] as? String { problem = m.newGroup(titled: title, moving: row) }
+            else { problem = m.move(row, toGroup: obj["group"] as? String) }
+            if let problem { return done(400, ["error": problem]) }
+            return done(200, ["result": "ok", "message": "Done."])
+        case "row-rename":
+            guard let row = lanRow else { return done(400, ["error": "Not a port."]) }
+            if let problem = m.renameRow(row, to: (obj["name"] as? String) ?? "") { return done(400, ["error": problem]) }
+            return done(200, ["result": "ok", "message": "Renamed."])
         case "rename":
             // The project is the shown row's own; only the name comes from the page, and it is checked here.
             guard let row else { return done(400, ["error": "Not a port."]) }
