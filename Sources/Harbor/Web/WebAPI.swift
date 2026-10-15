@@ -105,7 +105,7 @@ enum WebAPI {
                 "port": Int(r.port),
                 "pid": Int(r.pid),
                 "name": r.label,
-                "display": r.display,
+                "display": r.display(served: m.served[r.id]?.line),
                 "title": r.title,
                 // A container: what it is, the card it belongs on, and why it has no kill.
                 "container": n(r.container.map { ["name": $0.name, "image": $0.image, "project": n($0.project), "service": n($0.service)] as [String: Any] }),
@@ -204,7 +204,8 @@ enum WebAPI {
             "portNotes": m.portNotes,
             "settings": [
                 "minPort": m.minPort, "maxPort": m.maxPort,
-                "showSystem": m.showSystemPorts, "onlyServers": m.onlyServers, "grouping": m.grouping.rawValue,
+                "showSystem": m.showSystemPorts, "onlyServers": m.onlyServers,
+                "showOtherApps": m.showOtherApps, "onlyReachable": m.onlyReachable, "grouping": m.grouping.rawValue,
                 "interval": m.refreshInterval,
                 "showInDock": m.showInDock,
                 "appearance": m.pageAppearance.rawValue,  // the page's own; the menu has its own
@@ -275,6 +276,8 @@ enum WebAPI {
             if let lo = obj["minPort"] as? Int, let hi = obj["maxPort"] as? Int { m.setRange(lo, hi) }
             if let v = obj["showSystem"] as? Bool { m.showSystemPorts = v }
             if let v = obj["onlyServers"] as? Bool { m.onlyServers = v }
+            if let v = obj["showOtherApps"] as? Bool { m.showOtherApps = v }
+            if let v = obj["onlyReachable"] as? Bool { m.onlyReachable = v }
             if let v = obj["showInDock"] as? Bool { m.showInDock = v }
             if let a = obj["appearance"] as? String, let v = Monitor.Appearance(rawValue: a) { m.pageAppearance = v }
             if let g = obj["grouping"] as? String, let v = Monitor.Grouping(rawValue: g) { m.grouping = v }

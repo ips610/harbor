@@ -39,6 +39,14 @@ final class Monitor {
     var onlyServers = DebugCLI.defaults.bool(forKey: "onlyServers") {
         didSet { if !DebugCLI.isDebugRun { DebugCLI.defaults.set(onlyServers, forKey: "onlyServers") }; refreshBadge() }
     }
+    /// Servers that aren't a project of mine (Ollama, a CLI's helper ports, a database app…). On by default.
+    var showOtherApps = (DebugCLI.defaults.object(forKey: "showOtherApps") as? Bool) ?? true {
+        didSet { if !DebugCLI.isDebugRun { DebugCLI.defaults.set(showOtherApps, forKey: "showOtherApps") }; refreshBadge() }
+    }
+    /// Only what other devices on the network can reach. Off by default.
+    var onlyReachable = DebugCLI.defaults.bool(forKey: "onlyReachable") {
+        didSet { if !DebugCLI.isDebugRun { DebugCLI.defaults.set(onlyReachable, forKey: "onlyReachable") }; refreshBadge() }
+    }
     var minPort = (DebugCLI.defaults.object(forKey: "minPort") as? Int) ?? 1024 {
         didSet { if !DebugCLI.isDebugRun { DebugCLI.defaults.set(minPort, forKey: "minPort") }; refreshBadge() }
     }
@@ -1304,6 +1312,8 @@ final class Monitor {
         if p < minPort || p > maxPort { return false }
         if (r.isSystem || r.isSelf) && !showSystemPorts { return false }
         if onlyServers && ![.dev, .database, .runtime].contains(r.category) { return false }
+        if !showOtherApps && r.isOtherApp { return false }
+        if onlyReachable && !r.isReachable { return false }
         if !blocklist.isEmpty, blocklist.contains(r.processName.lowercased()) { return false }
         if !showSystemPorts && Tunnels.shared.isTunnelPid(r.pid) { return false }
         return true

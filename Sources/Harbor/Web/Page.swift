@@ -588,6 +588,8 @@ function qrSvg(rows, label) {
           <input type="number" id="rmax" min="1" max="65535" aria-label="Highest port shown"></span>
         <label class="check"><input type="checkbox" id="only-servers"> Servers only</label>
         <label class="check"><input type="checkbox" id="show-system"> <span id="show-system-label">macOS services</span></label>
+        <label class="check"><input type="checkbox" id="show-others"> <span id="show-others-label">Other apps</span></label>
+        <label class="check"><input type="checkbox" id="only-reachable"> <span id="only-reachable-label">Reachable only</span></label>
       </div>
     </div>
     <div class="cards" id="cards"></div>
@@ -929,10 +931,16 @@ function renderPorts(ports, all) {
   const systemCount = state.ports.filter((p) => p.system).length;
   $('show-system').checked = st.showSystem;
   $('only-servers').checked = st.onlyServers;
+  $('show-others').checked = st.showOtherApps;
+  $('only-reachable').checked = st.onlyReachable;
+  const otherCount = state.ports.filter((p) => !p.system && !p.isProject).length;
+  const reachCount = state.ports.filter((p) => !p.system && p.exposed).length;
+  $('show-others-label').textContent = otherCount ? `Other apps (${otherCount})` : 'Other apps';
+  $('only-reachable-label').textContent = reachCount ? `Reachable only (${reachCount})` : 'Reachable only';
   $('show-system-label').textContent = systemCount ? `macOS services (${systemCount})` : 'macOS services';
   for (const [id, v] of [['rmin', st.minPort], ['rmax', st.maxPort]]) if (document.activeElement !== $(id)) $(id).value = v;
   $('hidden-note').textContent = hidden
-    ? `${plural(hidden, 'port is', 'ports are')} hidden by the range ${st.minPort}–${st.maxPort}${st.showSystem ? '' : ', macOS services'}${st.onlyServers ? ', the servers-only filter' : ''}.` : '';
+    ? `${plural(hidden, 'port is', 'ports are')} hidden by the range ${st.minPort}–${st.maxPort}${st.showSystem ? '' : ', macOS services'}${st.onlyServers ? ', the servers-only filter' : ''}${st.showOtherApps ? '' : ', other apps'}${st.onlyReachable ? ', the reachable-only filter' : ''}.` : '';
   for (const b of document.querySelectorAll('[data-group]')) b.setAttribute('aria-pressed', String(b.dataset.group === group));
 
   let model;
@@ -1538,6 +1546,8 @@ async function saveSettings(change) {
 }
 $('show-system').addEventListener('change', (e) => saveSettings({ showSystem: e.target.checked }));
 $('only-servers').addEventListener('change', (e) => saveSettings({ onlyServers: e.target.checked }));
+$('show-others').addEventListener('change', (e) => saveSettings({ showOtherApps: e.target.checked }));
+$('only-reachable').addEventListener('change', (e) => saveSettings({ onlyReachable: e.target.checked }));
 for (const id of ['rmin', 'rmax']) $(id).addEventListener('change', () => {
   const lo = parseInt($('rmin').value, 10), hi = parseInt($('rmax').value, 10);
   if (lo >= 1 && hi >= 1) saveSettings({ minPort: lo, maxPort: hi });

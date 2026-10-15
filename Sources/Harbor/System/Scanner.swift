@@ -43,15 +43,41 @@ struct PortRow: Identifiable, Hashable {
 
     /// What the row goes by: the container, else the process.
     var label: String { container?.title ?? processName }
+    /// Not a project of mine: no project folder was found for it (the page's "other apps").
+    var isOtherApp: Bool { projectRoot == nil }
+
+    /// Other devices on the network can open it: it listens on every interface or on a LAN address.
+    var isReachable: Bool { scope == .all || scope == .specific }
+
     /// What a list calls this server. A runtime says nothing ("node", "Python"), so one that runs
     /// from a folder goes by the folder's name; a program with a name of its own keeps it.
-    var display: String {
+    var display: String { display(served: nil) }
+
+    /// `served` is what the server answered on "/" when it was last asked (see Probe), if it was.
+    func display(served: String?) -> String {
         guard container == nil, let folder, Self.isUserFolder(folder) else { return label }
         let name = processName.lowercased()
         guard Self.runtimeNames.contains(name) || name.hasPrefix("python") else { return label }
         let leaf = Fmt.lastComponent(folder)
-        return leaf.isEmpty ? label : leaf
+        guard !leaf.isEmpty else { return label }
+        // A site and its API often share a folder: say which is which when the framework does.
+        return role(served: served).map { "\(leaf) \($0)" } ?? leaf
     }
+
+    /// "frontend" for a tool that only builds pages (Vite, Next, …). "backend" for a framework that
+    /// serves either (Flask, Django, FastAPI…) only once it has been seen to answer "/" without a
+    /// page: a title or a redirect means it renders pages itself (Jinja, Django templates), and
+    /// then it is neither word. Not yet asked: no word.
+    func role(served: String?) -> String? {
+        guard let framework else { return nil }
+        if Self.frontends.contains(framework) { return "frontend" }
+        guard Self.backends.contains(framework), let served, served.first?.isNumber == true,
+              !served.contains("·"), !served.contains("→") else { return nil }
+        return "backend"
+    }
+
+    private static let frontends: Set = ["Vite", "Next.js", "Nuxt", "Astro", "Remix", "SvelteKit", "React", "Angular", "webpack", "Expo", "Hugo", "Jekyll"]
+    private static let backends: Set = ["Flask", "Uvicorn", "FastAPI", "Gunicorn", "Django", "Rails", "Puma", "Laravel", "Rack"]
 
     private static let runtimeNames: Set = ["node", "ruby", "php", "java", "bun", "deno", "dotnet", "perl", "beam.smp"]
 

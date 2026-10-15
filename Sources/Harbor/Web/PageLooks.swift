@@ -255,6 +255,8 @@ enum PageLooks {
         <input type="number" id="rmax" min="1" max="65535" aria-label="Highest port shown"></span>
       <label class="check"><input type="checkbox" id="only-servers"> Servers only</label>
       <label class="check"><input type="checkbox" id="show-system"> <span id="show-system-label">macOS services</span></label>
+      <label class="check"><input type="checkbox" id="show-others"> <span id="show-others-label">Other apps</span></label>
+      <label class="check"><input type="checkbox" id="only-reachable"> <span id="only-reachable-label">Reachable only</span></label>
       <button type="button" class="pl" id="refresh" title="Scan again now">Refresh</button>
     </div>
     <div class="list" id="list"></div>
@@ -419,12 +421,16 @@ function renderControls() {
   const st = state.settings;
   $('show-system').checked = st.showSystem;
   $('only-servers').checked = st.onlyServers;
+  $('show-others').checked = st.showOtherApps;
+  $('only-reachable').checked = st.onlyReachable;
+  $('show-others-label').textContent = 'Other apps';
+  $('only-reachable-label').textContent = 'Reachable only';
   const sys = state.ports.filter((p) => p.system).length;
   $('show-system-label').textContent = sys ? `macOS services (${sys})` : 'macOS services';
   for (const [id, v] of [['rmin', st.minPort], ['rmax', st.maxPort]]) if (document.activeElement !== $(id)) $(id).value = v;
   for (const b of document.querySelectorAll('.seg button')) b.setAttribute('aria-pressed', String(b.dataset.group === group));
   const hidden = state.ports.filter((p) => p.hidden).length;
-  $('foot').textContent = hidden ? `${plural(hidden, 'port is', 'ports are')} hidden by the range ${st.minPort}–${st.maxPort}${st.showSystem ? '' : ', macOS services'}${st.onlyServers ? ', servers only' : ''}.` : '';
+  $('foot').textContent = hidden ? `${plural(hidden, 'port is', 'ports are')} hidden by the range ${st.minPort}–${st.maxPort}${st.showSystem ? '' : ', macOS services'}${st.onlyServers ? ', servers only' : ''}${st.showOtherApps ? '' : ', other apps'}${st.onlyReachable ? ', reachable only' : ''}.` : '';
 }
 
 function renderBanners() {
@@ -652,6 +658,8 @@ async function saveSettings(change) { await act('settings', 0, change); poll(); 
 for (const b of document.querySelectorAll('.seg button')) b.addEventListener('click', () => { group = b.dataset.group; if (state) { state.settings.grouping = group; render(); } saveSettings({ grouping: group }); });
 $('show-system').addEventListener('change', (e) => saveSettings({ showSystem: e.target.checked }));
 $('only-servers').addEventListener('change', (e) => saveSettings({ onlyServers: e.target.checked }));
+$('show-others').addEventListener('change', (e) => saveSettings({ showOtherApps: e.target.checked }));
+$('only-reachable').addEventListener('change', (e) => saveSettings({ onlyReachable: e.target.checked }));
 for (const id of ['rmin', 'rmax']) $(id).addEventListener('change', () => {
   const lo = parseInt($('rmin').value, 10), hi = parseInt($('rmax').value, 10);
   if (lo >= 1 && hi >= 1) saveSettings({ minPort: lo, maxPort: hi });

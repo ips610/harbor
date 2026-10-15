@@ -54,6 +54,38 @@ final class NamesTests: XCTestCase {
                            cwd: nil, projectRoot: nil, command: nil, started: nil, footprint: nil, workers: 0, workerPids: [],
                            isSystem: false, appBundle: nil, appName: nil, framework: nil, category: .dev, isSelf: false)
         XCTAssertEqual(none.display, "node")
+        // A site and its API in one folder: the framework says which is which.
+        func run(_ process: String, _ framework: String?) -> PortRow {
+            PortRow(port: 3001, addresses: ["127.0.0.1"], scope: .loopback, pid: 1, ppid: 1, processName: process, path: nil,
+                    cwd: home + "/code/cbm", projectRoot: home + "/code/cbm", command: nil, started: nil, footprint: nil, workers: 0,
+                    workerPids: [], isSystem: false, appBundle: nil, appName: nil, framework: framework, category: .dev, isSelf: false)
+        }
+        XCTAssertEqual(run("node", "Vite").display, "cbm frontend")
+        // A server framework is "backend" only once "/" has been seen to answer without a page...
+        XCTAssertEqual(run("Python", "Uvicorn").display(served: "404"), "cbm backend")
+        XCTAssertEqual(run("Python", "Flask").display(served: "200"), "cbm backend")
+        // ...a title or a redirect means it renders its own pages (Jinja, Django templates): no word.
+        XCTAssertEqual(run("Python", "Flask").display(served: "200 · Storefront"), "cbm")
+        XCTAssertEqual(run("Python", "Django").display(served: "302 → /login"), "cbm")
+        // Not asked yet, or not answering: no guess.
+        XCTAssertEqual(run("Python", "Uvicorn").display, "cbm")
+        XCTAssertEqual(run("Python", "Flask").display(served: "not answering"), "cbm")
+        XCTAssertEqual(run("node", "Node.js").display, "cbm")                      // could be either: no guess
+        XCTAssertEqual(run("tips-server", "Flask").display, "tips-server")         // its own name wins
+    }
+
+    /// The two page filters read these: a project is anything with a project folder found for it,
+    /// and reachable is any listener that isn't loopback-only.
+    func testOtherAppsAndReachablePorts() {
+        let project = row(3000)
+        let app = PortRow(port: 11434, addresses: ["127.0.0.1"], scope: .loopback, pid: 5, ppid: 1, processName: "ollama", path: nil,
+                          cwd: nil, projectRoot: nil, command: nil, started: nil, footprint: nil, workers: 0, workerPids: [],
+                          isSystem: false, appBundle: nil, appName: "Ollama", framework: nil, category: .other, isSelf: false)
+        XCTAssertFalse(project.isOtherApp)
+        XCTAssertTrue(app.isOtherApp)
+        XCTAssertFalse(project.isReachable)                                       // loopback only
+        XCTAssertTrue(row(3000, scope: .all, addresses: ["0.0.0.0"]).isReachable)
+        XCTAssertTrue(row(3000, scope: .specific, addresses: ["172.17.134.35"]).isReachable)
     }
 
     // MARK: Slugs
