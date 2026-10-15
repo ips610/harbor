@@ -105,11 +105,12 @@ enum WebAPI {
                 "port": Int(r.port),
                 "pid": Int(r.pid),
                 "name": r.label,
+                "display": r.display,
                 "title": r.title,
                 // A container: what it is, the card it belongs on, and why it has no kill.
                 "container": n(r.container.map { ["name": $0.name, "image": $0.image, "project": n($0.project), "service": n($0.service)] as [String: Any] }),
-                "group": n(r.container.map { _ in r.groupKey }),
-                "groupTitle": n(r.container?.group),
+                "group": n(r.container != nil || r.repo != nil ? r.groupKey : nil),
+                "groupTitle": n(r.container?.group ?? r.repo.map(Fmt.lastComponent)),
                 "nokill": n(Docker.owns(path: r.path) ? Docker.noKill(r.container) : nil),
                 // What it answered on "/" when it was last looked at: plain text, or nothing yet.
                 "served": n(m.served[r.id]?.line),
@@ -122,7 +123,7 @@ enum WebAPI {
                 "color": r.colorHex,
                 "categoryTitle": r.category.title,
                 "project": n(r.projectFolder.map(Fmt.lastComponent)),
-                "projectPath": n(r.projectFolder.map(Fmt.path)),
+                "projectPath": n((r.repo ?? r.projectFolder).map(Fmt.path)),
                 "isProject": r.projectRoot != nil,
                 "folder": n(r.folder.map(Fmt.path)),
                 "command": n(r.command),

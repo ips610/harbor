@@ -350,7 +350,7 @@ function visible() { return state.ports.filter((p) => !p.hidden); }
 function matches(p) {
   if (!query) return true;
   const q = query.toLowerCase();
-  return String(p.port).startsWith(q) || String(p.pid) === q || [p.name, p.title, p.framework, p.project, p.command, p.app].some((v) => v && v.toLowerCase().includes(q));
+  return String(p.port).startsWith(q) || String(p.pid) === q || [p.name, p.display, p.title, p.framework, p.project, p.command, p.app].some((v) => v && v.toLowerCase().includes(q));
 }
 function groupKey(p) { return p.projectPath ? 'p:' + p.projectPath : 'a:' + (p.app || p.name); }
 function model(ports) {
@@ -362,7 +362,7 @@ function model(ports) {
   const map = new Map();
   for (const p of ports) {
     const k = groupKey(p);
-    if (!map.has(k)) map.set(k, { key: k, rows: [], rank: p.isProject ? 0 : p.projectPath ? 1 : 2, title: p.project || p.app || p.name, path: p.projectPath, folder: p.projectPath ? p.folder : null, color: p.color });
+    if (!map.has(k)) map.set(k, { key: k, rows: [], rank: p.isProject ? 0 : p.projectPath ? 1 : 2, title: p.groupTitle || p.project || p.app || p.name, path: p.projectPath, folder: p.projectPath ? p.folder : null, color: p.color });
     map.get(k).rows.push(p);
   }
   return [...map.values()].map((g) => ({ ...g, rows: g.rows.sort((a, b) => a.port - b.port) }))
@@ -511,8 +511,8 @@ function pill(text, cls, onclick, title) {
 function row(p, projectInRow) {
   const ph = phase.get(p.id), sh = sharing.get(p.id);
   const live = p.tunnel && p.tunnel.state === 'ready' ? p.tunnel : null;
-  const title = projectInRow ? (p.project || p.app || p.name) : p.name;
-  const facts = [projectInRow && title !== p.name ? p.name : null, 'pid ' + p.pid + (p.workers ? ` +${p.workers}` : ''), p.uptime != null ? 'up ' + uptime(p.uptime) : null, p.memory != null ? bytes(p.memory) : null].filter(Boolean).join(' · ');
+  const title = projectInRow ? (p.project || p.app || p.name) : p.display;
+  const facts = [title !== p.name ? p.name : null, 'pid ' + p.pid + (p.workers ? ` +${p.workers}` : ''), p.uptime != null ? 'up ' + uptime(p.uptime) : null, p.memory != null ? bytes(p.memory) : null].filter(Boolean).join(' · ');
   let acts;
   if ((ph && ph.kind === 'working') || p.busy) acts = el('span', { class: 'busy' }, el('i', { class: 'spin' }), 'stopping');
   else if (ph && ph.kind === 'confirm') acts = [pill('confirm?', 'confirm', () => runStop(p, 'stop')), pill('cancel', '', () => setPhase(p.id, null))];

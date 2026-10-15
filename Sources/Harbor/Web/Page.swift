@@ -788,7 +788,7 @@ function visiblePorts() {
   if (!query) return all;
   const q = query.toLowerCase();
   return all.filter((p) => String(p.port).startsWith(q) || String(p.pid) === q ||
-    [p.name, p.title, p.framework, p.project, p.command, p.app, p.host].some((v) => v && v.toLowerCase().includes(q)));
+    [p.name, p.display, p.title, p.framework, p.project, p.command, p.app, p.host].some((v) => v && v.toLowerCase().includes(q)));
 }
 
 function groupKey(p) { return p.group || (p.projectPath ? 'p:' + p.projectPath : 'a:' + (p.app || p.name)); }
@@ -1028,8 +1028,8 @@ function row(p, showProject) {
   const ph = phase.get(p.id);
   const sh = sharing.get(p.id);
   const live = p.tunnel && p.tunnel.state === 'ready' ? p.tunnel : null;
-  const title = showProject ? p.title : p.name;
-  const facts = [showProject && p.title !== p.name ? p.name : null,
+  const title = showProject ? p.title : p.display;
+  const facts = [title !== p.name ? p.name : null,
     'pid ' + p.pid + (p.workers ? ` +${p.workers}` : ''),
     p.uptime != null ? 'up ' + uptime(p.uptime) : null, p.memory != null ? bytes(p.memory) : null].filter(Boolean).join(' · ');
   const stop = (e) => e.stopPropagation();

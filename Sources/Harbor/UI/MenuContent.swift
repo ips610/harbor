@@ -505,7 +505,7 @@ private struct PortLine: View {
                     .frame(width: 58, alignment: .leading)
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 5) {
-                        let name = Text(verbatim: showTitle ? row.title : row.label).font(.system(size: 13)).lineLimit(1)
+                        let name = Text(verbatim: showTitle ? row.title : row.display).font(.system(size: 13)).lineLimit(1)
                         // The framework tag only when it fits whole; otherwise just the name.
                         if let fw = row.framework, fw != row.title {
                             ViewThatFits(in: .horizontal) {
@@ -914,7 +914,7 @@ private struct PortLine: View {
 
     private var subtitle: String {
         var parts: [String] = []
-        if showTitle && row.title != row.label { parts.append(row.label) }
+        if (showTitle ? row.title : row.display) != row.label { parts.append(row.label) }
         parts.append("pid \(row.pid)")
         if row.workers > 0 { parts[parts.count - 1] += " +\(row.workers)" }
         if row.started != nil { parts.append("up \(Fmt.uptime(since: row.started))") }

@@ -16,6 +16,46 @@ final class NamesTests: XCTestCase {
                 category: category, isSelf: isSelf)
     }
 
+    /// A site in `web/` and its API at the repo's root are one card, but still two projects for
+    /// everything saved by folder: names, passwords and network names don't move.
+    func testASiteAndItsApiShareACardNotAKey() {
+        var web = row(3737, folder: "/Users/me/code/tips/web")
+        web.repo = "/Users/me/code/tips"
+        let api = row(7878, folder: "/Users/me/code/tips")
+        XCTAssertEqual(web.groupKey, api.groupKey)
+        XCTAssertEqual(web.groupTitle, "tips")
+        XCTAssertEqual(api.groupTitle, "tips")
+        XCTAssertNotEqual(Names.key(web), Names.key(api))
+        XCTAssertEqual(Names.key(web), "/Users/me/code/tips/web")
+        // A saved rename for the folder still finds its server.
+        let table = Names.assign([web, api], saved: ["/Users/me/code/tips/web": "site"])
+        XCTAssertEqual(table.byRow[web.id], "site")
+        XCTAssertEqual(table.byRow[api.id], "tips")
+        // Without a repo above it, a folder is its own card.
+        XCTAssertNotEqual(row(3000, folder: "/Users/me/code/shop/web").groupKey, row(4000, folder: "/Users/me/code/shop").groupKey)
+    }
+
+    /// A list says what a server is, not "node": a runtime goes by its folder; a program with a name keeps it.
+    func testARuntimeGoesByItsFolder() {
+        let home = NSHomeDirectory()
+        XCTAssertEqual(row(3000, folder: home + "/code/shop/exams-portal").display, "exams-portal")
+        XCTAssertEqual(row(8080, folder: home + "/code/shop", app: nil).display, "shop")
+        let python = PortRow(port: 8012, addresses: ["127.0.0.1"], scope: .loopback, pid: 8012, ppid: 1, processName: "Python", path: nil,
+                             cwd: home + "/code/eticket", projectRoot: home + "/code/eticket", command: nil, started: nil, footprint: nil,
+                             workers: 0, workerPids: [], isSystem: false, appBundle: nil, appName: nil, framework: nil, category: .dev, isSelf: false)
+        XCTAssertEqual(python.display, "eticket")
+        var named = row(7878, folder: home + "/code/tips")
+        named = PortRow(port: 7878, addresses: ["127.0.0.1"], scope: .loopback, pid: 7878, ppid: 1, processName: "tips-server", path: nil,
+                        cwd: home + "/code/tips", projectRoot: home + "/code/tips", command: nil, started: nil, footprint: nil,
+                        workers: 0, workerPids: [], isSystem: false, appBundle: nil, appName: nil, framework: nil, category: .dev, isSelf: false)
+        XCTAssertEqual(named.display, "tips-server")
+        // No folder to name it by: the process, as before.
+        let none = PortRow(port: 9000, addresses: ["127.0.0.1"], scope: .loopback, pid: 9, ppid: 1, processName: "node", path: nil,
+                           cwd: nil, projectRoot: nil, command: nil, started: nil, footprint: nil, workers: 0, workerPids: [],
+                           isSystem: false, appBundle: nil, appName: nil, framework: nil, category: .dev, isSelf: false)
+        XCTAssertEqual(none.display, "node")
+    }
+
     // MARK: Slugs
 
     func testSlug() {

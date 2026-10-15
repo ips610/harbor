@@ -27,6 +27,10 @@ struct PortRow: Identifiable, Hashable {
     let isSelf: Bool
     /// The container this port is published for, when the listener is Docker's own process (see Docker).
     var container: Docker.Container? = nil
+    /// The git checkout this row's project folder sits inside, when that is a folder above it
+    /// (a site in `web/` and its API at the repo's root). Only the card they share: names,
+    /// passwords and everything saved by folder still go by `projectFolder`.
+    var repo: String? = nil
 
     /// The same listener, known as the container it forwards to: a database or a dev
     /// server by its image, and tagged with that image.
@@ -39,8 +43,20 @@ struct PortRow: Identifiable, Hashable {
 
     /// What the row goes by: the container, else the process.
     var label: String { container?.title ?? processName }
+    /// What a list calls this server. A runtime says nothing ("node", "Python"), so one that runs
+    /// from a folder goes by the folder's name; a program with a name of its own keeps it.
+    var display: String {
+        guard container == nil, let folder, Self.isUserFolder(folder) else { return label }
+        let name = processName.lowercased()
+        guard Self.runtimeNames.contains(name) || name.hasPrefix("python") else { return label }
+        let leaf = Fmt.lastComponent(folder)
+        return leaf.isEmpty ? label : leaf
+    }
+
+    private static let runtimeNames: Set = ["node", "ruby", "php", "java", "bun", "deno", "dotnet", "perl", "beam.smp"]
+
     /// What its card is called: the compose project (or "Docker"), else its own title.
-    var groupTitle: String { container?.group ?? title }
+    var groupTitle: String { container?.group ?? repo.map(Fmt.lastComponent) ?? title }
 
     /// Hidden unless "Show system ports" is on.
     var isHiddenByDefault: Bool { port < 1024 || isSystem || isSelf }
@@ -103,7 +119,7 @@ struct PortRow: Identifiable, Hashable {
     }
 
     /// The card a row belongs to: its project folder, else its app.
-    var groupKey: String { container.map { "d:" + $0.group } ?? projectFolder.map { "p:" + Fmt.path($0) } ?? "a:" + (appName ?? processName) }
+    var groupKey: String { container.map { "d:" + $0.group } ?? (repo ?? projectFolder).map { "p:" + Fmt.path($0) } ?? "a:" + (appName ?? processName) }
 
     /// Project colours, in the page's fixed order.
     static let palette = ["#4f8cf7", "#19a77d", "#9a84f4", "#de5a88", "#cf9214", "#16a6c2", "#e8743f", "#6b8f2a"]
@@ -237,6 +253,7 @@ final class Scanner: @unchecked Sendable {
     private var staticCache: [pid_t: StaticInfo] = [:]
     private var cpuPrev: [pid_t: (cpu: UInt64, at: UInt64)] = [:]
     private var projectCache: [String: String] = [:]
+    private var repoCache: [String: String] = [:]
     private var commandCache: [pid_t: (name: String, command: String)] = [:]
     private var bundleNames: [String: String] = [:]
     private var frameworkCache: [String: String] = [:]
@@ -253,6 +270,7 @@ final class Scanner: @unchecked Sendable {
         staticCache = [:]
         cpuPrev = [:]
         projectCache = [:]
+        repoCache = [:]
         commandCache = [:]
         fdBuffer = [proc_fdinfo](repeating: proc_fdinfo(), count: 256)
     }
@@ -466,7 +484,8 @@ final class Scanner: @unchecked Sendable {
                 appName: p.info.bundle.map(bundleName),
                 framework: framework,
                 category: category,
-                isSelf: key.pid == myPid
+                isSelf: key.pid == myPid,
+                repo: root.flatMap(repoRoot(above:))
             ))
         }
         return rows.sorted { ($0.port, $0.pid) < ($1.port, $1.pid) }
@@ -512,6 +531,25 @@ final class Scanner: @unchecked Sendable {
             dir = (dir as NSString).deletingLastPathComponent
         }
         projectCache[cwd] = found
+        return found.isEmpty ? nil : found
+    }
+
+    /// The git checkout a project folder sits inside, when it isn't that checkout's own top
+    /// (`web/` has its package.json, the repo above it the .git). Looked for below the home
+    /// folder only, so a dotfiles repo in ~ doesn't gather everything into one card.
+    private func repoRoot(above root: String) -> String? {
+        if let c = repoCache[root] { return c.isEmpty ? nil : c }
+        let home = NSHomeDirectory()
+        var found = ""
+        if access(root + "/.git", F_OK) != 0 {
+            var dir = (root as NSString).deletingLastPathComponent
+            for _ in 0..<6 {
+                if dir == "/" || dir == home || dir.isEmpty { break }
+                if access(dir + "/.git", F_OK) == 0 { found = dir; break }
+                dir = (dir as NSString).deletingLastPathComponent
+            }
+        }
+        repoCache[root] = found
         return found.isEmpty ? nil : found
     }
 
