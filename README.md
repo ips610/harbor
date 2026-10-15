@@ -39,7 +39,8 @@ kernel, so it idles at about 0% CPU.
 - The menu bar icon turns orange or red when memory gets tight.
 
 **Command line**
-- `harbor ls`, `harbor kill <port>` and `harbor open <port|name>` in Terminal.
+- `harbor ls`, `harbor kill <port>` and `harbor open <port|name>` in Terminal, and more: scan,
+  check, watch, share, tunnel, password, extend, start again, rename and groups.
 
 **Updates**
 - When a new version is out, **Update now** replaces the app where it is.
@@ -367,7 +368,71 @@ http://storefront.localhost/
 - Exit codes: 0 done, 1 still running or failed, 2 not understood, 3 nothing listens there,
   4 harbor won't stop that, 5 you said no, 6 the process changed while you were asked.
 
-The command does its own scan. It never talks to the running app.
+`ls`, `kill`, `open`, `scan`, `check` and `watch` do their own scan and never talk to the
+running app. The ones below change something, so they go through it.
+
+#### Looking
+
+```
+$ harbor scan 3000-3999
+1 listening in 3000–3999.
+PORT  NAME                 PROCESS  PID   FOLDER
+3000  storefront.localhost node     4101  ~/code/storefront
+
+$ harbor check 3000
+node on :3000: 200 · Storefront – Admin
+
+$ harbor watch --every 2
+Watching 6 ports, every 2 s. Ctrl-C to stop.
+10:42:07  + :3002  node  ~/code/storefront-admin
+10:44:31  - :3001  node  ~/code/storefront
+```
+
+- `harbor scan` lists what listens in a range (`3000-3999`, or one port; none is every port).
+  `--all` adds macOS services, `--json` prints JSON. Exit 3 when nothing is in the range.
+- `harbor check <port|name>` asks the server `GET /` once, the way the page's status line does,
+  and prints the status and the page's title.
+- `harbor watch` prints a line when a server starts (`+`) and when one stops (`-`).
+
+#### Sharing, public links, passwords and groups
+
+These need harbor running. The command reaches it the way the page does: on its own port on
+this Mac, with the same private session file (readable only by my account). So each one does
+exactly what the click does, with the same checks and the same answers.
+
+```
+$ harbor share storefront --minutes 30 --random
+http://storefront.local/ is on your network.
+Password: ckb79eye   (shown once; `harbor password` changes it)
+
+$ harbor shares
+PORT  NAME              WHERE                  PASSWORD  LEFT
+3000  storefront.local  http://storefront.local/  yes    29 min left
+
+$ harbor extend storefront 1h
+$ harbor tunnel storefront --minutes 60
+https://various-jackson-rats-unix.trycloudflare.com
+$ harbor tunnel stop storefront
+```
+
+| Command | What it does |
+|---|---|
+| `harbor shares` | What is on the network, with time left. |
+| `harbor share <port\|name>` | Puts it on the network as `name.local`. `--minutes 30`, `--minutes 60` or `--until-stopped` (the app's last choice when none). The password: a hidden prompt, `--password-stdin`, `--random` (printed once) or `--open` for none. |
+| `harbor unshare <port\|name>` | Takes it off the network. |
+| `harbor extend <port\|name> [30m\|1h\|2h…]` | Half an hour more per 30 minutes, up to 8 hours. `--public` for a public link. |
+| `harbor password <port\|name>` | A new password: prompt, `--password-stdin`, `--random` or `--remove`. Everyone signs in again. |
+| `harbor tunnels` | Public links, with time left. |
+| `harbor tunnel <port\|name>` | Starts a public link and prints it when it is ready (up to a minute). `harbor tunnel stop <port\|name>` ends it. |
+| `harbor stopped` | Servers harbor saw stop. |
+| `harbor start <port\|name>` | Starts one again: shows the real program, arguments and folder, then asks. `-y` skips the question. |
+| `harbor rename <port\|name> <name>` | Its name in lists. `--reset` goes back. |
+| `harbor groups`, `harbor group <port\|name> <title>` | Groups made by hand. `--auto` puts it back; `harbor group rename <title> <new>` and `harbor group delete <title>`. |
+
+A password is never an argument: it would stay in the shell's history and show up in `ps`. The
+prompt doesn't echo, and `--random` has the app make one. `harbor help more` lists all of
+these. If harbor isn't running, they say so and change nothing. The exit codes are the same,
+with 1 for anything the app refused.
 
 ### Refresh, appearance and the Dock
 

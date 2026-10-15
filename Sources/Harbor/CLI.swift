@@ -4,10 +4,12 @@ import Foundation
 
 /// harbor from Terminal: `harbor ls`, `harbor kill <port>`, `harbor open <port|name>`.
 ///
-/// It runs in this process, with the app's own scanner and the app's own rules for what may
-/// be stopped. It never talks to the running app, never reads the session files, and writes
-/// nothing: the names the running app has given, and what it has on the network or behind
-/// a public link, it reads from the small note the app leaves for it (`Shared`).
+/// `ls`, `kill`, `open`, `scan`, `check` and `watch` run in this process, with the app's own
+/// scanner and the app's own rules for what may be stopped. They never talk to the running app
+/// and write nothing: the names the running app has given, and what it has on the network or
+/// behind a public link, they read from the small note the app leaves for it (`Shared`).
+/// The commands that change something (share, tunnel, password, groups…) are in `CLIApp`: they
+/// reach the running app through its loopback page, with the owner's private session file.
 enum CLI {
     /// What a script gets back.
     enum Exit: Int32 {
@@ -15,10 +17,12 @@ enum CLI {
     }
 
     enum Call: Equatable {
-        case help, version
+        case help, helpMore, version
         case ls(json: Bool, all: Bool)
         case kill(port: UInt16, yes: Bool, force: Bool, pid: pid_t?)
         case open(String)
+        /// Scanning, checking, watching and everything that goes through the running app (see CLIApp).
+        case more(CLIApp.Call)
         /// Not something harbor knows: said, then the help, then a non-zero exit.
         case usage(String)
     }
@@ -60,6 +64,9 @@ enum CLI {
       harbor --version
       harbor --help
 
+    More: scan, check, watch, shares, share, unshare, extend, password, tunnels, tunnel,
+    stopped, start, rename, groups, group. `harbor help more` lists them.
+
     kill stops politely and waits 3 seconds. With --force it then ends the process at once.
     It never touches macOS's own processes, harbor, Docker, or another user's processes.
 
@@ -83,7 +90,7 @@ enum CLI {
         }
         let words = rest.filter { !$0.hasPrefix("-") }
         switch first {
-        case "--help", "-h", "help": return .help
+        case "--help", "-h", "help": return rest == ["more"] ? .helpMore : .help
         case "--version", "version": return .version
         case "ls":
             guard words.isEmpty, let f = flags(["--json", "--all", "-a"]) else { return .usage("harbor ls [--json] [--all]") }
@@ -105,7 +112,11 @@ enum CLI {
             return .open(words[0])
         default:
             if first.hasPrefix("-"), !viaLink { return nil }
-            return .usage("harbor: no such command: \(first)")
+            switch CLIApp.parse(first, rest) {
+            case .success(let call)?: return .more(call)
+            case .failure(let failure)?: return .usage(failure.text)
+            case nil: return .usage("harbor: no such command: \(first)")
+            }
         }
     }
 
@@ -118,6 +129,9 @@ enum CLI {
         switch call {
         case .help:
             print(help)
+            return Exit.ok.rawValue
+        case .helpMore:
+            print(CLIApp.usage)
             return Exit.ok.rawValue
         case .version:
             print("\(AppInfo.name) \(bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?")")
@@ -132,6 +146,8 @@ enum CLI {
             return open(what).rawValue
         case .kill(let port, let yes, let force, let pid):
             return kill(port: port, yes: yes, force: force, pid: pid).rawValue
+        case .more(let call):
+            return CLIApp.run(call)
         }
     }
 

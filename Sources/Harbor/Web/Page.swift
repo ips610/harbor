@@ -904,6 +904,7 @@ function render() {
       ['harbor ls --json', 'the same as JSON, for scripts (--all adds macOS services)'],
       [`harbor kill ${example ? example.port : 3000}`, 'stop what listens on that port; it asks first (-y skips the question, --force ends it)'],
       [`harbor open ${example ? example.hostName : 'storefront'}`, 'open its .localhost address in the browser; a port number works too'],
+      ['harbor help more', 'scan, check, watch, share, tunnel, password, extend, start, rename, groups'],
       ['harbor --help', 'every option and the exit codes']];
     return [el('h4', { text: 'In Terminal (click a line to copy it)' }),
       ...lines.flatMap(([cmd, what]) => [el('button', { type: 'button', text: cmd, title: 'Copy', onclick: () => copyText(cmd) }), el('span', { text: what })]),

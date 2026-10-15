@@ -150,8 +150,18 @@ Only the latest release is supported. If you're on an older one, update first.
   the refresh setting and whatever is open. So when another container gets
   that port, the share stops within 15 seconds, not at once.
 - The `harbor` command runs in its own process with the same scanner and the
-  same rules. It never talks to the running app and never reads the session
-  files. `harbor kill` asks first, re-checks that the process is still the
+  same rules. `ls`, `kill`, `open`, `scan`, `check` and `watch` never talk to
+  the running app and never read the session file. The commands that change
+  something (`share`, `unshare`, `extend`, `password`, `tunnel`, `start`,
+  `rename`, `group`) reach the app the way its page does: on its own loopback
+  port, with the owner's session file (mode 0600, this account only). The app
+  answers with the same checks as for a click: the port must be one it lists,
+  durations are its three choices, a password needs 8 characters, a restart
+  shows the real program first. Whoever can read that file as this account could
+  already drive the page; another account cannot. A password is never an
+  argument (it would sit in shell history and in `ps`): a prompt that does not
+  echo, one line of stdin, or one the app makes with `--random`, printed once.
+  `harbor kill` asks first, re-checks that the process is still the
   one it asked about before any signal, never touches macOS's processes,
   harbor, Docker or another user's processes, and has no administrator path.
   What it prints is stripped of escape sequences.

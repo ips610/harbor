@@ -982,4 +982,70 @@ final class CLITests: XCTestCase {
         XCTAssertEqual(Monitor.intervalLabel(5400), "1 h 30 min")
         XCTAssertEqual(Monitor.intervalLabel(86_400), "1 day")
     }
+
+    // MARK: The commands that go further
+
+    private func more(_ args: String...) -> CLIApp.Call? {
+        if case .more(let call)? = CLI.parse(["/usr/local/bin/harbor"] + args) { return call }
+        return nil
+    }
+
+    func testTheFurtherCommandsAreRead() {
+        XCTAssertEqual(more("scan"), .scan(range: 1...65535, all: false, json: false))
+        XCTAssertEqual(more("scan", "3000-3999", "--json"), .scan(range: 3000...3999, all: false, json: true))
+        XCTAssertEqual(more("scan", "8080"), .scan(range: 8080...8080, all: false, json: false))
+        XCTAssertNil(more("scan", "9000-8000"))                                           // not a range
+        XCTAssertEqual(more("check", "3000"), .check("3000"))
+        XCTAssertEqual(more("watch", "--every", "2"), .watch(every: 2))
+        XCTAssertNil(more("watch", "--every", "0"))
+        // Sharing: the word, then how long, then where the password comes from. Never from an argument.
+        XCTAssertEqual(more("share", "storefront"), .share(target: "storefront", seconds: nil, password: .prompt))
+        XCTAssertEqual(more("share", "3000", "--minutes", "30", "--random"), .share(target: "3000", seconds: 1800, password: .random))
+        XCTAssertEqual(more("share", "3000", "--until-stopped", "--open"), .share(target: "3000", seconds: 0, password: .none))
+        XCTAssertEqual(more("share", "3000", "--password-stdin"), .share(target: "3000", seconds: nil, password: .stdin))
+        XCTAssertNil(more("share", "3000", "--minutes", "45"))                             // the app offers 30, 60 or until stopped
+        XCTAssertNil(more("share", "3000", "--random", "--open"))                          // one way only
+        XCTAssertNil(more("share", "3000", "--password", "hunter22"))                      // there is no such flag
+        XCTAssertEqual(more("unshare", "3000"), .unshare("3000"))
+        XCTAssertEqual(more("extend", "3000"), .extend(target: "3000", times: 1, publicLink: false))
+        XCTAssertEqual(more("extend", "3000", "2h", "--public"), .extend(target: "3000", times: 4, publicLink: true))
+        XCTAssertNil(more("extend", "3000", "20m"))                                        // half hours
+        XCTAssertEqual(more("password", "3000", "--remove"), .password(target: "3000", .none))
+        XCTAssertEqual(more("password", "3000"), .password(target: "3000", .prompt))
+        XCTAssertEqual(more("tunnel", "3000", "--minutes", "60"), .tunnel(target: "3000", seconds: 3600))
+        XCTAssertEqual(more("tunnel", "stop", "3000"), .untunnel("3000"))
+        XCTAssertEqual(more("tunnels"), .tunnels)
+        XCTAssertEqual(more("start", "tips", "-y"), .start("tips", yes: true))
+        XCTAssertEqual(more("rename", "3000", "grading", "api"), .rename(target: "3000", name: "grading api"))
+        XCTAssertEqual(more("rename", "3000", "--reset"), .rename(target: "3000", name: nil))
+        XCTAssertEqual(more("group", "3000", "Exams"), .group(target: "3000", title: "Exams"))
+        XCTAssertEqual(more("group", "3000", "--auto"), .group(target: "3000", title: nil))
+        XCTAssertEqual(more("group", "rename", "Exams", "Grading"), .groupRename(title: "Exams", to: "Grading"))
+        XCTAssertEqual(more("group", "delete", "Exams"), .groupDelete("Exams"))
+        // A wrongly written one says how, and is a usage error, not the app's.
+        guard case .usage(let text)? = CLI.parse(["/usr/local/bin/harbor", "share"]) else { return XCTFail("share needs a target") }
+        XCTAssertTrue(text.hasPrefix("harbor share "))
+        XCTAssertEqual(CLI.parse(["/usr/local/bin/harbor", "help", "more"]), .helpMore)
+    }
+
+    func testAWordNamesARow() {
+        let ports: [[String: Any]] = [
+            ["port": 3000, "pid": 10, "hostName": "datesheet-generator", "display": "exams-portal", "local": ["name": "ds"]],
+            ["port": 3009, "pid": 11, "hostName": "web", "display": "web frontend"],
+        ]
+        func port(_ word: String) -> Int? { CLIApp.target(word, in: ports)?["port"] as? Int }
+        XCTAssertEqual(port("3009"), 3009)
+        XCTAssertEqual(port("web"), 3009)
+        XCTAssertEqual(port("Web.localhost"), 3009)
+        XCTAssertEqual(port("datesheet-generator.localhost"), 3000)
+        XCTAssertEqual(port("ds.local"), 3000)                                             // its name on the network
+        XCTAssertEqual(port("exams-portal"), 3000)                                         // what the list calls it
+        XCTAssertNil(port("nothing"))
+        XCTAssertNil(port("9999"))
+        XCTAssertEqual(CLIApp.lasts(["--minutes", "60"]), CLIApp.Asked(seconds: 3600))
+        XCTAssertEqual(CLIApp.lasts(["--until-stopped"]), CLIApp.Asked(seconds: 0))
+        XCTAssertEqual(CLIApp.lasts([]), CLIApp.Asked(seconds: nil))
+        XCTAssertNil(CLIApp.lasts(["--minutes", "61"]))
+        XCTAssertEqual(CLIApp.table([["A", "BB"], ["ccc", "d"]]), "A    BB\nccc  d")
+    }
 }
