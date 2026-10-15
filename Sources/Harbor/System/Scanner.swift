@@ -27,9 +27,10 @@ struct PortRow: Identifiable, Hashable {
     let isSelf: Bool
     /// The container this port is published for, when the listener is Docker's own process (see Docker).
     var container: Docker.Container? = nil
-    /// The git checkout this row's project folder sits inside, when that is a folder above it
-    /// (a site in `web/` and its API at the repo's root). Only the card they share: names,
-    /// passwords and everything saved by folder still go by `projectFolder`.
+    /// The folder of the card this row sits on, when that isn't its own project folder: the git
+    /// checkout above it (a site in `web/` and its API at the repo's root), or the project a
+    /// container belongs to. Only the card: names, passwords and everything saved by folder
+    /// still go by `projectFolder`.
     var repo: String? = nil
 
     /// The same listener, known as the container it forwards to: a database or a dev
@@ -44,7 +45,7 @@ struct PortRow: Identifiable, Hashable {
     /// What the row goes by: the container, else the process.
     var label: String { container?.title ?? processName }
     /// Not a project of mine: no project folder was found for it (the page's "other apps").
-    var isOtherApp: Bool { projectRoot == nil }
+    var isOtherApp: Bool { projectRoot == nil && repo == nil }
 
     /// Other devices on the network can open it: it listens on every interface or on a LAN address.
     var isReachable: Bool { scope == .all || scope == .specific }
@@ -82,7 +83,7 @@ struct PortRow: Identifiable, Hashable {
     private static let runtimeNames: Set = ["node", "ruby", "php", "java", "bun", "deno", "dotnet", "perl", "beam.smp"]
 
     /// What its card is called: the compose project (or "Docker"), else its own title.
-    var groupTitle: String { container?.group ?? repo.map(Fmt.lastComponent) ?? title }
+    var groupTitle: String { repo.map(Fmt.lastComponent) ?? container?.group ?? title }
 
     /// Hidden unless "Show system ports" is on.
     var isHiddenByDefault: Bool { port < 1024 || isSystem || isSelf }
@@ -145,7 +146,10 @@ struct PortRow: Identifiable, Hashable {
     }
 
     /// The card a row belongs to: its project folder, else its app.
-    var groupKey: String { container.map { "d:" + $0.group } ?? (repo ?? projectFolder).map { "p:" + Fmt.path($0) } ?? "a:" + (appName ?? processName) }
+    var groupKey: String {
+        if let repo { return "p:" + Fmt.path(repo) }
+        return container.map { "d:" + $0.group } ?? projectFolder.map { "p:" + Fmt.path($0) } ?? "a:" + (appName ?? processName)
+    }
 
     /// Project colours, in the page's fixed order.
     static let palette = ["#4f8cf7", "#19a77d", "#9a84f4", "#de5a88", "#cf9214", "#16a6c2", "#e8743f", "#6b8f2a"]

@@ -495,6 +495,45 @@ final class DockerTests: XCTestCase {
         XCTAssertEqual(m.notices.last?.text.hasPrefix("The container behind "), true)
         m.stopAllSharing()
     }
+
+    /// A container goes on the card of its project: by its compose file's folder, else by a folder it
+    /// mounts from when a project of mine runs there. Names and keys don't move.
+    func testAContainerJoinsItsProjectsCard() throws {
+        let home = NSHomeDirectory()
+        let json = """
+        [{"Id":"aa11","Names":["/ds-mysql"],"Image":"mysql:8.0","Labels":{"com.docker.compose.project":"ds","com.docker.compose.service":"mysql",
+           "com.docker.compose.project.working_dir":"\(home)/code/ds"},"Ports":[{"PublicPort":3307,"Type":"tcp"}]},
+         {"Id":"bb22","Names":["/ds-redis-local"],"Image":"redis:7.0-alpine","Labels":{},
+           "Mounts":[{"Type":"volume","Name":"abc"},{"Type":"bind","Source":"/host_mnt\(home)/code/ds/.claude/worktrees/x/redis.conf"}],
+           "Ports":[{"PublicPort":6380,"Type":"tcp"}]},
+         {"Id":"cc33","Names":["/other"],"Image":"redis:7","Labels":{},"Mounts":[{"Type":"bind","Source":"/opt/data"}],"Ports":[{"PublicPort":6381,"Type":"tcp"}]}]
+        """
+        let found = try XCTUnwrap(Docker.parse(answer(json)))
+        XCTAssertEqual(found[3307]?.workingDir, home + "/code/ds")
+        XCTAssertEqual(found[6380]?.mountedFrom, home + "/code/ds/.claude/worktrees/x/redis.conf")   // /host_mnt is Docker Desktop's
+        XCTAssertNil(found[6381]?.workingDir)
+        func row(_ port: UInt16, folder: String?, container: Docker.Container? = nil) -> PortRow {
+            PortRow(port: port, addresses: ["127.0.0.1"], scope: .loopback, pid: pid_t(port), ppid: 1, processName: "node", path: nil,
+                    cwd: folder, projectRoot: folder, command: nil, started: nil, footprint: nil, workers: 0, workerPids: [],
+                    isSystem: false, appBundle: nil, appName: nil, framework: nil, category: .dev, isSelf: false, container: container)
+        }
+        var site = row(3000, folder: home + "/code/ds/exams")
+        site.repo = home + "/code/ds"                                  // the git checkout above it
+        let rows = Docker.join([site, row(3307, folder: nil, container: found[3307]), row(6380, folder: nil, container: found[6380]),
+                                row(6381, folder: nil, container: found[6381])])
+        XCTAssertEqual(rows[1].groupKey, rows[0].groupKey)             // compose: by its working folder
+        XCTAssertEqual(rows[2].groupKey, rows[0].groupKey)             // plain run: by what it mounts
+        XCTAssertEqual(rows[1].groupTitle, "ds")
+        XCTAssertNotEqual(rows[3].groupKey, rows[0].groupKey)          // nothing of mine: stays with Docker
+        XCTAssertEqual(rows[3].groupTitle, "Docker")
+        XCTAssertFalse(rows[1].isOtherApp)
+        XCTAssertTrue(rows[3].isOtherApp)
+        // Compose with no server of mine running: still its folder's card, not "Docker".
+        let alone = Docker.join([row(3307, folder: nil, container: found[3307])])
+        XCTAssertEqual(alone[0].groupTitle, "ds")
+        // Names are by container, as before.
+        XCTAssertEqual(Names.key(rows[1]), "docker/ds/mysql")
+    }
 }
 
 final class LastingTests: XCTestCase {
@@ -915,5 +954,32 @@ final class CLITests: XCTestCase {
         XCTAssertNil(CommandLink.install(in: places, target: root + "/.build/release/Harbor", home: home).path)
         XCTAssertNil(CommandLink.install(in: [root + "/missing"], target: target, home: home).path)
         XCTAssertFalse(FileManager.default.fileExists(atPath: root + "/missing"), "only ~/.local/bin is ever made")
+    }
+
+    // MARK: How often to scan
+
+    /// Two hours or a day must be settable: seconds, or a number with s, m, h or d, up to a week.
+    func testTheRefreshIntervalTakesHoursAndDays() {
+        XCTAssertEqual(Monitor.parseInterval("90"), 90)
+        XCTAssertEqual(Monitor.parseInterval("90s"), 90)
+        XCTAssertEqual(Monitor.parseInterval("30m"), 1800)
+        XCTAssertEqual(Monitor.parseInterval("2h"), 7200)
+        XCTAssertEqual(Monitor.parseInterval(" 1.5 hours "), 5400)
+        XCTAssertEqual(Monitor.parseInterval("1d"), 86_400)
+        XCTAssertEqual(Monitor.parseInterval("2 days"), 172_800)
+        for bad in ["", "abc", "0", "-5", "2x", "h", "1e9999", "nan", "5 minutes ago"] { XCTAssertNil(Monitor.parseInterval(bad), bad) }
+        // Kept as asked, between 5 seconds and a week; 0 is manual.
+        XCTAssertEqual(Monitor.clampInterval(7200), 7200)
+        XCTAssertEqual(Monitor.clampInterval(86_400), 86_400)
+        XCTAssertEqual(Monitor.clampInterval(2), 5)
+        XCTAssertEqual(Monitor.clampInterval(10_000_000), 7 * 86_400)
+        XCTAssertEqual(Monitor.clampInterval(0), 0)
+        XCTAssertEqual(Monitor.clampInterval(.nan), 15)
+        for preset in Monitor.presetIntervals { XCTAssertEqual(Monitor.clampInterval(preset), preset) }
+        XCTAssertEqual(Monitor.intervalLabel(30), "30 seconds")
+        XCTAssertEqual(Monitor.intervalLabel(60), "1 minute")
+        XCTAssertEqual(Monitor.intervalLabel(7200), "2 hours")
+        XCTAssertEqual(Monitor.intervalLabel(5400), "1 h 30 min")
+        XCTAssertEqual(Monitor.intervalLabel(86_400), "1 day")
     }
 }

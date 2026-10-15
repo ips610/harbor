@@ -110,7 +110,7 @@ enum WebAPI {
                 // A container: what it is, the card it belongs on, and why it has no kill.
                 "container": n(r.container.map { ["name": $0.name, "image": $0.image, "project": n($0.project), "service": n($0.service)] as [String: Any] }),
                 "group": n(r.container != nil || r.repo != nil ? r.groupKey : nil),
-                "groupTitle": n(r.container?.group ?? r.repo.map(Fmt.lastComponent)),
+                "groupTitle": n(r.repo.map(Fmt.lastComponent) ?? r.container?.group),
                 "nokill": n(Docker.owns(path: r.path) ? Docker.noKill(r.container) : nil),
                 // What it answered on "/" when it was last looked at: plain text, or nothing yet.
                 "served": n(m.served[r.id]?.line),
@@ -193,6 +193,8 @@ enum WebAPI {
             "lasts": ["public": Lasting.remembered(.link), "network": Lasting.remembered(.network),
                       "choices": Lasting.choices.map { ["seconds": $0, "title": Lasting.title($0)] as [String: Any] }],
             "loginItem": loginItemOn,
+            // The harbor command in Terminal: where its link is, or nil.
+            "commandPath": n(CommandLink.installed().map(Fmt.path)),
             "update": [
                 "current": up.current, "latest": n(up.latest), "newer": up.newer, "url": up.url.absoluteString,
                 "checking": up.checking, "failed": up.failed,
@@ -206,8 +208,9 @@ enum WebAPI {
                 "minPort": m.minPort, "maxPort": m.maxPort,
                 "showSystem": m.showSystemPorts, "onlyServers": m.onlyServers,
                 "showOtherApps": m.showOtherApps, "onlyReachable": m.onlyReachable, "grouping": m.grouping.rawValue,
-                "interval": m.refreshInterval,
+                "interval": m.refreshInterval, "longestInterval": Monitor.longestInterval,
                 "showInDock": m.showInDock,
+                "badge": m.badgeMode,
                 "appearance": m.pageAppearance.rawValue,  // the page's own; the menu has its own
             ],
             "memory": [
@@ -257,6 +260,14 @@ enum WebAPI {
             return done(400, ["error": "Send {op, pid}."])
         }
         switch op {
+        case "command-install":
+            // The same link the menu's "Install the harbor command…" makes; the page asked first.
+            logAction("command-install", pid: 0, name: AppInfo.name, port: 0)
+            let made = CommandLink.install()
+            return done(200, ["result": made.path != nil ? "ok" : "failed", "message": made.note])
+        case "command-remove":
+            logAction("command-remove", pid: 0, name: AppInfo.name, port: 0)
+            return done(200, ["result": "ok", "message": CommandLink.remove()])
         case "login-item":
             let on = (obj["enabled"] as? Bool) ?? false
             logAction("login-item", pid: 0, name: AppInfo.name, port: 0)
@@ -279,6 +290,8 @@ enum WebAPI {
             if let v = obj["showOtherApps"] as? Bool { m.showOtherApps = v }
             if let v = obj["onlyReachable"] as? Bool { m.onlyReachable = v }
             if let v = obj["showInDock"] as? Bool { m.showInDock = v }
+            if let v = (obj["interval"] as? NSNumber)?.doubleValue, v.isFinite, (0...Monitor.longestInterval * 2).contains(v) { m.refreshInterval = Monitor.clampInterval(v) }
+            if let b = obj["badge"] as? String, ["count", "dot", "hidden"].contains(b) { m.badgeMode = b }
             if let a = obj["appearance"] as? String, let v = Monitor.Appearance(rawValue: a) { m.pageAppearance = v }
             if let g = obj["grouping"] as? String, let v = Monitor.Grouping(rawValue: g) { m.grouping = v }
             return done(200, ["result": "ok"])

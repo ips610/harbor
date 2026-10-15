@@ -207,8 +207,14 @@ struct MenuContent: View {
                 Text("Every 15 seconds").tag(15.0)
                 Text("Every 30 seconds").tag(30.0)
                 Text("Every minute").tag(60.0)
+                Text("Every 5 minutes").tag(300.0)
+                Text("Every 15 minutes").tag(900.0)
+                Text("Every hour").tag(3600.0)
+                Text("Every 2 hours").tag(7200.0)
+                Text("Every 6 hours").tag(21_600.0)
+                Text("Every day").tag(86_400.0)
                 if !Monitor.presetIntervals.contains(monitor.refreshInterval) {
-                    Text("Every \(Int(monitor.refreshInterval)) seconds (custom)").tag(monitor.refreshInterval)
+                    Text("Every \(Monitor.intervalLabel(monitor.refreshInterval)) (custom)").tag(monitor.refreshInterval)
                 }
                 Text("Manual only").tag(0.0)
             }
@@ -381,7 +387,7 @@ struct MenuContent: View {
             return groups.values
                 .map { rs in MenuSection(title: rs[0].groupTitle, rows: rs.sorted { $0.port < $1.port }) }
                 .sorted { a, b in
-                    let ra = rank(a.rows[0]), rb = rank(b.rows[0])
+                    let ra = a.rows.map(rank).min() ?? 2, rb = b.rows.map(rank).min() ?? 2
                     if ra != rb { return ra < rb }
                     let t = a.title.localizedCaseInsensitiveCompare(b.title)
                     // Two folders can share a name ("web"): the lower port first, so the order holds.
@@ -390,25 +396,28 @@ struct MenuContent: View {
         }
     }
 
-    /// Whole seconds, 5 to 3600. Lower is raised to 5, higher capped at 3600.
+    /// Seconds, or a number with s, m, h or d ("90", "30m", "2h", "1d"): 5 seconds to a week.
     private func askCustomInterval() {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.window.appearance = monitor.appearance.nsAppearance
-        alert.messageText = "Scan every how many seconds?"
-        alert.informativeText = "While the menu or the page is open. Whole seconds, from 5 to 3600."
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
-        field.stringValue = monitor.refreshInterval > 0 ? String(Int(monitor.refreshInterval)) : "15"
+        alert.messageText = "Scan how often?"
+        alert.informativeText = "While the menu or the page is open. Seconds, or a number with s, m, h or d: 90, 30m, 2h, 1d. From 5 seconds to a week."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 160, height: 24))
+        field.stringValue = monitor.refreshInterval > 0 ? Monitor.intervalLabel(monitor.refreshInterval) : "15 seconds"
         alert.accessoryView = field
         alert.addButton(withTitle: "Set")
         alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = field
-        guard alert.runModal() == .alertFirstButtonReturn,
-              let typed = Double(field.stringValue.trimmingCharacters(in: .whitespaces)), typed > 0 else { return }
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard let typed = Monitor.parseInterval(field.stringValue) else {
+            monitor.flash("That isn't a time. Try 90, 30m, 2h or 1d.")
+            return
+        }
         let value = Monitor.clampInterval(typed)
         monitor.refreshInterval = value
         if typed < 5 { monitor.flash("Raised to 5 seconds, the shortest interval.") }
-        else if typed > 3600 { monitor.flash("Capped at 3600 seconds (one hour).") }
+        else if typed > Monitor.longestInterval { monitor.flash("Capped at a week, the longest interval.") }
     }
 
     /// Says what an update does (and what ends with it), and starts it on a yes.

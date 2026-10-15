@@ -105,11 +105,41 @@ final class Monitor {
     }
 
     /// Manfath's "Refresh": seconds between scans while the menu is open; 0 = manual.
-    static let presetIntervals: [Double] = [5, 15, 30, 60, 0]
+    nonisolated static let presetIntervals: [Double] = [5, 15, 30, 60, 300, 900, 3600, 7200, 21_600, 86_400, 0]
+    /// The longest it can be set to: a week.
+    nonisolated static let longestInterval: Double = 7 * 86_400
 
-    /// Whole seconds, 5 to 3600; 0 means manual.
-    static func clampInterval(_ v: Double) -> Double {
-        v == 0 ? 0 : Double(min(3600, max(5, Int(v.rounded()))))
+    /// Whole seconds, 5 to a week; 0 means manual.
+    nonisolated static func clampInterval(_ v: Double) -> Double {
+        guard v.isFinite else { return 15 }
+        return v == 0 ? 0 : Double(min(Int(longestInterval), max(5, Int(v.rounded()))))
+    }
+
+    /// What was typed for "scan every …", in seconds: "90", "90s", "30m", "2h", "1.5 hours", "1d".
+    /// A bare number is seconds. nil for anything else, or a zero or negative number.
+    nonisolated static func parseInterval(_ text: String) -> Double? {
+        let t = text.trimmingCharacters(in: .whitespaces).lowercased()
+        let units: [(String, Double)] = [("days", 86_400), ("day", 86_400), ("d", 86_400), ("hours", 3600), ("hour", 3600), ("hrs", 3600), ("hr", 3600), ("h", 3600),
+                                        ("minutes", 60), ("minute", 60), ("mins", 60), ("min", 60), ("m", 60),
+                                        ("seconds", 1), ("second", 1), ("secs", 1), ("sec", 1), ("s", 1)]
+        var number = t, scale = 1.0
+        for (suffix, by) in units where t.hasSuffix(suffix) {
+            number = String(t.dropLast(suffix.count)).trimmingCharacters(in: .whitespaces)
+            scale = by
+            break
+        }
+        guard let n = Double(number), n.isFinite, n > 0 else { return nil }
+        return n * scale
+    }
+
+    /// "30 seconds", "5 minutes", "2 hours", "1 day", "1 h 30 min": for the menu and the page's note.
+    nonisolated static func intervalLabel(_ s: Double) -> String {
+        let n = Int(s.rounded())
+        func unit(_ v: Int, _ one: String) -> String { "\(v) \(one)\(v == 1 ? "" : "s")" }
+        if n < 60 { return unit(n, "second") }
+        if n < 3600 { return n % 60 == 0 ? unit(n / 60, "minute") : "\(n / 60) min \(n % 60) s" }
+        if n < 86_400 { return n % 3600 == 0 ? unit(n / 3600, "hour") : "\(n / 3600) h \((n % 3600) / 60) min" }
+        return n % 86_400 == 0 ? unit(n / 86_400, "day") : "\(n / 86_400) d \((n % 86_400) / 3600) h"
     }
 
     var refreshInterval: Double = {
@@ -204,6 +234,8 @@ final class Monitor {
     @ObservationIgnored private let scanner = Scanner()
     @ObservationIgnored private var idleTimer: Timer?
     @ObservationIgnored private var fastTimer: Timer?
+    /// With a long interval the scans are on their own timer, so noticing that the menu has closed isn't left to it.
+    @ObservationIgnored private var scanTimer: Timer?
     @ObservationIgnored private var pressureSource: DispatchSourceMemoryPressure?
     @ObservationIgnored private var visible = Set<Surface>()
     @ObservationIgnored private var surfaceWindows: [Surface: WeakWindow] = [:]
@@ -318,9 +350,12 @@ final class Monitor {
         }
         fastTimer?.invalidate()
         fastTimer = nil
-        guard refreshInterval > 0 else {
-            // Manual: one scan on open, then only the refresh button. Keep a slow
-            // timer just to notice that the menu has closed.
+        scanTimer?.invalidate()
+        scanTimer = nil
+        guard refreshInterval > 0, refreshInterval <= 60 else {
+            // Manual, or a long interval: one scan on open, then the refresh button (and, for a long
+            // interval, a timer of its own for the scans). This one is only to notice that the menu
+            // has closed, so fast mode doesn't outlast it by an hour or a day.
             let t = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
@@ -330,6 +365,14 @@ final class Monitor {
             }
             RunLoop.main.add(t, forMode: .common)
             fastTimer = t
+            if refreshInterval > 60 {
+                let scans = Timer(timeInterval: refreshInterval, repeats: true) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.requestFullScan() }
+                }
+                scans.tolerance = min(60, refreshInterval / 10)
+                RunLoop.main.add(scans, forMode: .common)
+                scanTimer = scans
+            }
             return
         }
         let t = Timer(timeInterval: refreshInterval, repeats: true) { [weak self] _ in
@@ -348,6 +391,8 @@ final class Monitor {
         DebugCLI.log("fast mode off")
         fastTimer?.invalidate()
         fastTimer = nil
+        scanTimer?.invalidate()
+        scanTimer = nil
         // CPU samples go stale while hidden; drop them and the per-pid caches.
         queue.async { [scanner] in scanner.dropCaches() }
         apps = apps.map { g in

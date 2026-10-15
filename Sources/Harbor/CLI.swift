@@ -180,7 +180,7 @@ enum CLI {
 
     static func lines(_ rows: [PortRow], names: [String: String], shared: Shared.Note, all: Bool) -> [Line] {
         rows.filter { all || !$0.isHiddenByDefault }.sorted { ($0.port, $0.pid) < ($1.port, $1.pid) }.map { row in
-            Line(port: row.port, name: names[row.id].map { $0 + Names.suffix }, process: row.label, pid: row.pid, folder: row.projectFolder ?? row.folder,
+            Line(port: row.port, name: names[row.id].map { $0 + Names.suffix }, process: row.label, pid: row.pid, folder: row.repo.flatMap { row.container != nil ? $0 : nil } ?? row.projectFolder ?? row.folder,
                  network: shared.network[row.id], link: shared.links[row.id], container: row.container?.name)
         }
     }

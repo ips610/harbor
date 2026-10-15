@@ -463,6 +463,21 @@ function qrSvg(rows, label) {
   .apps .slot { display: flex; justify-content: flex-end; }
   .settings { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; margin-top: 28px; padding: 14px 18px; border-radius: 12px; background: var(--panel); font-size: 13px; color: var(--muted); }
   .settings b { color: var(--text); font-weight: 600; }
+  /* A dropdown of the page's own: the browser's list can't take the page's colours, so this one is drawn here. */
+  .dd { position: relative; display: inline-block; margin-left: 4px; }
+  .ddb { appearance: none; -webkit-appearance: none; font: 600 13px var(--f-body); color: var(--text); cursor: pointer; text-align: left;
+    padding: 6px 30px 6px 14px; border: 0; border-radius: 999px; background-color: var(--panel-2); transition: background-color .15s;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238a8d94' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 12px center; }
+  .ddb:hover { background-color: var(--line); }
+  .ddl { position: absolute; left: 0; top: calc(100% + 6px); z-index: 30; min-width: 100%; margin: 0; padding: 5px; list-style: none; white-space: nowrap;
+    background: var(--bg); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 10px 30px #00000026, 0 2px 6px #0000001a; }
+  .dd.up .ddl { top: auto; bottom: calc(100% + 6px); }
+  .ddl li { padding: 7px 12px 7px 28px; border-radius: 9px; font: 500 13px var(--f-body); color: var(--text-2); cursor: pointer; position: relative; }
+  .ddl li:hover, .ddl li.on { background: var(--panel-2); color: var(--text); }
+  .ddl li[aria-selected="true"] { color: var(--text); font-weight: 600; }
+  .ddl li[aria-selected="true"]::before { content: ""; position: absolute; left: 11px; top: 50%; width: 5px; height: 9px; margin-top: -6px;
+    border: solid var(--c-ports); border-width: 0 2px 2px 0; transform: rotate(45deg); }
 
   /* ---------- floating pill ---------- */
   .pill {
@@ -611,6 +626,9 @@ function qrSvg(rows, label) {
     <b>Settings</b>
     <label class="check"><input type="checkbox" id="login-item"> Open __APP__ at login</label>
     <label class="check"><input type="checkbox" id="show-dock"> Show __APP__ in the Dock</label>
+    <span class="check">Refresh while open <span class="dd" id="interval"></span></span>
+    <span class="check">Menu bar badge <span class="dd" id="badge"></span></span>
+    <span class="check"><button class="btn" id="command-btn" type="button"></button></span>
     <span class="check">Appearance
       <span class="seg small" role="group" aria-label="Appearance">
         <button type="button" data-appearance="auto" aria-pressed="false">Auto</button>
@@ -648,9 +666,26 @@ const $ = (id) => document.getElementById(id);
 const PALETTE = ['#4f8cf7', '#19a77d', '#9a84f4', '#de5a88', '#cf9214', '#16a6c2', '#e8743f', '#6b8f2a'];
 // The scan interval is a setting in the app (shared with the menu); 0 = manual.
 function pollMs() { const s = state ? state.settings.interval : 15; return s > 0 ? s * 1000 : 0; }
+// "30 seconds", "5 minutes", "2 hours", "1 day": the same words as the menu's.
+function span(s) {
+  s = Math.round(s);
+  const u = (v, one) => `${v} ${one}${v === 1 ? '' : 's'}`;
+  if (s < 60) return u(s, 'second');
+  if (s < 3600) return s % 60 === 0 ? u(s / 60, 'minute') : `${Math.floor(s / 60)} min ${s % 60} s`;
+  if (s < 86400) return s % 3600 === 0 ? u(s / 3600, 'hour') : `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min`;
+  return s % 86400 === 0 ? u(s / 86400, 'day') : `${Math.floor(s / 86400)} d ${Math.floor((s % 86400) / 3600)} h`;
+}
+// What was typed for the interval, in seconds: "90", "30m", "2h", "1.5 hours", "1d". null when it isn't a time.
+function parseSpan(text) {
+  const m = /^\s*([0-9]*\.?[0-9]+)\s*(d|days?|h|hrs?|hours?|m|mins?|minutes?|s|secs?|seconds?)?\s*$/i.exec(text);
+  if (!m) return null;
+  const by = { d: 86400, h: 3600, m: 60, s: 1 }[(m[2] || 's')[0].toLowerCase()];
+  const n = Number(m[1]) * by;
+  return n > 0 && Number.isFinite(n) ? n : null;
+}
 function cadence() {
   const s = state ? state.settings.interval : 15;
-  return s === 0 ? 'refreshes when you click Refresh or come back to the tab' : s === 60 ? 'refreshes every minute while open' : `refreshes every ${s} s while open`;
+  return s === 0 ? 'refreshes when you click Refresh or come back to the tab' : `refreshes every ${span(s)} while open`;
 }
 let state = null, timer = null, group = 'project', query = '';
 const phase = new Map();   // row id -> { kind: confirm|working|force|admin|msg, text }
@@ -799,14 +834,18 @@ function groups(ports) {
   const map = new Map();
   for (const p of ports) {
     const key = groupKey(p);
+    const rowRank = p.isProject ? 0 : p.projectPath || (p.container && p.container.project) ? 1 : 2;
+    if (map.has(key)) map.get(key).rank = Math.min(map.get(key).rank, rowRank);
     if (!map.has(key)) map.set(key, {
-      key, rows: [], rank: p.isProject ? 0 : p.projectPath || (p.container && p.container.project) ? 1 : 2,
+      key, rows: [], rank: rowRank,
       title: p.groupTitle || p.project || p.app || p.name, path: p.projectPath, folder: p.projectPath ? p.folder : null,
       // Docker's: a compose project, or the containers that belong to none.
       sub: p.container ? (p.container.project ? 'Docker Compose project' : 'Docker containers') : null,
     });
     map.get(key).rows.push(p);
   }
+  // A card holding a project's servers and its containers is the project's: no Docker caption.
+  for (const g of map.values()) if (g.rows.some((r) => !r.container)) g.sub = null;
   return [...map.values()]
     .map((g) => ({ ...g, rows: g.rows.sort((a, b) => a.port - b.port) }))
     .sort((a, b) => a.rank - b.rank || a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }) || a.rows[0].port - b.rows[0].port);
@@ -832,9 +871,19 @@ function render() {
   $('login-item').checked = !!state.loginItem;
   $('show-dock').checked = !!state.settings.showInDock;
   applyTheme(state.settings.appearance);
-  $('settings-note').textContent = state.settings.interval > 0
-    ? `Scans every ${state.settings.interval} s while the menu or this page is open; change it in the menu bar.`
-    : 'Scans only when you open the menu or this page; change it in the menu bar.';
+  // The refresh choices: the presets, this one if it is a custom number, and a way to type another.
+  const every = state.settings.interval;
+  const presets = [[5, 'Every 5 seconds'], [15, 'Every 15 seconds'], [30, 'Every 30 seconds'], [60, 'Every minute'], [300, 'Every 5 minutes'],
+    [900, 'Every 15 minutes'], [3600, 'Every hour'], [7200, 'Every 2 hours'], [21600, 'Every 6 hours'], [86400, 'Every day'], [0, 'Manual only']];
+  const options = presets.slice();
+  if (!presets.some(([v]) => v === every)) options.splice(presets.length - 1, 0, [every, `Every ${span(every)} (custom)`]);
+  intervalDD.set([...options, ['custom', 'Custom…']], every);
+  badgeDD.set([['hidden', 'Hidden'], ['count', 'Count'], ['dot', 'Dot']], state.settings.badge);
+  $('command-btn').textContent = state.commandPath ? 'Remove the harbor command…' : 'Install the harbor command…';
+  $('command-btn').title = state.commandPath ? `Linked at ${state.commandPath}` : 'Lets Terminal run: harbor ls, harbor kill 3000, harbor open storefront';
+  $('settings-note').textContent = every > 0
+    ? `Scans every ${span(every)} while the menu or this page is open.`
+    : 'Scans only when you open the menu or this page.';
 }
 
 function renderHero(all) {
@@ -1540,6 +1589,44 @@ applyTheme(document.documentElement.dataset.theme);
 for (const b of document.querySelectorAll('[data-appearance]')) {
   b.addEventListener('click', () => { const t = b.dataset.appearance; applyTheme(t); if (state) state.settings.appearance = t; saveSettings({ appearance: t }); });
 }
+// A dropdown drawn by the page (see .dd). `choose(value)` runs when one is picked; `.set(options, value)` shows the current ones.
+function dropdown(host, label, choose) {
+  const button = el('button', { type: 'button', class: 'ddb', 'aria-haspopup': 'listbox', 'aria-expanded': 'false', 'aria-label': label });
+  const list = el('ul', { class: 'ddl', role: 'listbox', tabindex: '-1', hidden: true, 'aria-label': label });
+  host.replaceChildren(button, list);
+  let options = [], value = null, at = -1;
+  const close = (back) => { list.hidden = true; host.classList.remove('up'); button.setAttribute('aria-expanded', 'false'); if (back) button.focus(); };
+  const mark = (i) => { at = i; [...list.children].forEach((li, k) => li.classList.toggle('on', k === i)); };
+  const pick = (i) => { close(true); choose(options[i][0]); };
+  function open() {
+    list.replaceChildren(...options.map(([v, t], i) => el('li', { role: 'option', 'aria-selected': String(String(v) === String(value)),
+      text: t, onclick: () => pick(i), onmousemove: () => mark(i) })));
+    list.hidden = false;
+    button.setAttribute('aria-expanded', 'true');
+    // The settings are at the foot of the page: open upward when there is no room below.
+    host.classList.toggle('up', window.innerHeight - button.getBoundingClientRect().bottom < list.offsetHeight + 90);
+    mark(Math.max(0, options.findIndex(([v]) => String(v) === String(value))));
+    list.focus();
+  }
+  button.addEventListener('click', () => (list.hidden ? open() : close(true)));
+  button.addEventListener('keydown', (e) => { if (['ArrowDown', 'ArrowUp'].includes(e.key)) { e.preventDefault(); open(); } });
+  list.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); mark(Math.min(options.length - 1, at + 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); mark(Math.max(0, at - 1)); }
+    else if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(at); }
+    else if (e.key === 'Escape') { e.preventDefault(); close(true); }
+    else if (e.key === 'Tab') close(false);
+  });
+  document.addEventListener('mousedown', (e) => { if (!host.contains(e.target)) close(false); });
+  return {
+    set(next, current) {
+      options = next;
+      value = current;
+      const shown = next.find(([v]) => String(v) === String(current));
+      button.textContent = shown ? shown[1] : String(current);
+    },
+  };
+}
 async function saveSettings(change) {
   await act('settings', 0, change);
   poll();
@@ -1554,6 +1641,32 @@ for (const id of ['rmin', 'rmax']) $(id).addEventListener('change', () => {
 });
 $('q').addEventListener('input', (e) => { query = e.target.value.trim(); if (state) render(); });
 $('show-dock').addEventListener('change', (e) => saveSettings({ showInDock: e.target.checked }));
+const badgeDD = dropdown($('badge'), 'Menu bar badge', (v) => saveSettings({ badge: v }));
+const intervalDD = dropdown($('interval'), 'Refresh while open', async (v) => {
+  if (v !== 'custom') return saveSettings({ interval: Number(v) });
+  const longest = state.settings.longestInterval;
+  const typed = await askText('Scan how often?', 'While the menu or this page is open. Seconds, or a number with s, m, h or d: 90, 30m, 2h, 1d. From 5 seconds to a week.',
+    span(state.settings.interval > 0 ? state.settings.interval : 15), 'Set');
+  const n = typed === null ? null : parseSpan(typed);
+  if (n !== null) {
+    saveSettings({ interval: n });
+    if (n < 5) toast('Raised to 5 seconds, the shortest interval.'); else if (n > longest) toast('Capped at a week, the longest interval.');
+  } else {
+    if (typed !== null) toast("That isn't a time. Try 90, 30m, 2h or 1d.");
+  }
+});
+$('command-btn').addEventListener('click', async () => {
+  const installed = !!state.commandPath;
+  const ok = await ask(installed ? 'Remove the harbor command?' : 'Install the harbor command?',
+    installed
+      ? `${state.commandPath} is a link to this app. Without it Terminal no longer has harbor ls, kill and open; the app itself stays as it is.`
+      : 'A link to this app goes into /usr/local/bin, or into ~/.local/bin when that one can\'t be written to. No administrator password. After that Terminal has harbor ls, harbor kill <port> and harbor open <port or name>.',
+    installed ? 'Remove' : 'Install', false);
+  if (!ok) return;
+  const r = await act(installed ? 'command-remove' : 'command-install', 0);
+  if (r) toast(r.message);
+  poll();
+});
 $('login-item').addEventListener('change', async (e) => {
   const r = await act('login-item', 0, { enabled: e.target.checked });
   if (r) toast(r.message);

@@ -18,6 +18,10 @@ enum Docker {
         let image: String           // "postgres:16"
         let project: String?        // com.docker.compose.project
         let service: String?        // com.docker.compose.service
+        /// Where its compose file is (com.docker.compose.project.working_dir): the project it belongs to.
+        var workingDir: String? = nil
+        /// A file or folder on this Mac that it has mounted: weaker evidence of which project it belongs to.
+        var mountedFrom: String? = nil
 
         /// What its row is called: its service in a compose project, else the container.
         var title: String { service ?? name }
@@ -165,8 +169,18 @@ enum Docker {
                   let name = ((item["Names"] as? [String])?.first).map({ clean(String($0.drop { $0 == "/" }), max: 60) }), !name.isEmpty else { continue }
             let labels = item["Labels"] as? [String: String] ?? [:]
             func label(_ key: String) -> String? { labels[key].map { clean($0, max: 60) }.flatMap { $0.isEmpty ? nil : $0 } }
+            // Only ever matched against folders harbor already lists, never opened.
+            func folder(_ text: String?) -> String? {
+                guard let text, text.hasPrefix("/") else { return nil }
+                let path = clean(text.hasPrefix("/host_mnt/") ? String(text.dropFirst(9)) : text, max: 400)
+                return path.hasPrefix("/") && path.count > 1 ? path : nil
+            }
+            let mount = (item["Mounts"] as? [[String: Any]])?.lazy
+                .filter { ($0["Type"] as? String) == "bind" }
+                .compactMap { folder($0["Source"] as? String) }.first
             let container = Container(id: id, name: name, image: clean(item["Image"] as? String ?? "", max: 80),
-                                      project: label("com.docker.compose.project"), service: label("com.docker.compose.service"))
+                                      project: label("com.docker.compose.project"), service: label("com.docker.compose.service"),
+                                      workingDir: folder(labels["com.docker.compose.project.working_dir"]), mountedFrom: mount)
             for port in item["Ports"] as? [[String: Any]] ?? [] where (port["Type"] as? String) == "tcp" {
                 guard let number = port["PublicPort"] as? Int, let host = UInt16(exactly: number), host != 0, found[host] == nil else { continue }
                 found[host] = container
@@ -225,10 +239,32 @@ enum Docker {
                 // No answer is remembered too: a socket that hangs costs its second once per `keep`, not on every scan.
                 (at, found) = (now, ask() ?? [:])
             }
-            return rows.map { row in
+            return Docker.join(rows.map { row in
                 guard Docker.owns(path: row.path), let container = found[row.port] else { return row }
                 return row.inContainer(container)
+            })
+        }
+    }
+
+    /// A container goes on the card of the project it belongs to: the folder its compose file is
+    /// in, else (when a project of mine is running there) the folder it has something mounted
+    /// from. The card is the longest project folder that holds it. Names and everything saved by
+    /// folder stay as they were; this is only which card the row sits on.
+    // ponytail: a container that mounts from two projects goes with the first mount.
+    static func join(_ rows: [PortRow]) -> [PortRow] {
+        let cards = Set(rows.filter { $0.container == nil }.compactMap { $0.repo ?? $0.projectFolder })
+        func card(holding path: String) -> String? {
+            cards.filter { path == $0 || path.hasPrefix($0 + "/") }.max { $0.count < $1.count }
+        }
+        return rows.map { row in
+            guard let c = row.container else { return row }
+            var joined = row
+            if let dir = c.workingDir {
+                joined.repo = card(holding: dir) ?? (PortRow.isUserFolder(dir) ? dir : nil)
+            } else if let mount = c.mountedFrom {
+                joined.repo = card(holding: mount)
             }
+            return joined
         }
     }
 }
