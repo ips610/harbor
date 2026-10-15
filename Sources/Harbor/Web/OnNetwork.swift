@@ -1170,7 +1170,7 @@ final class OnNetwork: @unchecked Sendable {
                 close(up)
             }
             guard current else { return }
-            Proxy.exchange(client: fd, server: up, request: request, rest: rest, clientAddress: address, quietSocket: quietSocket, dropCookie: true)
+            Proxy.exchange(client: fd, server: up, request: request, rest: rest, clientAddress: address, quietSocket: quietSocket, dropCookie: true, asLocalhost: true)
         }
     }
 

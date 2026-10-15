@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 ROOT="$PWD"
 source "$ROOT/app.conf"
 APP="$ROOT/build/$APP_NAME.app"
-VERSION="1.6.0"
+VERSION="1.6.1"
 
 # Call Xcode's toolchain directly when it exists: on some Macs the /usr/bin
 # xcrun shims stall for minutes.

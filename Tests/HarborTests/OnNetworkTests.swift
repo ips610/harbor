@@ -346,6 +346,36 @@ final class OnNetworkTests: XCTestCase {
         XCTAssertTrue(sent.contains("\r\nX-Forwarded-For: 192.168.1.30\r\n"))
     }
 
+    /// A dev server refuses a `.local` Host (Vite: 403; Next: its scripts and styles). On the network the
+    /// project is told `.localhost` everywhere, so Host, Origin, Referer and X-Forwarded-Host still agree.
+    func testANetworkNameReachesTheServerAsLocalhost() throws {
+        let request = try XCTUnwrap(ProxyHead(Data(("POST /act HTTP/1.1\r\nHost: Storefront.local\r\nOrigin: http://storefront.local\r\n"
+            + "Referer: http://storefront.local/cart?x=1\r\nContent-Length: 0\r\n\r\n").utf8)))
+        let sent = String(decoding: request.forwarded(client: "192.168.1.30", dropCookie: true, asLocalhost: true), as: UTF8.self)
+        XCTAssertTrue(sent.contains("\r\nHost: storefront.localhost\r\n"), sent)
+        XCTAssertTrue(sent.contains("\r\nOrigin: http://storefront.localhost\r\n"), sent)
+        XCTAssertTrue(sent.contains("\r\nReferer: http://storefront.localhost/cart?x=1\r\n"), sent)
+        XCTAssertTrue(sent.contains("\r\nX-Forwarded-Host: storefront.localhost\r\n"), sent)
+        XCTAssertFalse(sent.contains("storefront.local\r\n") || sent.contains("storefront.local/"), sent)
+        // Not asked for: the head is as it always was.
+        XCTAssertTrue(String(decoding: request.forwarded(client: "192.168.1.30"), as: UTF8.self).contains("\r\nHost: storefront.local\r\n"))
+        // A port stays; another site's origin is left as it is, boundaries included.
+        XCTAssertEqual(ProxyHead.localhostForm("storefront.local:8080"), "storefront.localhost:8080")
+        XCTAssertEqual(ProxyHead.localhostForm("storefront.localhost"), "storefront.localhost")
+        XCTAssertEqual(ProxyHead.relocate("http://storefront.local", from: "storefront.local", to: "storefront.localhost"), "http://storefront.localhost")
+        XCTAssertEqual(ProxyHead.relocate("HTTP://Storefront.Local/a", from: "storefront.local", to: "storefront.localhost"), "http://storefront.localhost/a")
+        XCTAssertNil(ProxyHead.relocate("http://storefront.local.evil.com", from: "storefront.local", to: "storefront.localhost"))
+        XCTAssertNil(ProxyHead.relocate("http://evil.com", from: "storefront.local", to: "storefront.localhost"))
+        XCTAssertNil(ProxyHead.relocate("https://storefront.local", from: "storefront.local", to: "storefront.localhost"))
+        // And its redirect goes back to the name the visitor typed.
+        let answer = Data("HTTP/1.1 307 Temporary Redirect\r\nLocation: http://storefront.localhost/login\r\nConnection: keep-alive\r\n\r\n".utf8)
+        let back = String(decoding: ResponseHead.closing(answer, relocating: (from: "storefront.localhost", to: "storefront.local")), as: UTF8.self)
+        XCTAssertEqual(back, "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://storefront.local/login\r\nConnection: close\r\n\r\n")
+        let elsewhere = Data("HTTP/1.1 302 Found\r\nLocation: https://accounts.example.com/\r\n\r\n".utf8)
+        XCTAssertTrue(String(decoding: ResponseHead.closing(elsewhere, relocating: (from: "storefront.localhost", to: "storefront.local")), as: UTF8.self)
+            .contains("Location: https://accounts.example.com/\r\n"))
+    }
+
     /// On the network an address is who a visitor is. One that can't be read is never made
     /// up: it is empty, the listener closes such a connection, and nothing is said for it.
     func testAnAddressThatCantBeReadIsNobodys() throws {
@@ -1350,12 +1380,12 @@ final class OnNetworkTests: XCTestCase {
         }
         XCTAssertTrue(project.seen.isEmpty, "signing in never reaches the project")
 
-        // With the visitor's cookie: on to the project, which sees the real Host, its own cookie, and not harbor's.
+        // With the visitor's cookie: on to the project, which sees the name as `.localhost` (dev servers refuse `.local`), its own cookie, and not harbor's.
         let visitor = "Cookie: sid=9; \(Lan.cookie)=\(token)\r\n"
         let page = try get("/cart?x=1", extra: visitor) ?? ""
         XCTAssertTrue(page.hasPrefix("HTTP/1.1 200 OK\r\n") && page.hasSuffix("\r\n\r\nok"), page)
         let sent = try XCTUnwrap(project.seen.last)
-        XCTAssertTrue(sent.hasPrefix("GET /cart?x=1 HTTP/1.1\r\nHost: \(host)\r\n"), sent)
+        XCTAssertTrue(sent.hasPrefix("GET /cart?x=1 HTTP/1.1\r\nHost: \(ProxyHead.localhostForm(host))\r\n"), sent)
         XCTAssertTrue(sent.contains("\r\nCookie: sid=9\r\n"), sent)
         XCTAssertFalse(sent.contains(Lan.cookie) || sent.contains(token))
         // Harbor's own paths stay harbor's for a signed-in visitor: never the project's.

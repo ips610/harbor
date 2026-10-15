@@ -220,6 +220,8 @@ until I turn it on: **turn on** in the row's details, in the menu or on the page
 the row in the menu and choose **Put on Network as…**. Then my phone opens
 `http://storefront.local/`. It works for a server that only listens on `127.0.0.1` too, because
 harbor passes the requests on.
+The dev server is told it is `storefront.localhost`, because Vite and Next refuse a `.local` host
+(a blank 403, or a page with no scripts). Redirects come back as `storefront.local`.
 
 - **How long.** Turning it on asks first: 30 minutes, 1 hour, or until I stop it. It remembers
   my last choice and starts with "until I stop it". With a time set, the row says how long is

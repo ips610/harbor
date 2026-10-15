@@ -312,8 +312,14 @@ struct ProxyHead {
     /// request unless it asks for a WebSocket.
     /// `dropCookie` (for a name shared on the network): harbor's visitor cookie is taken out
     /// of what the project gets.
-    func forwarded(client: String, dropCookie: Bool = false) -> Data {
-        var out = "\(method) \(target) \(version)\r\nHost: \(forwardHost)\r\n"
+    /// `asLocalhost` (the same): the request is for `<name>.local`, which dev servers refuse
+    /// (Vite answers 403, Next blocks its scripts and styles). The server is told it is
+    /// `<name>.localhost` instead, in Host, Origin, Referer and X-Forwarded-Host, so all four
+    /// still agree. `ResponseHead.closing(_:relocating:)` turns its redirects back.
+    func forwarded(client: String, dropCookie: Bool = false, asLocalhost: Bool = false) -> Data {
+        let sent = forwardHost
+        let host = asLocalhost ? Self.localhostForm(sent) : sent
+        var out = "\(method) \(target) \(version)\r\nHost: \(host)\r\n"
         for (name, value) in headers {
             let n = name.lowercased()
             if Self.replaced.contains(n) || (n == "upgrade" && !isWebSocket) { continue }
@@ -321,12 +327,35 @@ struct ProxyHead {
                 if let rest = Lan.strip(value) { out += "\(name): \(rest)\r\n" }
                 continue
             }
+            if asLocalhost, n == "origin" || n == "referer", let moved = Self.relocate(value, from: sent, to: host) {
+                out += "\(name): \(moved)\r\n"
+                continue
+            }
             out += "\(name): \(value)\r\n"
         }
-        out += "X-Forwarded-Host: \(forwardHost)\r\nX-Forwarded-Proto: http\r\n"
+        out += "X-Forwarded-Host: \(host)\r\nX-Forwarded-Proto: http\r\n"
         if !client.isEmpty { out += "X-Forwarded-For: \(client)\r\n" }      // an address that couldn't be read is left out, not made up
         out += "Connection: \(isWebSocket ? "Upgrade" : "close")\r\n\r\n"
         return out.data(using: .isoLatin1) ?? Data()
+    }
+
+    /// "tips.local:8080" → "tips.localhost:8080". Anything that isn't a `.local` name is left alone.
+    static func localhostForm(_ host: String) -> String {
+        var port = ""
+        var name = host
+        if !host.hasSuffix("]"), let colon = host.lastIndex(of: ":") { port = String(host[colon...]); name = String(host[..<colon]) }
+        guard name.hasSuffix(".local") else { return host }
+        return name + "host" + port
+    }
+
+    /// `value` with its origin `http://<from>` written as `http://<to>`, when it starts with exactly that
+    /// origin (then the end, or a path, query or fragment). Another site's origin is not touched: nil.
+    static func relocate(_ value: String, from: String, to: String) -> String? {
+        let origin = "http://" + from
+        guard value.lowercased().hasPrefix(origin) else { return nil }
+        let rest = value.dropFirst(origin.count)
+        guard rest.isEmpty || "/?#".contains(rest.first!) else { return nil }
+        return "http://" + to + rest
     }
 }
 
@@ -405,7 +434,9 @@ enum ResponseHead {
     /// The same head saying `Connection: close`, whatever the server said. The proxy carries
     /// one request per connection; a browser told to keep the connection would send its next
     /// request into one the proxy has finished with.
-    static func closing(_ head: Data) -> Data {
+    /// `relocating` (a name shared as `.local`, sent to the server as `.localhost`): a redirect to
+    /// the `from` origin goes back to the `to` one, so the visitor stays on the name they typed.
+    static func closing(_ head: Data, relocating: (from: String, to: String)? = nil) -> Data {
         guard let text = String(data: head, encoding: .isoLatin1) else { return head }
         var lines = text.components(separatedBy: "\r\n")
         while lines.last == "" { lines.removeLast() }
@@ -413,6 +444,12 @@ enum ResponseHead {
         let dropped: Set = ["connection", "keep-alive", "proxy-connection"]
         let kept = lines.dropFirst().filter { line in
             !dropped.contains(line.prefix { $0 != ":" }.trimmingCharacters(in: .whitespaces).lowercased())
+        }.map { line -> String in
+            guard let move = relocating, let colon = line.firstIndex(of: ":"),
+                  line[..<colon].trimmingCharacters(in: .whitespaces).lowercased() == "location",
+                  let to = ProxyHead.relocate(line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces), from: move.from, to: move.to)
+            else { return line }
+            return "\(line[..<colon]): \(to)"
         }
         return (([lines[0]] + kept + ["Connection: close"]).joined(separator: "\r\n") + "\r\n\r\n").data(using: .isoLatin1) ?? head
     }
@@ -860,8 +897,9 @@ final class Proxy: @unchecked Sendable {
     ///
     /// At most 64 KB waits in each direction, so a slow reader slows its sender down.
     static func exchange(client: Int32, server: Int32, request: ProxyHead, rest: Data, clientAddress: String,
-                         idle: Double = idleTimeout, quietSocket: Double? = nil, dropCookie: Bool = false) {
-        var toServer = [UInt8](request.forwarded(client: clientAddress, dropCookie: dropCookie)), toClient: [UInt8] = []
+                         idle: Double = idleTimeout, quietSocket: Double? = nil, dropCookie: Bool = false, asLocalhost: Bool = false) {
+        var toServer = [UInt8](request.forwarded(client: clientAddress, dropCookie: dropCookie, asLocalhost: asLocalhost)), toClient: [UInt8] = []
+        let relocating = asLocalhost ? (from: ProxyHead.localhostForm(request.forwardHost), to: request.forwardHost) : nil
         var chunk = [UInt8](repeating: 0, count: 65_536)
         var body = BodyScanner(request.body)
         var answer = Data()        // the server's head, until its blank line has arrived
@@ -906,7 +944,7 @@ final class Proxy: @unchecked Sendable {
                 } else if (100..<200).contains(status) && status != 101 {
                     toClient += head
                 } else {
-                    toClient += ResponseHead.closing(head)
+                    toClient += ResponseHead.closing(head, relocating: relocating)
                     headDone = true
                 }
             }
