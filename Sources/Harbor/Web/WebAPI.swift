@@ -32,7 +32,9 @@ enum WebAPI {
         let m = Monitor.shared
         m.webTouch()
         Updates.shared.check()  // at most once a day
-        m.fresh(maxAge: 2.0) {
+        // The refresh interval, not "a moment ago": opening the page, or a poll, doesn't scan again before it.
+        // The page's Refresh button and the command ask for a scan themselves (op "rescan").
+        m.fresh(maxAge: m.stateMaxAge) {
             m.look(at: see)
             let object = build()
             done((try? JSONSerialization.data(withJSONObject: object)) ?? Data("{}".utf8))
@@ -268,6 +270,9 @@ enum WebAPI {
             return done(400, ["error": "Send {op, pid}."])
         }
         switch op {
+        case "rescan":
+            Monitor.shared.requestFullScan()
+            return done(200, ["result": "ok"])
         case "card-rename":
             // A card, not a process: named by its key, which the page was given.
             if let problem = Monitor.shared.renameCard(key: (obj["key"] as? String) ?? "", to: (obj["title"] as? String) ?? "") { return done(400, ["error": problem]) }

@@ -444,6 +444,7 @@ enum DebugCLI {
     static var lanSuffix: String {
         guard isDebugRun else { return "" }
         let given = value(after: "--lan-suffix") ?? "-debug"
+        if given.isEmpty { return "" }      // for snapshots of made-up servers: the names as a reader's page shows them
         return Names.isLabel("x" + given) ? given : "-debug"
     }
 

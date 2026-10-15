@@ -302,8 +302,9 @@ function qrSvg(rows, label) {
 
   /* ---------- port cards ---------- */
   .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 600px), 1fr)); gap: 16px; align-items: start; }
-  /* "1 card" in the Cards control: one column, however wide the window. */
-  #cards.one { grid-template-columns: minmax(0, 1fr); }
+  /* "One per row": one column, as wide as a card reads well (labels stay near their buttons), not the whole window. */
+  #cards.one { grid-template-columns: minmax(0, 840px); justify-content: start; }
+  @media (max-width: 900px) { #cards.one { grid-template-columns: minmax(0, 1fr); } }
   .card { background: var(--panel); border-radius: 14px; overflow: hidden; border-top: 3px solid var(--pc, var(--c-ports)); }
   .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px 18px 10px; }
   .card-title { min-width: 0; }
@@ -1804,7 +1805,8 @@ $('login-item').addEventListener('change', async (e) => {
   poll();
 });
 window.addEventListener('resize', () => { if (state) renderHero(state.ports.filter((p) => !p.hidden)); });
-$('refresh').addEventListener('click', () => poll());
+// Refresh means scan now: the page is otherwise answered from the last scan until the interval is up.
+$('refresh').addEventListener('click', async () => { await act('rescan', 0); poll(); });
 // Update now: asked first, and only ever from this click.
 $('update-now').addEventListener('click', async () => {
   const u = state && state.update;

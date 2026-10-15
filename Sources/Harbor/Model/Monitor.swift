@@ -340,18 +340,37 @@ final class Monitor {
             enterFastMode()
         } else if !active && wasActive {
             leaveFastMode()
-        } else if isVisible {
+        } else if isVisible, scanIsDue {
             requestFullScan()
         }
+    }
+
+    /// How old a scan may be for the page to be answered from it: the refresh interval (a day when manual).
+    var stateMaxAge: Double { refreshInterval > 0 ? max(2, refreshInterval) : 86_400 }
+
+    /// Is what is shown older than the refresh interval (or is there nothing yet)? Opening the menu
+    /// or the page does not scan again before that: a scan then is for the interval, the refresh
+    /// button, or something that changed. Manual (0) scans only when there is nothing to show.
+    private var scanIsDue: Bool {
+        guard let last = lastFullScan else { return true }
+        guard refreshInterval > 0 else { return false }
+        return Date().timeIntervalSince(last) >= refreshInterval
+    }
+
+    /// When the next timed scan falls: one interval after the last scan, not after the menu opened.
+    private var nextScanDate: Date {
+        max(Date().addingTimeInterval(1), (lastFullScan ?? Date()).addingTimeInterval(refreshInterval))
     }
 
     private func enterFastMode() {
         DebugCLI.log("fast mode on (\(visible))")
         checkDoor()
-        requestFullScan()
-        // A second sample soon after opening so CPU % shows up quickly.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
-            MainActor.assumeIsolated { self?.requestFullScan() }
+        if scanIsDue {
+            requestFullScan()
+            // A second sample soon after opening so CPU % shows up quickly.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+                MainActor.assumeIsolated { self?.requestFullScan() }
+            }
         }
         fastTimer?.invalidate()
         fastTimer = nil
@@ -371,7 +390,7 @@ final class Monitor {
             RunLoop.main.add(t, forMode: .common)
             fastTimer = t
             if refreshInterval > 60 {
-                let scans = Timer(timeInterval: refreshInterval, repeats: true) { [weak self] _ in
+                let scans = Timer(fire: nextScanDate, interval: refreshInterval, repeats: true) { [weak self] _ in
                     MainActor.assumeIsolated { self?.requestFullScan() }
                 }
                 scans.tolerance = min(60, refreshInterval / 10)
@@ -380,7 +399,7 @@ final class Monitor {
             }
             return
         }
-        let t = Timer(timeInterval: refreshInterval, repeats: true) { [weak self] _ in
+        let t = Timer(fire: nextScanDate, interval: refreshInterval, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.recheckSurfaces()

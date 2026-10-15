@@ -260,7 +260,12 @@ enum CLIApp {
             return json
         }
 
-        func state() throws -> [String: Any] { try send("/api/state", body: nil) }
+        /// The app's state after a scan of its own: a command wants what is listening now, not what the
+        /// last scan (which may be an interval old) found.
+        func state() throws -> [String: Any] {
+            _ = try? send("/api/action", body: ["op": "rescan", "pid": 0])
+            return try send("/api/state", body: nil)
+        }
 
         @discardableResult
         func act(_ body: [String: Any]) throws -> [String: Any] { try send("/api/action", body: body) }
