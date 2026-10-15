@@ -54,6 +54,11 @@ final class Monitor {
         didSet { if !DebugCLI.isDebugRun { DebugCLI.defaults.set(maxPort, forKey: "maxPort") }; refreshBadge() }
     }
 
+    /// The icon in the menu bar (on by default). Off, harbor is its page, its Dock icon and its command.
+    var showMenuBarIcon = (DebugCLI.defaults.object(forKey: "showMenuBarIcon") as? Bool) ?? true {
+        didSet { if !DebugCLI.isDebugRun { DebugCLI.defaults.set(showMenuBarIcon, forKey: "showMenuBarIcon") } }
+    }
+
     /// Show harbor in the Dock (on by default); the menu bar icon stays either way.
     var showInDock = (DebugCLI.defaults.object(forKey: "showInDock") as? Bool) ?? true {
         didSet {

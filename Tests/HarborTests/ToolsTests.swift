@@ -1022,6 +1022,10 @@ final class CLITests: XCTestCase {
         XCTAssertEqual(more("group", "3000", "--auto"), .group(target: "3000", title: nil))
         XCTAssertEqual(more("group", "rename", "Exams", "Grading"), .groupRename(title: "Exams", to: "Grading"))
         XCTAssertEqual(more("group", "delete", "Exams"), .groupDelete("Exams"))
+        XCTAssertEqual(more("menubar"), .menubar(nil))
+        XCTAssertEqual(more("menubar", "off"), .menubar(false))
+        XCTAssertEqual(more("menubar", "on"), .menubar(true))
+        XCTAssertNil(more("menubar", "maybe"))
         // A wrongly written one says how, and is a usage error, not the app's.
         guard case .usage(let text)? = CLI.parse(["/usr/local/bin/harbor", "share"]) else { return XCTFail("share needs a target") }
         XCTAssertTrue(text.hasPrefix("harbor share "))

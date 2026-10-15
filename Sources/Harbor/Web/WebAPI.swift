@@ -218,6 +218,7 @@ enum WebAPI {
                 "interval": m.refreshInterval, "longestInterval": Monitor.longestInterval,
                 "showInDock": m.showInDock,
                 "badge": m.badgeMode,
+                "showMenuBarIcon": m.showMenuBarIcon,
                 "appearance": m.pageAppearance.rawValue,  // the page's own; the menu has its own
             ],
             "memory": [
@@ -305,6 +306,7 @@ enum WebAPI {
             if let v = obj["onlyReachable"] as? Bool { m.onlyReachable = v }
             if let v = obj["showInDock"] as? Bool { m.showInDock = v }
             if let v = (obj["interval"] as? NSNumber)?.doubleValue, v.isFinite, (0...Monitor.longestInterval * 2).contains(v) { m.refreshInterval = Monitor.clampInterval(v) }
+            if let v = obj["showMenuBarIcon"] as? Bool { m.showMenuBarIcon = v }
             if let b = obj["badge"] as? String, ["count", "dot", "hidden"].contains(b) { m.badgeMode = b }
             if let a = obj["appearance"] as? String, let v = Monitor.Appearance(rawValue: a) { m.pageAppearance = v }
             if let g = obj["grouping"] as? String, let v = Monitor.Grouping(rawValue: g) { m.grouping = v }

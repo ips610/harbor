@@ -251,6 +251,16 @@ extension CLIApp {
             try link.act(["op": "card-rename", "key": key, "title": new])
             print("Renamed.")
             return .ok
+        case .menubar(let set):
+            let link = try Link.open()
+            if let set {
+                try link.act(["op": "settings", "pid": 0, "showMenuBarIcon": set])
+                print(set ? "The menu bar icon is on." : "The menu bar icon is off. `harbor menubar on` brings it back.")
+                return .ok
+            }
+            let on = ((try link.state()["settings"] as? [String: Any])?["showMenuBarIcon"] as? Bool) ?? true
+            print("The menu bar icon is \(on ? "on" : "off").")
+            return .ok
         case .groupDelete(let title):
             let link = try Link.open()
             let groups = try link.state()["groups"] as? [[String: Any]] ?? []

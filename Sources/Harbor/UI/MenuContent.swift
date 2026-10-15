@@ -232,6 +232,13 @@ struct MenuContent: View {
             }
             Toggle("Open at login", isOn: Binding(get: { loginItem }, set: { setLoginItem($0) }))
             Toggle("Show in Dock", isOn: $monitor.showInDock)
+            // Turning this off takes the menu itself away: the page opens, where it can be turned back on.
+            Toggle("Show this icon in the menu bar", isOn: Binding(
+                get: { monitor.showMenuBarIcon },
+                set: { on in
+                    monitor.showMenuBarIcon = on
+                    if !on { WebServer.shared.openInBrowser() }
+                }))
             // For this dropdown only; the page has its own. The menu bar icon always follows macOS.
             Picker("Appearance", selection: $monitor.appearance) {
                 ForEach(Monitor.Appearance.allCases) { Text($0.title).tag($0) }

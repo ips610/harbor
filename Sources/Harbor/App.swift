@@ -5,7 +5,9 @@ struct HarborApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        MenuBarExtra {
+        // The icon can be taken away (Settings, the page, or `harbor menubar off`): then harbor is
+        // the page, the Dock icon if it is shown, and the command. Dragging it off with ⌘ does the same.
+        MenuBarExtra(isInserted: Binding(get: { Monitor.shared.showMenuBarIcon }, set: { Monitor.shared.showMenuBarIcon = $0 })) {
             MenuContent()
                 .environment(Monitor.shared)
         } label: {

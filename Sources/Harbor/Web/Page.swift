@@ -641,6 +641,7 @@ function qrSvg(rows, label) {
     <b>Settings</b>
     <label class="check"><input type="checkbox" id="login-item"> Open __APP__ at login</label>
     <label class="check"><input type="checkbox" id="show-dock"> Show __APP__ in the Dock</label>
+    <label class="check"><input type="checkbox" id="show-menubar"> Show __APP__ in the menu bar</label>
     <span class="check">Refresh while open <span class="dd" id="interval"></span></span>
     <span class="check">Menu bar badge <span class="dd" id="badge"></span></span>
     <span class="check"><button class="btn" id="command-btn" type="button"></button></span>
@@ -886,6 +887,7 @@ function render() {
   renderMac();
   $('login-item').checked = !!state.loginItem;
   $('show-dock').checked = !!state.settings.showInDock;
+  $('show-menubar').checked = state.settings.showMenuBarIcon !== false;
   applyTheme(state.settings.appearance);
   // The refresh choices: the presets, this one if it is a custom number, and a way to type another.
   const every = state.settings.interval;
@@ -1761,6 +1763,15 @@ for (const id of ['rmin', 'rmax']) $(id).addEventListener('change', () => {
 });
 $('q').addEventListener('input', (e) => { query = e.target.value.trim(); if (state) render(); });
 $('show-dock').addEventListener('change', (e) => saveSettings({ showInDock: e.target.checked }));
+$('show-menubar').addEventListener('change', async (e) => {
+  // With no icon and no Dock icon, this page and the command are all that is left: say so before it happens.
+  if (!e.target.checked && !state.settings.showInDock &&
+      !await ask('Hide the menu bar icon?', 'The Dock icon is hidden too, so __APP__ will have no icon at all. Open it by typing __app__.localhost:8470 in a browser, from Applications, or with the harbor command (harbor menubar on brings the icon back).', 'Hide', false)) {
+    e.target.checked = true;
+    return;
+  }
+  saveSettings({ showMenuBarIcon: e.target.checked });
+});
 const badgeDD = dropdown($('badge'), 'Menu bar badge', (v) => saveSettings({ badge: v }));
 const intervalDD = dropdown($('interval'), 'Refresh while open', async (v) => {
   if (v !== 'custom') return saveSettings({ interval: Number(v) });

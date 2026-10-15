@@ -30,6 +30,8 @@ enum CLIApp {
         case group(target: String, title: String?)
         case groupRename(title: String, to: String)
         case groupDelete(String)
+        /// The icon in the menu bar: nil asks, true or false sets it.
+        case menubar(Bool?)
     }
 
     /// Where a password comes from. Never from an argument.
@@ -59,6 +61,7 @@ enum CLIApp {
       harbor group <port|name> <title> | --auto  put it in a group (made if new), or back
       harbor group rename <title> <new title>
       harbor group delete <title>
+      harbor menubar [on|off]                    show or hide the menu bar icon (none: says which)
     """
 
     // MARK: Reading the command line
@@ -143,6 +146,9 @@ enum CLIApp {
             guard only(["--auto"]) else { return bad("harbor group <port|name> <title>  |  harbor group <port|name> --auto") }
             if flags.contains("--auto") { return words.count == 1 ? .success(.group(target: words[0], title: nil)) : bad("harbor group <port|name> --auto") }
             return words.count >= 2 ? .success(.group(target: words[0], title: words.dropFirst().joined(separator: " "))) : bad("harbor group <port|name> <title>")
+        case "menubar":
+            guard words.count <= 1, flags.isEmpty, words.first.map({ ["on", "off"].contains($0) }) ?? true else { return bad("harbor menubar [on|off]") }
+            return .success(.menubar(words.first.map { $0 == "on" }))
         default:
             return nil
         }

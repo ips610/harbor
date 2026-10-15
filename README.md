@@ -429,6 +429,10 @@ $ harbor tunnel stop storefront
 | `harbor rename <port\|name> <name>` | Its name in lists. `--reset` goes back. |
 | `harbor groups`, `harbor group <port\|name> <title>` | Groups made by hand. `--auto` puts it back; `harbor group rename <title> <new>` and `harbor group delete <title>`. |
 
+`harbor menubar on|off` shows or hides harbor's menu bar icon (see "Refresh, appearance and the
+Dock"). The full reference, with every flag and the exit codes, is in
+[docs/command-line.md](docs/command-line.md).
+
 A password is never an argument: it would stay in the shell's history and show up in `ps`. The
 prompt doesn't echo, and `--random` has the app make one. `harbor help more` lists all of
 these. If harbor isn't running, they say so and change nothing. The exit codes are the same,
@@ -452,6 +456,12 @@ Appearance is for the dropdown, and the switch on the page is for the page. Auto
 
 harbor shows in the Dock by default. Clicking the Dock icon opens the page. "Show in Dock" in
 the gear menu or the page's settings turns that off, and then it lives only in the menu bar.
+
+The menu bar icon can go too: "Show this icon in the menu bar" in the gear menu (which opens the
+page, so I can see where to turn it back on), the checkbox in the page's Settings, or `harbor
+menubar off` in Terminal. With both icons off, harbor is the page at `harbor.localhost:8470`,
+Applications, and the `harbor` command, which is enough to work from Terminal only. The page
+asks first when it would leave no icon at all. `harbor menubar on` brings it back.
 
 ### Typing the address
 
